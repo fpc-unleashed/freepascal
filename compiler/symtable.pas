@@ -138,7 +138,7 @@ interface
             caller }
           procedure get_managementoperator_offset_list(mop:tmanagementoperator;list:tfplist);
           { add all subfields from a fieldvar for composition }
-          procedure add_composition_references(fieldvs:tfieldvarsym);
+          procedure add_composition_references(fieldvs:tfieldvarsym;visibility:tvisibility);
         protected
           { size in bytes including padding }
           _datasize      : asizeint;
@@ -1796,7 +1796,7 @@ implementation
           end;
       end;
 
-    procedure tabstractrecordsymtable.add_composition_references(fieldvs:tfieldvarsym);
+    procedure tabstractrecordsymtable.add_composition_references(fieldvs:tfieldvarsym;visibility:tvisibility);
       var
         ard : tabstractrecorddef;
         recst : tabstractrecordsymtable;
@@ -1808,6 +1808,10 @@ implementation
       begin
         ard:=tabstractrecorddef(fieldvs.vardef);
         recst:=tabstractrecordsymtable(ard.symtable);
+
+        sym:=tsym(symlist.FindWithHash(fieldvs.name,fieldvs.hash));
+        if not assigned(sym) then
+          internalerror(2024010601);
 
         for i:=0 to recst.symlist.count-1 do
           begin
@@ -1833,7 +1837,7 @@ implementation
                 continue;
               end;
             refsym:=tsymrefsym.create(sym,fieldvs);
-            refsym.visibility:=fieldvs.compositevisibility;
+            refsym.visibility:=visibility;
             insertsym(refsym,false);
           end;
       end;
