@@ -2180,7 +2180,7 @@ type_e_ordinal_or_pointer_expr_expected=04134_E_Ordinal or pointer expression ex
 #
 # Symtable
 #
-# 05101 is the last used one
+# 05103 is the last used one
 #
 % \section{Symbol handling}
 % This section lists all the messages that concern the handling of symbols.
@@ -2507,6 +2507,10 @@ sym_f_systemunitnotloaded=05100_F_System unit not loaded
 sym_e_wasm_ref_types_cannot_be_used_in_records=05101_E_WebAssembly reference types cannot be used inside records, objects, or classes
 % WebAssembly reference types don't have an in-memory representation and therefore
 % cannot be used inside records, objects or classes.
+sym_e_type_must_be_record=05102_E_Record type expected
+% The variable or expression isn't of the type \var{record}.
+sym_w_overload_not_possible=05103_W_Identifier "$1" cannot be overloaded for type "$2"
+% The identifier is already defined for this type, but cannot be overloaded
 %
 % \end{description}
 #
