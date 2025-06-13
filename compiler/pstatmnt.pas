@@ -1706,4 +1706,18 @@ implementation
         assembler_block:=p;
       end;
 
+
+    function statement_expr(var p1 : tnode) : boolean;
+      begin
+        if not (m_statement_expressions in current_settings.modeswitches) then
+          exit(false);
+        result:=true;
+        case current_scanner.token of
+        _IF: p1:=if_statement(true);
+        _CASE: p1:=case_statement(true);
+        else
+          result:=false;
+        end;
+      end;
+
 end.

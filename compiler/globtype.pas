@@ -557,8 +557,9 @@ interface
          m_underscoreisseparator,{ _ can be used as separator to group digits in numbers }
          m_implicit_function_specialization,    { attempt to specialize generic function by inferring types from parameters }
          m_function_references, { enable Delphi-style function references }
-         m_anonymous_functions,  { enable Delphi-style anonymous functions }
-         m_multiline_strings    { multi-line strings denoted with '`' are enabled and valid }
+         m_anonymous_functions, { enable Delphi-style anonymous functions }
+         m_multiline_strings,   { multi-line strings denoted with '`' are enabled and valid }
+         m_statement_expressions { enables expressions using statements like if, case, try }
        );
        tmodeswitches = set of tmodeswitch;
 
@@ -766,7 +767,8 @@ interface
          'IMPLICITFUNCTIONSPECIALIZATION',
          'FUNCTIONREFERENCES',
          'ANONYMOUSFUNCTIONS',
-         'MULTILINESTRINGS'
+         'MULTILINESTRINGS',
+         'STATEMENTEXPRESSIONS'
          );
 
 
