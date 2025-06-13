@@ -959,7 +959,23 @@ implementation
       end;
 
 
-    function try_statement : tnode;
+    function try_statement(is_expr:boolean=false) : tnode;
+      var
+        resultdef : tdef;
+
+      function readexpr : tnode;inline;
+        begin
+          result:=expr(true);
+          resultdef:=branch_type(resultdef,result.resultdef);
+        end;
+
+      procedure update_onnode_assignment(temp: ttempcreatenode; onnode: tonnode);
+        begin
+          if not assigned(onnode) then
+            exit;
+          onnode.right:=cassignmentnode.create(ctemprefnode.create(temp),onnode.right);
+          update_onnode_assignment(temp,tonnode(onnode.left));
+        end;
 
       procedure check_type_valid(var def: tdef);
         begin
@@ -986,11 +1002,16 @@ implementation
          unit_found:boolean;
          oldcurrent_exceptblock: integer;
          filepostry : tfileposinfo;
+         trynode : ttryexceptnode;
+         statements : tstatementnode;
+         resultvar : ttempcreatenode;
       begin
          p_default:=nil;
          p_specific:=nil;
          excepTSymtable:=nil;
          last:=nil;
+         resultdef:=nil;
+         result:=nil;
 
          { read statements to try }
          consume(_TRY);
@@ -1002,31 +1023,44 @@ implementation
          old_block_type := block_type;
          block_type := bt_body;
 
-         while (token<>_FINALLY) and (token<>_EXCEPT) do
+         if is_expr then
+           p_try_block:=readexpr
+         else
            begin
-              if first=nil then
-                begin
-                   last:=cstatementnode.create(statement,nil);
-                   first:=last;
-                end
-              else
-                begin
-                   tstatementnode(last).right:=cstatementnode.create(statement,nil);
-                   last:=tstatementnode(last).right;
-                end;
-              if not try_to_consume(_SEMICOLON) then
-                break;
-              consume_emptystats;
+             while (token<>_FINALLY) and (token<>_EXCEPT) do
+               begin
+                  if first=nil then
+                    begin
+                       last:=cstatementnode.create(statement,nil);
+                       first:=last;
+                    end
+                  else
+                    begin
+                       tstatementnode(last).right:=cstatementnode.create(statement,nil);
+                       last:=tstatementnode(last).right;
+                    end;
+                  if not try_to_consume(_SEMICOLON) then
+                    break;
+                  consume_emptystats;
+               end;
+             p_try_block:=cblocknode.create(first);
            end;
-         p_try_block:=cblocknode.create(first);
 
-         if try_to_consume(_FINALLY) then
+         if token=_FINALLY then
            begin
+              if is_expr then
+                begin
+                  { try-finally expressions are not allowed }
+                  consume(_EXCEPT);
+                  result:=cerrornode.create;
+                  exit;
+                end;
+              consume(_FINALLY);
               inc(exceptblockcounter);
               current_exceptblock := exceptblockcounter;
               p_finally_block:=statements_til_end;
-              try_statement:=ctryfinallynode.create(p_try_block,p_finally_block);
-              try_statement.fileinfo:=filepostry;
+              result:=ctryfinallynode.create(p_try_block,p_finally_block);
+              result.fileinfo:=filepostry;
            end
          else
            begin
@@ -1097,7 +1131,10 @@ implementation
                      else
                        consume(_ID);
                      consume(_DO);
-                     hp:=connode.create(nil,statement);
+                     if is_expr then
+                       hp:=connode.create(nil,readexpr)
+                     else
+                       hp:=connode.create(nil,statement);
                      if ot.typ=errordef then
                        begin
                           hp.free;
@@ -1135,21 +1172,45 @@ implementation
                    if try_to_consume(_ELSE) then
                      begin
                        { catch the other exceptions }
-                       p_default:=statements_til_end;
+                       if is_expr then
+                         p_default:=readexpr
+                       else
+                         p_default:=statements_til_end;
                      end
+                   else if is_expr then
+                     consume(_ELSE)
                    else
                      consume(_END);
                 end
               else
                 begin
                    { catch all exceptions }
-                   p_default:=statements_til_end;
+                   if is_expr then
+                     p_default:=readexpr
+                   else
+                     p_default:=statements_til_end;
                 end;
 
-              try_statement:=ctryexceptnode.create(p_try_block,p_specific,p_default);
+              result:=ctryexceptnode.create(p_try_block,p_specific,p_default);
            end;
          block_type:=old_block_type;
          current_exceptblock := oldcurrent_exceptblock;
+
+         if not is_expr then
+           exit;
+         trynode:=ttryexceptnode(result);
+         result:=internalstatements(statements);
+         resultvar:=ctempcreatenode.create(resultdef,resultdef.size,tt_persistent,true);
+         addstatement(statements,resultvar);
+
+         trynode.left:=cassignmentnode.create(ctemprefnode.create(resultvar),trynode.left);
+         update_onnode_assignment(resultvar,tonnode(trynode.right));
+         if assigned(trynode.t1) then
+           trynode.t1:=cassignmentnode.create(ctemprefnode.create(resultvar),trynode.t1);
+
+         addstatement(statements,trynode);
+         addstatement(statements,ctempdeletenode.create_normal_temp(resultvar));
+         addstatement(statements,ctemprefnode.create(resultvar));
       end;
 
 
@@ -1793,6 +1854,7 @@ implementation
         case token of
         _IF: p1:=if_statement(true);
         _CASE: p1:=case_statement(true);
+        _TRY: p1:=try_statement(true);
         else
           result:=false;
         end;
