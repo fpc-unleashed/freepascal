@@ -1787,6 +1787,8 @@ implementation
 
     function statement_expr(var p1 : tnode) : boolean;
       begin
+        if not (m_statement_expressions in current_settings.modeswitches) then
+          exit(false);
         result:=true;
         case token of
         _IF: p1:=if_statement(true);
