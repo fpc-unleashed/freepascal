@@ -2334,7 +2334,7 @@ const
              isbinaryoverloaded(hp,[ocf_check_non_overloadable,ocf_check_only]) then
            message3(parser_w_operator_overloaded_hidden_3,left.resultdef.typename,arraytokeninfo[_PLUS].str,right.resultdef.typename);
 
-         if (nodetype in [equaln,unequaln]) and (m_array_operators in current_settings.modeswitches) and
+         if (nodetype in [equaln,unequaln]) and (m_array_operators in current_settings.modeswitches) and (m_array_operators_equality in current_settings.modeswitches) and
             (left.resultdef.typ=arraydef) and (right.resultdef.typ=arraydef) then
            begin
              result:=create_compare_array_node(left, right);
