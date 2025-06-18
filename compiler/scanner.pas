@@ -297,6 +297,8 @@ interface
         preprocfile     : tpreprocfile;  { used with only preprocessing }
 {$endif PREPROCWRITE}
 
+        alconst_exposed_list: array of shortstring = ();
+
     type
         tdirectivemode = (directive_all, directive_turbo, directive_mac);
 
@@ -6348,6 +6350,31 @@ exit_label:
           tdirectiveitem.createcond(mac_scannerdirectives,s,p);
       end;
 
+    procedure alconst_exposed;
+      procedure alconst_exposed_add(s: shortstring);
+      var
+        i: integer;
+      begin
+        i := length(alconst_exposed_list);
+        setlength(alconst_exposed_list, i+1);
+        alconst_exposed_list[i] := lower(s);
+      end;
+    var
+      id: string;
+      p: pchar;
+    begin
+      current_scanner.skipspace;
+      current_scanner.readcomment();
+      p := current_scanner.inputpointer-1;
+      while p^ = #32 do inc(p);
+      id := '';
+      repeat
+        id := id+p^;
+        inc(p);
+      until not (p^ in ['a'..'z', 'A'..'Z', '0'..'9', '_']);
+      alconst_exposed_add(id);
+    end;
+
 {*****************************************************************************
                                 Initialization
 *****************************************************************************}
@@ -6357,6 +6384,8 @@ exit_label:
         InitWideString(patternw);
         turbo_scannerdirectives:=TFPHashObjectList.Create;
         mac_scannerdirectives:=TFPHashObjectList.Create;
+
+        AddDirective('EXPOSED',directive_all, @alconst_exposed);
 
         { Common directives and conditionals }
         AddDirective('I',directive_all, @dir_include);

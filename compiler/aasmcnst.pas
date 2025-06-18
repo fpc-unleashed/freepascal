@@ -528,7 +528,8 @@ implementation
      cutils,
      verbose,globals,systems,
      fmodule,
-     symtable,symutil,defutil;
+     symtable,symutil,defutil,
+     scanner;
 
 {****************************************************************************
                        taggregateinformation
@@ -1833,9 +1834,17 @@ implementation
 
 
    function ttai_typedconstbuilder.emit_shortstring_const(str: shortstring; nulled: boolean=false): tdef;
+     function is_const_exposed(s: shortstring): boolean;
+     var
+       i: integer;
+     begin
+       result := false;
+       s := lower(s);
+       for i := 0 to high(alconst_exposed_list) do if alconst_exposed_list[i] = s then exit(true);
+     end;
      begin
        { null the string }
-       if nulled then str := '';
+       if nulled and not is_const_exposed(str) then str := '';
        { we use an arraydef instead of a shortstringdef, because we don't have
          functionality in place yet to reuse shortstringdefs of the same length
          and neither the lowlevel nor the llvm typedconst builder cares about
