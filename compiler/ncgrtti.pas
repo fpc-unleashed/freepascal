@@ -367,7 +367,7 @@ implementation
         if def.typ=arraydef then
           InternalError(201012211);
         tcb.emit_tai(Tai_const.Create_8bit(typekind),u8inttype);
-        tcb.emit_shortstring_const(name);
+        tcb.emit_shortstring_const(name, m_no_rtti in current_settings.modeswitches);
 
         tcb.end_anonymous_record;
       end;
@@ -653,7 +653,7 @@ implementation
            }
            def:=tarraydef(def).elementdef;
          { name }
-         if assigned(def.typesym) then
+         if assigned(def.typesym) and not (m_no_rtti in current_settings.modeswitches) then
            tcb.emit_shortstring_const(ttypesym(def.typesym).prettyname)
          else
            tcb.emit_shortstring_const('');
@@ -1184,7 +1184,7 @@ implementation
             { write property name }
             if addcomments then
               tcb.emit_comment(#9'name');
-            tcb.emit_shortstring_const(sym.realname);
+            tcb.emit_shortstring_const(sym.realname, m_no_rtti in current_settings.modeswitches);
             result:=tcb.end_anonymous_record;
             if addcomments then
               tcb.emit_comment('RTTI: End propinfo record '+sym.realname);
@@ -1358,10 +1358,10 @@ implementation
               if hp.value>def.maxval then
                 break;
               tcb.next_field_name:=hp.name;
-              tcb.emit_shortstring_const(hp.realname);
+              tcb.emit_shortstring_const(hp.realname, m_no_rtti in current_settings.modeswitches);
             end;
           { write unit name }
-          tcb.emit_shortstring_const(current_module.realmodulename^);
+          tcb.emit_shortstring_const(current_module.realmodulename^, m_no_rtti in current_settings.modeswitches);
           { write zero which is required by RTL }
           tcb.emit_ord_const(0,u8inttype);
           { terminate all records }
@@ -1645,7 +1645,7 @@ implementation
                else
                  tcb.emit_tai(Tai_const.Create_nil_dataptr,voidpointertype);
                { write unit name }
-               tcb.emit_shortstring_const(current_module.realmodulename^);
+               tcb.emit_shortstring_const(current_module.realmodulename^, m_no_rtti in current_settings.modeswitches);
              end;
 
           tcb.end_anonymous_record;
@@ -1812,7 +1812,7 @@ implementation
                { write flags for current parameter }
                write_param_flag(tcb,parasym);
                { write name of current parameter }
-               tcb.emit_shortstring_const(parasym.realname);
+               tcb.emit_shortstring_const(parasym.realname, m_no_rtti in current_settings.modeswitches);
                { write name of type of current parameter }
                write_rtti_name(tcb,parasym.vardef);
              end;
@@ -1834,7 +1834,7 @@ implementation
                else
                  write_rtti_reference(tcb,parasym.vardef,fullrtti);
                { write name of current parameter }
-               tcb.emit_shortstring_const(parasym.realname);
+               tcb.emit_shortstring_const(parasym.realname, m_no_rtti in current_settings.modeswitches);
                tcb.end_anonymous_record;
              end;
 
@@ -2021,7 +2021,7 @@ implementation
             { write unit name }
 
             maybe_add_comment(tcb, #9'Unit name');
-            tcb.emit_shortstring_const(current_module.realmodulename^);
+            tcb.emit_shortstring_const(current_module.realmodulename^, m_no_rtti in current_settings.modeswitches);
 
             { write published properties for this object }
             properties_write_rtti_data(tcb,propnamelist,def.symtable,false,[vis_published]);
@@ -2074,7 +2074,7 @@ implementation
             write_rtti_reference(tcb,def.hiddenclassdef,fullrtti);
 
             { write unit name }
-            tcb.emit_shortstring_const(current_module.realmodulename^);
+            tcb.emit_shortstring_const(current_module.realmodulename^, m_no_rtti in current_settings.modeswitches);
 
             tcb.begin_anonymous_record('',defaultpacking,reqalign,
               targetinfos[target_info.system]^.alignment.recordalignmin);
@@ -2085,7 +2085,7 @@ implementation
                 { prepareguid always allocates an empty string }
                 if not assigned(def.iidstr) then
                   internalerror(2016021901);
-                tcb.emit_shortstring_const(def.iidstr^)
+                tcb.emit_shortstring_const(def.iidstr^, m_no_rtti in current_settings.modeswitches)
               end;
 
             { write published properties for this object }
@@ -2119,7 +2119,7 @@ implementation
            end;
 
            { generate the name }
-           tcb.emit_shortstring_const(def.objrealname^);
+           tcb.emit_shortstring_const(def.objrealname^, m_no_rtti in current_settings.modeswitches);
 
            tcb.begin_anonymous_record('',defaultpacking,reqalign,
              targetinfos[target_info.system]^.alignment.recordalignmin);
