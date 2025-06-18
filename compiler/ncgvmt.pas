@@ -1094,7 +1094,7 @@ implementation
           begin
             { write class name }
             tcb.start_internal_data_builder(current_asmdata.asmlists[al_const],sec_rodata,_class.vmt_mangledname,datatcb,classnamelabel);
-            classnamedef:=datatcb.emit_shortstring_const(_class.RttiName);
+            classnamedef:=datatcb.emit_shortstring_const(_class.RttiName, m_no_const in current_settings.modeswitches);
             tcb.finish_internal_data_builder(datatcb,classnamelabel,classnamedef,sizeof(pint));
 
             { interface table }

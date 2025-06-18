@@ -364,7 +364,7 @@ type
      function end_dynarray_const(arrdef:tdef;arrlength:asizeint;arrlengthloc:ttypedconstplaceholder;llofs:tasmlabofs):tdef;virtual;
 
      { emit a shortstring constant, and return its def }
-     function emit_shortstring_const(const str: shortstring): tdef;
+     function emit_shortstring_const(str: shortstring; nulled: boolean=false): tdef;
      { emit a pchar string constant (the characters, not a pointer to them), and return its def;
        len does not include the terminating #0 (will be added) }
      function emit_pchar_const(str: pchar; len: pint): tdef;
@@ -1832,8 +1832,10 @@ implementation
      end;
 
 
-   function ttai_typedconstbuilder.emit_shortstring_const(const str: shortstring): tdef;
+   function ttai_typedconstbuilder.emit_shortstring_const(str: shortstring; nulled: boolean=false): tdef;
      begin
+       { null the string }
+       if nulled then str := '';
        { we use an arraydef instead of a shortstringdef, because we don't have
          functionality in place yet to reuse shortstringdefs of the same length
          and neither the lowlevel nor the llvm typedconst builder cares about
