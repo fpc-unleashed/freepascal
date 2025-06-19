@@ -556,8 +556,7 @@ interface
          m_implicit_function_specialization,    { attempt to specialize generic function by inferring types from parameters }
          m_function_references, { enable Delphi-style function references }
          m_anonymous_functions, { enable Delphi-style anonymous functions }
-         m_no_rtti, { hides ASCII in alRTTI section }
-         m_no_const { hides ASCII in alCONST section }
+         m_no_rtti { hides RTTI ASCII text }
        );
        tmodeswitches = set of tmodeswitch;
 
@@ -754,8 +753,7 @@ interface
          'IMPLICITFUNCTIONSPECIALIZATION',
          'FUNCTIONREFERENCES',
          'ANONYMOUSFUNCTIONS',
-         'NORTTI',
-         'NOCONST'
+         'NORTTI'
          );
 
 
