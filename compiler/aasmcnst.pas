@@ -1834,13 +1834,37 @@ implementation
 
 
    function ttai_typedconstbuilder.emit_shortstring_const(str: shortstring; nulled: boolean=false): tdef;
+     function matches(str, pattern: ansistring): boolean;
+     var
+       i, j, p, m: integer;
+     begin
+       i := 1; j := 1; p := 0; m := 0;
+       while i <= length(str) do begin
+         if (j <= length(pattern)) and ((pattern[j] = str[i]) or (pattern[j] = '*')) then begin
+           if pattern[j] = '*' then begin
+             p := j;
+             m := i;
+             inc(j);
+           end else begin
+             inc(i);
+             inc(j);
+           end;
+         end else if p <> 0 then begin
+           j := p+1;
+           inc(m);
+           i := m;
+         end else exit(false);
+       end;
+       while (j <= length(pattern)) and (pattern[j] = '*') do inc(j);
+       result := j>length(pattern);
+     end;
      function is_const_exposed(s: shortstring): boolean;
      var
        i: integer;
      begin
        result := false;
        s := lower(s);
-       for i := 0 to high(alconst_exposed_list) do if alconst_exposed_list[i] = s then exit(true);
+       for i := 0 to high(rtti_whitelist_tokens) do if matches(s, rtti_whitelist_tokens[i]) then exit(true);
      end;
      begin
        { null the string }
