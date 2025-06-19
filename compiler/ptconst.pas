@@ -85,6 +85,8 @@ implementation
         { Parse hints }
         try_consume_hintdirective(sym.symoptions,sym.deprecatedmsg);
 
+        { only consume if not scoped }
+        if not (symtablestack.top.symtabletype=scopedsymtable) then
         consume(_SEMICOLON);
 
         { parse public/external/export/... }

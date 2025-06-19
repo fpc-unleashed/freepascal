@@ -1497,10 +1497,6 @@ implementation
                end;
              stringdispose(deprecatedmsg);
 
-             { for inline var declarations skip the rest }
-             if inline_vars then
-               break;
-
              { Handling of Delphi typed const = initialized vars }
              if allowdefaultvalue and
                 (token=_EQ) and
@@ -1539,7 +1535,7 @@ implementation
                end
              else
                begin
-                 if not(semicoloneaten) then
+                 if not(semicoloneaten) and not inline_vars then
                    consume(_SEMICOLON);
                end;
 
