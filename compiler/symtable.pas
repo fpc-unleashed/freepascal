@@ -233,6 +233,13 @@ interface
           function checkduplicate(var hashedid:THashedIDString;sym:TSymEntry):boolean;override;
        end;
 
+       tscopesymtable = class(tsymtable)
+       public
+         localtable: tsymtable;
+         constructor create(table : tsymtable);
+         procedure insertsym(sym: TSymEntry; checkdup: boolean=true); override;
+       end;
+
        { tparasymtable }
 
        tparasymtable = class(tabstractlocalsymtable)
@@ -2527,6 +2534,27 @@ implementation
           result:=tprocdef(defowner).struct.symtable.checkduplicate(hashedid,sym);
       end;
 
+{****************************************************************************
+                              tscopesymtable
+****************************************************************************}
+
+    constructor tscopesymtable.create(table : tsymtable);
+      begin
+        inherited create('');
+        symtabletype:=scopedsymtable;
+        localtable:=table;
+      end;
+
+    procedure tscopesymtable.insertsym(sym: TSymEntry; checkdup: boolean);
+      begin
+        if sym.typ<>localvarsym then
+          begin
+            localtable.insertsym(sym,checkdup);
+            exit;
+          end;
+        sym:=tscopedvarsym.create(localtable,tlocalvarsym(sym));
+        inherited insertsym(sym, checkdup);
+      end;
 
 {****************************************************************************
                               TParaSymtable
@@ -3621,6 +3649,12 @@ implementation
               (srsymtable.defowner.typ=undefineddef)) then
               begin
                 srsym:=tsym(srsymtable.FindWithHash(hashedid));
+                { if it's a scoped symbol we need to get the referenced local symbol }
+                if assigned(srsym) and (srsym.typ=scopedvarsym) then
+                  begin
+                    srsym:=tscopedvarsym(srsym).localsym;
+                    srsymtable:=srsym.owner;
+                  end;
                 { First check if it is a unit/namespace symbol.
                   They are visible only if they are from the current unit or
                   unit of generic of currently processed specialization. }

@@ -556,6 +556,9 @@ interface
          m_implicit_function_specialization,    { attempt to specialize generic function by inferring types from parameters }
          m_function_references, { enable Delphi-style function references }
          m_anonymous_functions  { enable Delphi-style anonymous functions }
+         m_anonymous_functions, { enable Delphi-style anonymous functions }
+         m_statement_expressions, { enables expressions using statements like if, case, try }
+         m_inline_variables     { enabling scoped inline variables }
        );
        tmodeswitches = set of tmodeswitch;
 
@@ -751,7 +754,8 @@ interface
          'UNDERSCOREISSEPARATOR',
          'IMPLICITFUNCTIONSPECIALIZATION',
          'FUNCTIONREFERENCES',
-         'ANONYMOUSFUNCTIONS'
+         'ANONYMOUSFUNCTIONS',
+         'INLINEVARIABLES'
          );
 
 

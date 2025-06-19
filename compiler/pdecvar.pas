@@ -1358,6 +1358,7 @@ implementation
          isgeneric,
          semicoloneaten,
          allowdefaultvalue,
+         inline_vars,
          hasdefaultvalue : boolean;
          hintsymoptions  : tsymoptions;
          deprecatedmsg   : pshortstring;
@@ -1376,6 +1377,7 @@ implementation
          sc:=TFPObjectList.create(false);
          first:=true;
          had_generic:=false;
+         inline_vars:=symtablestack.top.symtabletype=scopedsymtable;
          vs:=nil;
          fillchar(tmp_filepos,sizeof(tmp_filepos),0);
          while (token=_ID) do
@@ -1391,7 +1393,7 @@ implementation
                                 not (m_delphi in current_settings.modeswitches) and
                                 (idtoken=_GENERIC);
                    case symtablestack.top.symtabletype of
-                     localsymtable :
+                     localsymtable, scopedsymtable:
                        vs:=clocalvarsym.create(orgpattern,vs_value,generrordef,[]);
                      staticsymtable,
                      globalsymtable :
@@ -1494,6 +1496,10 @@ implementation
                    vs.deprecatedmsg:=stringdup(deprecatedmsg^);
                end;
              stringdispose(deprecatedmsg);
+
+             { for inline var declarations skip the rest }
+             if inline_vars then
+               break;
 
              { Handling of Delphi typed const = initialized vars }
              if allowdefaultvalue and

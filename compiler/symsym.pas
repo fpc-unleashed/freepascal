@@ -288,6 +288,12 @@ interface
       end;
       tlocalvarsymclass = class of tlocalvarsym;
 
+      tscopedvarsym = class(tstoredsym)
+        localsym : tlocalvarsym;
+
+        constructor create(localtable : tsymtable;sym : tlocalvarsym); virtual;
+      end;
+
       tparavarsym = class(tabstractnormalvarsym)
           paraloc       : array[callerside..calleeside] of TCGPara;
           paranr        : word; { position of this parameter }
@@ -2421,6 +2427,22 @@ implementation
          writeentry(ppufile,iblocalvarsym);
       end;
 
+{****************************************************************************
+                              TPARAVARSYM
+****************************************************************************}
+
+    constructor tscopedvarsym.create(localtable : tsymtable;sym : tlocalvarsym);
+      var
+        scoped_id:string;
+      begin
+        inherited create(scopedvarsym,sym.realname);
+        localsym:=sym;
+        { Just use the pointer to Self to generate a UUID }
+        str(ptrint(Self),scoped_id);
+        { add sym to localtable }
+        sym.ChangeOwnerAndName(localtable, '_'+scoped_id+'_'+sym.realname);
+        sym.owner:=localtable;
+      end;
 
 {****************************************************************************
                               TPARAVARSYM

@@ -2484,7 +2484,8 @@ const
          'm_underscoreisseparator',{ _ can be used as separator to group digits in numbers }
          'm_implicit_function_specialization', { attempt to specialize generic function by inferring types from parameters }
          'm_function_references', { enable Delphi-style function references }
-         'm_anonymous_functions'  { enable Delphi-style anonymous functions }
+         'm_anonymous_functions', { enable Delphi-style anonymous functions }
+         'm_inline_variables'     { enabling scoped inline variables }
        );
        { optimizer }
        optimizerswitchname : array[toptimizerswitch] of string[50] =

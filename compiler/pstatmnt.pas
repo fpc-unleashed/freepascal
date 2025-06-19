@@ -26,7 +26,7 @@ unit pstatmnt;
 interface
 
     uses
-      tokens,node;
+      tokens,node,pdecvar;
 
 
     function statement_block(starttoken : ttoken) : tnode;
@@ -1321,6 +1321,18 @@ implementation
         result:=asmstat;
       end;
 
+    function inline_var_statement : tnode;
+      var
+        had_generics: boolean;
+      begin
+        if not (m_inline_variables in current_settings.modeswitches) then
+          Message(parser_e_illegal_expression);
+        consume(_VAR);
+        if token<>_ID then
+          Message(parser_e_illegal_expression);
+        read_var_decls([vd_check_generic], had_generics);
+        result:=cnothingnode.create;
+      end;
 
     function statement : tnode;
       var
@@ -1414,6 +1426,8 @@ implementation
              code:=try_statement;
            _RAISE :
              code:=raise_statement;
+           _VAR :
+             code:=inline_var_statement;
            { semicolons,else until and end are ignored }
            _SEMICOLON,
            _ELSE,
@@ -1569,12 +1583,25 @@ implementation
       var
          first,last : tnode;
          filepos : tfileposinfo;
-
+         st : tsymtable;
+         iter : psymtablestackitem;
       begin
          first:=nil;
          last:=nil;
          filepos:=current_tokenpos;
          consume(starttoken);
+         if (m_inline_variables in current_settings.modeswitches) and
+            (starttoken=_BEGIN) then
+           begin
+             iter:=symtablestack.stack;
+             while assigned(iter) and
+                   not (iter^.symtable.symtabletype in [globalsymtable,staticsymtable,localsymtable]) do
+                 iter:=iter^.next;
+             if not assigned(iter) then
+               Internalerror(202309151);
+             st:=tscopesymtable.create(iter^.symtable);
+             symtablestack.push(st);
+           end;
 
          while not((token=_END) or (token=_FINALIZATION)) do
            begin
@@ -1601,6 +1628,13 @@ implementation
                    consume(_SEMICOLON);
                 end;
               consume_emptystats;
+           end;
+
+         if (m_inline_variables in current_settings.modeswitches) and
+            (starttoken=_BEGIN) then
+           begin
+             symtablestack.pop(st);
+             st.free;
            end;
 
          { don't consume the finalization token, it is consumed when
