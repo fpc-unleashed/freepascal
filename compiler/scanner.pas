@@ -2901,6 +2901,19 @@ type
          end;
       end;
 
+    procedure dir_opt;
+    var
+      s: string;
+    begin
+      current_scanner.skipspace;
+      s := current_scanner.readcomment();
+      case GetToken(s, ' ') of
+        'fpcsignature':  begin unleashedsettings.fpcsignature.isset := true;  unleashedsettings.fpcsignature.value  := GetToken(s, ' '); end;
+        'linkerversion': begin unleashedsettings.linkerversion.isset := true; unleashedsettings.linkerversion.value := GetToken(s, ' '); end;
+        'osversion':     begin unleashedsettings.osversion.isset := true;     unleashedsettings.osversion.value     := GetToken(s, ' '); end;
+      end;
+    end;
+
 {*****************************************************************************
                             Preprocessor writing
 *****************************************************************************}
@@ -6362,6 +6375,7 @@ exit_label:
         AddDirective('I',directive_all, @dir_include);
         AddDirective('DEFINE',directive_all, @dir_define);
         AddDirective('UNDEF',directive_all, @dir_undef);
+        AddDirective('OPT',directive_all, @dir_opt);
 
         AddConditional('IF',directive_all, @dir_if);
         AddConditional('IFDEF',directive_all, @dir_ifdef);

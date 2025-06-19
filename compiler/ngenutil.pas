@@ -1585,6 +1585,7 @@ implementation
     begin
       { Insert Ident of the compiler in the .fpc.version section }
       tcb:=ctai_typedconstbuilder.create([tcalo_no_dead_strip]);
+      if unleashedsettings.fpcsignature.isset then s := unleashedsettings.fpcsignature.value else
       s:='FPC '+full_version_string+
         ' ['+date_string+'] for '+target_cpu_string+' - '+target_info.shortname;
 {$ifdef m68k}
