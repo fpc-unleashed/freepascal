@@ -364,7 +364,7 @@ type
      function end_dynarray_const(arrdef:tdef;arrlength:asizeint;arrlengthloc:ttypedconstplaceholder;llofs:tasmlabofs):tdef;virtual;
 
      { emit a shortstring constant, and return its def }
-     function emit_shortstring_const(const str: shortstring): tdef;
+     function emit_shortstring_const(str: shortstring; nulled: boolean=false): tdef;
      { emit a pchar string constant (the characters, not a pointer to them), and return its def;
        len does not include the terminating #0 (will be added) }
      function emit_pchar_const(str: pchar; len: pint): tdef;
@@ -528,7 +528,8 @@ implementation
      cutils,
      verbose,globals,systems,
      fmodule,
-     symtable,symutil,defutil;
+     symtable,symutil,defutil,
+     scanner;
 
 {****************************************************************************
                        taggregateinformation
@@ -1832,8 +1833,42 @@ implementation
      end;
 
 
-   function ttai_typedconstbuilder.emit_shortstring_const(const str: shortstring): tdef;
+   function ttai_typedconstbuilder.emit_shortstring_const(str: shortstring; nulled: boolean=false): tdef;
+     function matches(str, pattern: ansistring): boolean;
+     var
+       i, j, p, m: integer;
      begin
+       i := 1; j := 1; p := 0; m := 0;
+       while i <= length(str) do begin
+         if (j <= length(pattern)) and ((pattern[j] = str[i]) or (pattern[j] = '*')) then begin
+           if pattern[j] = '*' then begin
+             p := j;
+             m := i;
+             inc(j);
+           end else begin
+             inc(i);
+             inc(j);
+           end;
+         end else if p <> 0 then begin
+           j := p+1;
+           inc(m);
+           i := m;
+         end else exit(false);
+       end;
+       while (j <= length(pattern)) and (pattern[j] = '*') do inc(j);
+       result := j>length(pattern);
+     end;
+     function is_const_exposed(s: shortstring): boolean;
+     var
+       i: integer;
+     begin
+       result := false;
+       s := lower(s);
+       for i := 0 to high(rtti_whitelist_tokens) do if matches(s, rtti_whitelist_tokens[i]) then exit(true);
+     end;
+     begin
+       { null the string }
+       if nulled and not is_const_exposed(str) then str := '';
        { we use an arraydef instead of a shortstringdef, because we don't have
          functionality in place yet to reuse shortstringdefs of the same length
          and neither the lowlevel nor the llvm typedconst builder cares about
