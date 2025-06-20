@@ -68,7 +68,7 @@ interface
           m_property,m_default_inline,m_except];
        unleashedmodeswitches = objfpcmodeswitches+[m_default_ansistring,m_underscoreisseparator,m_duplicate_names,
         m_advanced_records,m_array_operators,m_anonymous_functions,m_function_references,
-        m_statement_expressions];
+        m_statement_expressions,m_array_equality];
        tpmodeswitches =
          [m_tp7,m_tp_procvar,m_duplicate_names];
 {$ifdef gpc_mode}
