@@ -559,7 +559,9 @@ implementation
           current_settings.modeswitches:=objfpcmodeswitches;
           { TODO: enable this for 2.3/2.9 }
           //  include(current_settings.localswitches, cs_typed_addresses);
-        end
+        end else
+         if s = 'UNLEASHED' then
+          current_settings.modeswitches:=unleashedmodeswitches
 {$ifdef gpc_mode}
         else if s='GPC' then
           current_settings.modeswitches:=gpcmodeswitches

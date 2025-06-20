@@ -5861,6 +5861,8 @@ begin
   set_system_macro('FPC_PATCH',patch_nr);
   set_system_macro('FPC_FULLVERSION',Format('%d%.02d%.02d',[StrToInt(version_nr),StrToInt(release_nr),StrToInt(patch_nr)]));
 
+  def_system_macro('FPC_UNLEASHED');
+
   if target_info.system in systems_indirect_entry_information then
     def_system_macro('FPC_HAS_INDIRECT_ENTRY_INFORMATION');
 
