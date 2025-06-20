@@ -2485,7 +2485,8 @@ const
          'm_implicit_function_specialization', { attempt to specialize generic function by inferring types from parameters }
          'm_function_references', { enable Delphi-style function references }
          'm_anonymous_functions', { enable Delphi-style anonymous functions }
-         'm_statement_expressions' { enables expressions using statements like if, case, try }
+         'm_statement_expressions', { enables expressions using statements like if, case, try }
+         'm_array_equality'       { enables equality operator in addition to ArrayOperators modeswitch }
        );
        { optimizer }
        optimizerswitchname : array[toptimizerswitch] of string[50] =

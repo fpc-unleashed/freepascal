@@ -149,7 +149,7 @@ implementation
       symconst,symdef,symsym,symcpu,symtable,defutil,defcmp,
       cgbase,
       htypechk,pass_1,
-      nld,nbas,nmat,ncnv,ncon,nset,nopt,ncal,ninl,nmem,nutils,
+      nld,nbas,nmat,ncnv,ncon,nset,nopt,ncal,ninl,nmem,nutils,nflw,
       {$ifdef state_tracking}
       nstate,
       {$endif}
@@ -191,6 +191,134 @@ const
         else internalerror(200508061);
       end;
 
+
+  { create a comparison between two arrays/array constructors
+    the nodes itself will not be touched, but rather copies will be created
+    (maybe not the most efficient) }
+  function create_compare_array_node(arr1,arr2:tnode): tnode;
+
+      function compare_constructors(lhs,rhs:tarrayconstructornode):tnode;
+        begin
+          result:=cordconstnode.create(1,pasbool1type,false);
+          { unroll lhs and rhs and create a comparison tree }
+          while assigned(lhs) and assigned(lhs.left) and assigned(rhs) and assigned(rhs.left) do
+            begin
+              result:=caddnode.create(andn,result,caddnode.create(equaln,lhs.left.getcopy,rhs.left.getcopy));
+              lhs:=tarrayconstructornode(lhs.right);
+              rhs:=tarrayconstructornode(rhs.right);
+            end;
+          { length difference: return false }
+          if (assigned(lhs) and assigned(lhs.left)) xor (assigned(rhs) and assigned(rhs.left)) then
+            begin
+              result.free;
+              result:=cordconstnode.create(0,pasbool1type,false);
+            end;
+        end;
+
+      function compare_with_constructors(lhs:tnode;rhs:tarrayconstructornode):tnode;
+        var
+          depth:sizeint;
+        begin
+          result:=cordconstnode.create(1,pasbool1type,false);
+          depth:=0;
+          { unroll lhs and rhs and create a comparison tree }
+          while assigned(rhs) and assigned(rhs.left) do
+            begin
+              { lhs[indexnode+depth] = rhs.left }
+              result:=caddnode.create(andn,result,caddnode.create(equaln,
+                cvecnode.create(
+                  lhs.getcopy,
+                  caddnode.create(addn,
+                    cinlinenode.create(in_low_x,false,lhs.getcopy),
+                    cordconstnode.create(depth,sizesinttype,false))),
+                rhs.left.getcopy));
+              rhs:=tarrayconstructornode(rhs.right);
+              inc(depth);
+            end;
+          { add length check: result:=length(lhs)=depth and result
+            this makes use of short circuit bool logic, to not evaluate the
+            array access if the length check in the beginning is false }
+          result:=caddnode.create(andn,
+            caddnode.create(equaln,
+              cinlinenode.create(in_length_x,false,lhs.getcopy),
+              cordconstnode.create(depth,sizesinttype,false)),
+            result);
+        end;
+
+    var
+      cmpstatements,bodystatements:tstatementnode;
+      resultvar,loopvar:ttempcreatenode;
+      ifbody:tblocknode;
+      ifstatement,forstatement:tnode;
+    begin
+      if (arr1.nodetype=arrayconstructorn) and (arr2.nodetype=arrayconstructorn) then
+        begin
+          result:=compare_constructors(tarrayconstructornode(arr1),tarrayconstructornode(arr2));
+          exit
+        end;
+      if arr1.nodetype=arrayconstructorn then
+        begin
+          result:=compare_with_constructors(arr2,tarrayconstructornode(arr1));
+          exit;
+        end;
+      if arr2.nodetype=arrayconstructorn then
+        begin
+          result:=compare_with_constructors(arr1,tarrayconstructornode(arr2));
+          exit;
+        end;
+      { Compile to:
+        result:=length(arr1)=length(arr2)
+        if result then
+          for i:=0 to pred(length(arr1)) do
+            if arr1[low(arr1)+i]<>arr2[low(arr2)+i] then
+            begin
+              result:=false;
+              break;
+            end;
+      }
+      result:=internalstatements(cmpstatements);
+      { result:=length(arr1)=length(arr2) }
+      resultvar:=ctempcreatenode.create_value(pasbool1type,pasbool1type.size,
+        tt_persistent,true,caddnode.create(equaln,
+        cinlinenode.create(in_length_x,false,arr1.getcopy),
+        cinlinenode.create(in_length_x,false,arr2.getcopy)
+      ));
+      addstatement(cmpstatements,resultvar);
+      { declare loopvar }
+      loopvar:=ctempcreatenode.create(sizesinttype,sizesinttype.size,
+        tt_persistent,true);
+      addstatement(cmpstatements,loopvar);
+      { create inner if }
+      ifbody:=internalstatements(bodystatements);
+      addstatement(bodystatements,cassignmentnode.create(ctemprefnode.create(resultvar),
+        cordconstnode.create(0,pasbool1type,false)));
+      addstatement(bodystatements,cbreaknode.create);
+      ifstatement:=cifnode.create(
+        caddnode.create(unequaln,
+          cvecnode.create(arr1.getcopy,caddnode.create(addn,
+            cinlinenode.create(in_low_x,false,arr1.getcopy),
+            ctemprefnode.create(loopvar))),
+          cvecnode.create(arr2.getcopy,caddnode.create(addn,
+            cinlinenode.create(in_low_x,false,arr2.getcopy),
+            ctemprefnode.create(loopvar)))),
+        ifbody,nil);
+      { create for loop }
+      forstatement:=cfornode.create(
+        ctemprefnode.create(loopvar),
+        cordconstnode.create(0,sizesinttype,false),
+        cinlinenode.create(in_pred_x,false,cinlinenode.create(in_length_x,false,arr1.getcopy)),
+        ifstatement,
+        false);
+      { create outer if }
+      addstatement(cmpstatements,cifnode.create(ctemprefnode.create(resultvar),
+        forstatement,nil));
+      { free loopvar }
+      addstatement(cmpstatements,ctempdeletenode.create(loopvar));
+      { convert temporary result into permanent }
+      addstatement(cmpstatements,ctempdeletenode.create_normal_temp(resultvar));
+      { return result }
+      addstatement(cmpstatements,ctemprefnode.create(resultvar));
+    end;
 
     constructor taddnode.create(tt : tnodetype;l,r : tnode);
       begin
@@ -2171,12 +2299,19 @@ const
          if is_array_constructor(left.resultdef) or is_array_constructor(right.resultdef) then
            begin
              { check whether there is a suitable operator for the array constructor
-               (but only if the "+" array operator isn't used), if not fall back to sets }
+               (but only if the "+" or "=" array operator isn't used), if not fall back to sets }
              if (
-                   (nodetype<>addn) or
-                   not (m_array_operators in current_settings.modeswitches) or
-                   (is_array_constructor(left.resultdef) and not is_dynamic_array(right.resultdef)) or
-                   (not is_dynamic_array(left.resultdef) and is_array_constructor(right.resultdef))
+                   not (m_array_operators in current_settings.modeswitches) or (
+                     (
+                       (nodetype<>addn) or
+                       (is_array_constructor(left.resultdef) and not is_dynamic_array(right.resultdef)) or
+                       (not is_dynamic_array(left.resultdef) and is_array_constructor(right.resultdef))
+                     ) and (
+                       not (nodetype in [equaln,unequaln]) or
+                       (left.resultdef.typ<>arraydef) or
+                       (right.resultdef.typ<>arraydef)
+                     )
+                   )
                  ) and
                  not isbinaryoverloaded(hp,[ocf_check_only]) then
                begin
@@ -2198,6 +2333,16 @@ const
              (m_array_operators in current_settings.modeswitches) and
              isbinaryoverloaded(hp,[ocf_check_non_overloadable,ocf_check_only]) then
            message3(parser_w_operator_overloaded_hidden_3,left.resultdef.typename,arraytokeninfo[_PLUS].str,right.resultdef.typename);
+
+         if (nodetype in [equaln,unequaln]) and (m_array_operators in current_settings.modeswitches) and (m_array_equality in current_settings.modeswitches) and
+            (left.resultdef.typ=arraydef) and (right.resultdef.typ=arraydef) then
+           begin
+             result:=create_compare_array_node(left, right);
+             if nodetype=unequaln then
+               result:=cnotnode.create(result);
+             typecheckpass(result);
+             exit;
+           end;
 
          if isbinaryoverloaded(hp,[]) then
            begin
