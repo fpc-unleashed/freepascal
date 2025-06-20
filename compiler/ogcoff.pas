@@ -3089,6 +3089,25 @@ const pemagic : array[0..3] of byte = (
         inc(CurrDataPos,sizeof(coffsymbol)*nsyms);
       end;
 
+    function osversiontomajorminor(os: string; var major: word; var minor: word): boolean;
+    begin
+      result := true;
+      case os of
+        '95':    begin major := 4;  minor := 0;  end;
+        '98':    begin major := 4;  minor := 10; end;
+        'ME':    begin major := 4;  minor := 90; end;
+        '2000':  begin major := 5;  minor := 0;  end;
+        'XP':    begin major := 5;  minor := 1;  end;
+        '2003':  begin major := 5;  minor := 2;  end;
+        'Vista': begin major := 6;  minor := 0;  end;
+        '7':     begin major := 6;  minor := 1;  end;
+        '8':     begin major := 6;  minor := 2;  end;
+        '8.1':   begin major := 6;  minor := 3;  end;
+        '10':    begin major := 10; minor := 0;  end;
+      else
+        result := false;
+      end;
+    end;
 
     function TCoffexeoutput.writedata:boolean;
       var
@@ -3263,8 +3282,13 @@ const pemagic : array[0..3] of byte = (
           begin
             fillchar(peoptheader,sizeof(peoptheader),0);
             peoptheader.magic:=COFF_OPT_MAGIC;
-            peoptheader.MajorLinkerVersion:=ord(version_nr)-ord('0');
-            peoptheader.MinorLinkerVersion:=(ord(release_nr)-ord('0'))*10 + (ord(patch_nr)-ord('0'));
+            if unleashedsettings.linkerversion.isset then begin
+              peoptheader.MajorLinkerVersion:=str_opt_get_int(unleashedsettings.linkerversion.value, 0);
+              peoptheader.MinorLinkerVersion:=str_opt_get_int(unleashedsettings.linkerversion.value, 1);
+            end else begin
+              peoptheader.MajorLinkerVersion:=ord(version_nr)-ord('0');
+              peoptheader.MinorLinkerVersion:=(ord(release_nr)-ord('0'))*10 + (ord(patch_nr)-ord('0'));
+            end;
             peoptheader.tsize:=TextExeSec.Size;
             peoptheader.dsize:=DataExeSec.Size;
             if assigned(BSSExeSec) then
@@ -3277,6 +3301,11 @@ const pemagic : array[0..3] of byte = (
             peoptheader.ImageBase:=ImageBase;
             peoptheader.SectionAlignment:=SectionMemAlign;
             peoptheader.FileAlignment:=SectionDataAlign;
+            if not unleashedsettings.osversion.isset or not osversiontomajorminor(
+              unleashedsettings.osversion.value,
+              peoptheader.MajorOperatingSystemVersion,
+              peoptheader.MinorOperatingSystemVersion
+            ) then
             if SetPEOSVersionSetExplicitely then
               begin
                 peoptheader.MajorOperatingSystemVersion:=peosversionmajor;

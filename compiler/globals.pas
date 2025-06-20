@@ -745,6 +745,25 @@ Const
   var
     AllowedFilenameTransFormations : tfilenametransformations = AllTransformations;
 
+  function str_opt_get(s: string; index: dword; spliiter: string='.'): string;
+  function str_opt_get_int(s: string; index: dword; spliiter: string='.'): integer;
+
+  type
+    toptansi = record
+      isset: boolean;
+      value: ansistring;
+    end;
+
+  var
+    unleashedsettings: record
+      fpcsignature:  toptansi;
+      linkerversion: toptansi;
+      osversion:     toptansi;
+    end = (
+      fpcsignature:  (isset: false; value: '');
+      linkerversion: (isset: false; value: '');
+      osversion:     (isset: true;  value: 'XP');
+    );
 
 implementation
 
@@ -1787,6 +1806,26 @@ implementation
 
         callinitprocs;
      end;
+
+   function str_opt_get(s: string; index: dword; spliiter: string='.'): string;
+   var
+     c, n, p: integer;
+   begin
+     c := 1;
+     n := 0;
+     while n <= index do begin
+       p := pos(spliiter, s, c);
+       if p = 0 then p := length(s)+1;
+       if n = index then exit(copy(s, c, p-c));
+       inc(n);
+       c := p+length(spliiter);
+     end;
+   end;
+
+   function str_opt_get_int(s: string; index: dword; spliiter: string='.'): integer;
+   begin
+     if not TryStrToInt(str_opt_get(s, index, spliiter), result) then result := 0;
+   end;
 
 initialization
 {$ifdef LLVM}
