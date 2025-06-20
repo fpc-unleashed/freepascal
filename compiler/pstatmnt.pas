@@ -30,6 +30,7 @@ interface
 
 
     function statement_block(starttoken : ttoken) : tnode;
+    function statement_expr(var p1 : tnode) : boolean;
 
     { reads an assembler block }
     function assembler_block : tnode;
@@ -64,24 +65,65 @@ implementation
 
     function statement : tnode;forward;
 
+    function branch_type(olddef, branchdef: tdef): tdef; inline;
+      begin
+        { Handle promotion of string types to widestring and char types
+          to either char or widechar }
+        if not assigned(olddef) or
+            (is_anychar(olddef) and is_string(branchdef)) then
+          result:=branchdef
+        else if is_widestring(branchdef) or
+                ((is_ansistring(olddef) or is_chararray(olddef)) and is_widechar(branchdef)) then
+          result:=cwidestringtype
+        else if is_char(olddef) and is_widechar(branchdef) then
+          result:=cwidechartype
+        else
+          result:=olddef;
+      end;
 
-    function if_statement : tnode;
+    function if_statement(is_expr:boolean=false) : tnode;
+      function statementorexpr : tnode; inline;
+        begin
+          if is_expr then
+            result:=expr(true)
+          else
+            result:=statement;
+        end;
+
       var
          ex,if_a,else_a : tnode;
+         statements : tstatementnode;
+         resultvar : ttempcreatenode;
+         resultdef : tdef;
       begin
          consume(_IF);
          ex:=comp_expr([ef_accept_equal]);
          consume(_THEN);
          if not(token in endtokens) then
-           if_a:=statement
+           if_a:=statementorexpr
          else
            if_a:=nil;
 
+         else_a:=nil;
          if try_to_consume(_ELSE) then
-            else_a:=statement
-         else
-           else_a:=nil;
-         result:=cifnode.create(ex,if_a,else_a);
+            else_a:=statementorexpr
+         else if is_expr then
+           consume(_ELSE);
+         if (not is_expr) then
+           begin
+             result:=cifnode.create(ex,if_a,else_a);
+             exit;
+           end;
+         result:=internalstatements(statements);
+         resultdef:=branch_type(if_a.resultdef,else_a.resultdef);
+         resultvar:=ctempcreatenode.create(resultdef,resultdef.size,tt_persistent,true);
+         addstatement(statements,resultvar);
+         addstatement(statements,cifnode.create(ex,
+           cassignmentnode.create(ctemprefnode.create(resultvar),if_a),
+           cassignmentnode.create(ctemprefnode.create(resultvar),else_a)
+         ));
+         addstatement(statements,ctempdeletenode.create_normal_temp(resultvar));
+         addstatement(statements,ctemprefnode.create(resultvar));
       end;
 
     { creates a block (list) of statements, til the next END token }
@@ -116,7 +158,35 @@ implementation
       end;
 
 
-    function case_statement : tnode;
+    function case_statement(is_expr:boolean=false) : tnode;
+      var
+        resultdef : tdef;
+
+      function statementorexpr : tnode;inline;
+        begin
+          if is_expr then
+            begin
+               result:=expr(true);
+               resultdef:=branch_type(resultdef,result.resultdef);
+            end
+          else
+            result:=statement;
+        end;
+
+        function requires_else(casenode : tcasenode) : boolean; inline;
+          var
+            lv,hv : TConstExprInt;
+          begin
+            if is_boolean(casenode.left.resultdef) then
+              begin
+                lv:=0;
+                hv:=1;
+              end
+            else
+              getrange(casenode.left.resultdef,lv,hv);
+            Result:=casenode.labelcoverage<hv-lv;
+          end;
+
       var
          casedef : tdef;
          caseexpr,p : tnode;
@@ -125,7 +195,11 @@ implementation
          sl1,sl2 : tstringconstnode;
          casedeferror, caseofstring : boolean;
          casenode : tcasenode;
+         i : longint;
+         statements : tstatementnode;
+         resultvar : ttempcreatenode;
       begin
+         resultdef:=nil;
          consume(_CASE);
          caseexpr:=comp_expr([ef_accept_equal]);
          { determines result type }
@@ -270,7 +344,7 @@ implementation
            consume(_COLON);
 
            { add instruction block }
-           casenode.addblock(blockid,statement);
+           casenode.addblock(blockid,statementorexpr);
 
            { next block }
            inc(blockid);
@@ -283,12 +357,33 @@ implementation
            begin
               if not try_to_consume(_ELSE) then
                 consume(_OTHERWISE);
-              casenode.addelseblock(statements_til_end);
+              if is_expr then
+                casenode.addelseblock(statementorexpr)
+              else
+                casenode.addelseblock(statements_til_end);
            end
+         else if is_expr and requires_else(casenode) then
+           consume(_ELSE)
          else
            consume(_END);
 
-         result:=casenode;
+         if not is_expr then
+           begin
+             result:=casenode;
+             exit;
+           end;
+         result:=internalstatements(statements);
+         resultvar:=ctempcreatenode.create(resultdef,resultdef.size,tt_persistent,true);
+         addstatement(statements,resultvar);
+         for i:=0 to casenode.blocks.Count-1 do
+           pcaseblock(casenode.blocks[i])^.statement:=cassignmentnode.create(
+             ctemprefnode.create(resultvar), pcaseblock(casenode.blocks[i])^.statement
+           );
+         if assigned(casenode.elseblock) then
+           casenode.elseblock:=cassignmentnode.create(ctemprefnode.create(resultvar), casenode.elseblock);
+         addstatement(statements,casenode);
+         addstatement(statements,ctempdeletenode.create_normal_temp(resultvar));
+         addstatement(statements,ctemprefnode.create(resultvar));
       end;
 
 
@@ -864,7 +959,23 @@ implementation
       end;
 
 
-    function try_statement : tnode;
+    function try_statement(is_expr:boolean=false) : tnode;
+      var
+        resultdef : tdef;
+
+      function readexpr : tnode;inline;
+        begin
+          result:=expr(true);
+          resultdef:=branch_type(resultdef,result.resultdef);
+        end;
+
+      procedure update_onnode_assignment(temp: ttempcreatenode; onnode: tonnode);
+        begin
+          if not assigned(onnode) then
+            exit;
+          onnode.right:=cassignmentnode.create(ctemprefnode.create(temp),onnode.right);
+          update_onnode_assignment(temp,tonnode(onnode.left));
+        end;
 
       procedure check_type_valid(var def: tdef);
         begin
@@ -891,11 +1002,16 @@ implementation
          unit_found:boolean;
          oldcurrent_exceptblock: integer;
          filepostry : tfileposinfo;
+         trynode : ttryexceptnode;
+         statements : tstatementnode;
+         resultvar : ttempcreatenode;
       begin
          p_default:=nil;
          p_specific:=nil;
          excepTSymtable:=nil;
          last:=nil;
+         resultdef:=nil;
+         result:=nil;
 
          { read statements to try }
          consume(_TRY);
@@ -907,31 +1023,44 @@ implementation
          old_block_type := block_type;
          block_type := bt_body;
 
-         while (token<>_FINALLY) and (token<>_EXCEPT) do
+         if is_expr then
+           p_try_block:=readexpr
+         else
            begin
-              if first=nil then
-                begin
-                   last:=cstatementnode.create(statement,nil);
-                   first:=last;
-                end
-              else
-                begin
-                   tstatementnode(last).right:=cstatementnode.create(statement,nil);
-                   last:=tstatementnode(last).right;
-                end;
-              if not try_to_consume(_SEMICOLON) then
-                break;
-              consume_emptystats;
+             while (token<>_FINALLY) and (token<>_EXCEPT) do
+               begin
+                  if first=nil then
+                    begin
+                       last:=cstatementnode.create(statement,nil);
+                       first:=last;
+                    end
+                  else
+                    begin
+                       tstatementnode(last).right:=cstatementnode.create(statement,nil);
+                       last:=tstatementnode(last).right;
+                    end;
+                  if not try_to_consume(_SEMICOLON) then
+                    break;
+                  consume_emptystats;
+               end;
+             p_try_block:=cblocknode.create(first);
            end;
-         p_try_block:=cblocknode.create(first);
 
-         if try_to_consume(_FINALLY) then
+         if token=_FINALLY then
            begin
+              if is_expr then
+                begin
+                  { try-finally expressions are not allowed }
+                  consume(_EXCEPT);
+                  result:=cerrornode.create;
+                  exit;
+                end;
+              consume(_FINALLY);
               inc(exceptblockcounter);
               current_exceptblock := exceptblockcounter;
               p_finally_block:=statements_til_end;
-              try_statement:=ctryfinallynode.create(p_try_block,p_finally_block);
-              try_statement.fileinfo:=filepostry;
+              result:=ctryfinallynode.create(p_try_block,p_finally_block);
+              result.fileinfo:=filepostry;
            end
          else
            begin
@@ -1002,7 +1131,10 @@ implementation
                      else
                        consume(_ID);
                      consume(_DO);
-                     hp:=connode.create(nil,statement);
+                     if is_expr then
+                       hp:=connode.create(nil,readexpr)
+                     else
+                       hp:=connode.create(nil,statement);
                      if ot.typ=errordef then
                        begin
                           hp.free;
@@ -1040,21 +1172,45 @@ implementation
                    if try_to_consume(_ELSE) then
                      begin
                        { catch the other exceptions }
-                       p_default:=statements_til_end;
+                       if is_expr then
+                         p_default:=readexpr
+                       else
+                         p_default:=statements_til_end;
                      end
+                   else if is_expr then
+                     consume(_ELSE)
                    else
                      consume(_END);
                 end
               else
                 begin
                    { catch all exceptions }
-                   p_default:=statements_til_end;
+                   if is_expr then
+                     p_default:=readexpr
+                   else
+                     p_default:=statements_til_end;
                 end;
 
-              try_statement:=ctryexceptnode.create(p_try_block,p_specific,p_default);
+              result:=ctryexceptnode.create(p_try_block,p_specific,p_default);
            end;
          block_type:=old_block_type;
          current_exceptblock := oldcurrent_exceptblock;
+
+         if not is_expr then
+           exit;
+         trynode:=ttryexceptnode(result);
+         result:=internalstatements(statements);
+         resultvar:=ctempcreatenode.create(resultdef,resultdef.size,tt_persistent,true);
+         addstatement(statements,resultvar);
+
+         trynode.left:=cassignmentnode.create(ctemprefnode.create(resultvar),trynode.left);
+         update_onnode_assignment(resultvar,tonnode(trynode.right));
+         if assigned(trynode.t1) then
+           trynode.t1:=cassignmentnode.create(ctemprefnode.create(resultvar),trynode.t1);
+
+         addstatement(statements,trynode);
+         addstatement(statements,ctempdeletenode.create_normal_temp(resultvar));
+         addstatement(statements,ctemprefnode.create(resultvar));
       end;
 
 
@@ -1687,6 +1843,21 @@ implementation
         last_endtoken_filepos:=current_tokenpos;
 
         assembler_block:=p;
+      end;
+
+
+    function statement_expr(var p1 : tnode) : boolean;
+      begin
+        if not (m_statement_expressions in current_settings.modeswitches) then
+          exit(false);
+        result:=true;
+        case token of
+        _IF: p1:=if_statement(true);
+        _CASE: p1:=case_statement(true);
+        _TRY: p1:=try_statement(true);
+        else
+          result:=false;
+        end;
       end;
 
 end.
