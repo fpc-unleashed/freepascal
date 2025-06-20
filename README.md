@@ -64,7 +64,7 @@ fpc-unleashed.git=https://github.com/fpc-unleashed/freepascal.git
 3. Reopen **fpcupdeluxe**, uncheck **GitLab**, and select `fpc-unleashed.git` as your FPC version.
 4. Choose any Lazarus version you like.
 
-![guhMdITgQs](https://github.com/user-attachments/assets/c9d71a23-bd7d-42da-819e-f60bca0838e3)
+![fpcupdeluxe](unleashed/img/installation_fpcupdeluxe.png)
 
 5. Click **Install/update FPC+Lazarus**.
 6. Optionally install cross-compilers via the `Cross` tab.
