@@ -156,7 +156,6 @@ jobs:
         artifacts: fpc-unleashed.zip, ppcx64.exe, ppcross386.exe
         tag: ${{ env.TAG }}
         name: ${{ env.NAME }}
-        body: ${{ env.BODY }}
         bodyFile: release-body.txt
         prerelease: true
         allowUpdates: true
