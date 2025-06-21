@@ -6,13 +6,13 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-
+    
     steps:
     - name: Download bootstrap FPC 3.2.2
       run: |
         curl -L -o fpc-win32.exe https://downloads.freepascal.org/fpc/dist/3.2.2/i386-win32/fpc-3.2.2.i386-win32.exe
       shell: cmd
-
+    
     - name: Verify bootstrap FPC hash
       run: |
         $expected = "7EC78B1790ECAC7685F440B17F9E03865BC09846B7C068A9270C4D37704B5AC8"
@@ -24,48 +24,72 @@ jobs:
           exit 1
         }
       shell: powershell
-
+    
     - name: Install bootstrap FPC compiler
       run: fpc-win32.exe /VERYSILENT /DIR="C:\fpc322"
       shell: cmd
-
-    - name: Add bootstrap FPC to PATH
-      run: echo "C:\fpc322\bin\i386-win32" >> $env:GITHUB_PATH
-      shell: powershell
-
+    
     - name: Checkout repository
       uses: actions/checkout@v3
-      
+
+    - name: Update PATH env
+      run: echo "C:\fpc322\bin\i386-win32" >> $env:GITHUB_PATH
+      shell: powershell
+    
     - name: Build FPC x64 (build compiler)
       run: |
         make distclean
         make all OS_TARGET=win64 CPU_TARGET=x86_64 PP=C:\fpc322\bin\i386-win32\ppc386.exe
       shell: cmd
-      
+    
     - name: Build FPC x64 (build utils)
       run: make utils OS_TARGET=win64 CPU_TARGET=x86_64 PP=%GITHUB_WORKSPACE%\compiler\ppcx64.exe
       shell: cmd
-      
+    
     - name: Build FPC x64 (install)
       run: make install OS_TARGET=win64 CPU_TARGET=x86_64 INSTALL_PREFIX=C:\fpc PP=compiler\ppcx64.exe
       shell: cmd
-      
+    
     - name: Build FPC i386 cross-compiler
       run: |
         make crossinstall OS_TARGET=win32 CPU_TARGET=i386 INSTALL_PREFIX=C:\fpc PP=C:\fpc\bin\x86_64-win64\ppcx64.exe OPT="-dFPC_SOFT_FPUX80"
       shell: cmd
 
-    - name: Prepare artifact ZIP
+    - name: Cleanup
+      run: Remove-Item -Path 'C:\fpc\bin\i386-win32' -Recurse -Force
+      shell: powershell
+    
+    - name: Prepare artifacts
       run: |
         powershell -Command "Compress-Archive -Path 'C:\fpc' -DestinationPath 'fpc-unleashed.zip'"
+        copy C:\fpc\bin\x86_64-win64\ppcx64.exe .
+        copy C:\fpc\bin\x86_64-win64\ppcross386.exe .
       shell: cmd
       
+    - name: Upload fpc-unleashed.zip
+      uses: actions/upload-artifact@v4
+      with:
+        name: fpc-unleashed.zip
+        path: fpc-unleashed.zip
+
+    - name: Upload ppcx64.exe
+      uses: actions/upload-artifact@v4
+      with:
+        name: ppcx64.exe
+        path: ppcx64.exe
+
+    - name: Upload ppcross386.exe
+      uses: actions/upload-artifact@v4
+      with:
+        name: ppcross386.exe
+        path: ppcross386.exe
+    
     - name: Prepare release
       run: |
         $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
         echo "TAG=nightly" >> $env:GITHUB_ENV
         echo "NAME=FPC Unleashed nightly" >> $env:GITHUB_ENV
-    
+        
         "FPC Unleashed nightly build" | Out-File -FilePath release-body.txt -Encoding UTF8
         "" | Out-File -Append release-body.txt -Encoding UTF8
         "Generated from commit: $env:GITHUB_SHA" | Out-File -Append release-body.txt -Encoding UTF8
@@ -84,10 +108,11 @@ jobs:
     - name: Release
       uses: ncipollo/release-action@v1
       with:
-        artifacts: fpc-unleashed.zip
+        artifacts: fpc-unleashed.zip, ppcx64.exe, ppcross386.exe
         tag: ${{ env.TAG }}
         name: ${{ env.NAME }}
         body: ${{ env.BODY }}
         bodyFile: release-body.txt
         prerelease: true
         allowUpdates: true
+        
