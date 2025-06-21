@@ -1,0 +1,161 @@
+name: Windows
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  check-for-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - name: Checkout HEAD only
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: Fetch 'nightly' tag only
+        run: git fetch origin refs/tags/nightly:refs/tags/nightly || true
+
+      - name: Check for changes since nightly
+        id: check
+        run: |
+          if git rev-parse nightly >/dev/null 2>&1; then
+            nightly_commit=$(git rev-list -n 1 nightly)
+            head_commit=$(git rev-parse HEAD)
+            echo "Nightly tag commit: $nightly_commit"
+            echo "HEAD commit: $head_commit"
+
+            if [ "$nightly_commit" = "$head_commit" ]; then
+              echo "No new commits since nightly release"
+              echo "should_build=false" >> $GITHUB_OUTPUT
+            else
+              echo "New commits found since nightly release"
+              echo "should_build=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "No 'nightly' tag found - will build"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    runs-on: windows-latest
+    needs: check-for-changes
+    if: needs.check-for-changes.outputs.should_build == 'true'
+    
+    steps:
+    - name: Download bootstrap FPC 3.2.2
+      run: |
+        curl -L -o fpc.exe https://downloads.freepascal.org/fpc/dist/3.2.2/i386-win32/fpc-3.2.2.i386-win32.exe
+      shell: cmd
+    
+    - name: Verify bootstrap FPC hash
+      run: |
+        $expected = "7EC78B1790ECAC7685F440B17F9E03865BC09846B7C068A9270C4D37704B5AC8"
+        $actual = Get-FileHash -Algorithm SHA256 -Path "fpc.exe" | Select-Object -ExpandProperty Hash
+        Write-Host "Expected: $expected"
+        Write-Host "Actual:   $actual"
+        if ($actual -ne $expected) {
+          Write-Error "SHA256 mismatch! Aborting."
+          exit 1
+        }
+      shell: powershell
+    
+    - name: Install bootstrap FPC compiler
+      run: fpc.exe /VERYSILENT /DIR="C:\fpc322"
+      shell: cmd
+    
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Update PATH env
+      run: echo "C:\fpc322\bin\i386-win32" >> $env:GITHUB_PATH
+      shell: powershell
+    
+    - name: Build FPC x86_64 (native)
+      run: |
+        make distclean
+        make all OS_TARGET=win64 CPU_TARGET=x86_64 PP=C:\fpc322\bin\i386-win32\ppc386.exe
+      shell: cmd
+    
+    - name: Build FPC x86_64 (utils)
+      run: make utils OS_TARGET=win64 CPU_TARGET=x86_64 PP=%GITHUB_WORKSPACE%\compiler\ppcx64.exe
+      shell: cmd
+    
+    - name: Install FPC x86_64
+      run: make install OS_TARGET=win64 CPU_TARGET=x86_64 INSTALL_PREFIX=C:\fpc PP=compiler\ppcx64.exe
+      shell: cmd
+    
+    - name: Build i386 cross-compiler
+      run: |
+        make crossinstall OS_TARGET=win32 CPU_TARGET=i386 INSTALL_PREFIX=C:\fpc PP=C:\fpc\bin\x86_64-win64\ppcx64.exe OPT="-dFPC_SOFT_FPUX80"
+      shell: cmd
+
+    - name: Cleanup
+      run: Remove-Item -Path 'C:\fpc\bin\i386-win32' -Recurse -Force
+      shell: powershell
+    
+    - name: Package artifacts
+      run: |
+        powershell -Command "Remove-Item -Recurse -Force 'C:\fpc\doc','C:\fpc\examples','C:\fpc\fpmkinst','C:\fpc\msg'"
+        powershell -Command "Compress-Archive -Path 'C:\fpc' -DestinationPath 'windows-bundle.zip'"
+        powershell -Command "Compress-Archive -Path 'C:\fpc\bin\x86_64-win64\ppcx64.exe' -DestinationPath 'windows-ppcx64.zip'"
+        powershell -Command "Compress-Archive -Path 'C:\fpc\bin\x86_64-win64\ppcross386.exe' -DestinationPath 'windows-ppcross386.zip'"
+      shell: cmd
+      
+    - name: Upload windows-bundle.zip
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-bundle.zip
+        path: windows-bundle.zip
+
+    - name: Upload windows-ppcx64.zip
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-ppcx64.zip
+        path: windows-ppcx64.zip
+
+    - name: Upload windows-ppcross386.zip
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-ppcross386.zip
+        path: windows-ppcross386.zip
+    
+    - name: Prepare release
+      run: |
+        $tz = [System.TimeZoneInfo]::FindSystemTimeZoneById("Central European Standard Time")
+        $ts = [System.TimeZoneInfo]::ConvertTimeFromUtc((Get-Date).ToUniversalTime(), $tz).ToString("yyyy-MM-dd HH:mm:ss 'CEST'")
+        echo "TAG=nightly" >> $env:GITHUB_ENV
+        echo "NAME=FPC Unleashed nightly" >> $env:GITHUB_ENV
+        "FPC Unleashed nightly build" | Out-File -FilePath release-body.txt -Encoding UTF8
+        "" | Out-File -Append release-body.txt -Encoding UTF8
+        "Generated from commit: $env:GITHUB_SHA" | Out-File -Append release-body.txt -Encoding UTF8
+        "Build time: $ts" | Out-File -Append release-body.txt -Encoding UTF8
+      shell: powershell
+
+    - name: Update tag
+      uses: richardsimko/update-tag@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: nightly
+        
+    - name: Release
+      uses: ncipollo/release-action@v1
+      with:
+        artifacts: windows-bundle.zip,windows-ppcx64.zip,windows-ppcross386.zip
+        tag: ${{ env.TAG }}
+        name: ${{ env.NAME }}
+        bodyFile: release-body.txt
+        prerelease: true
+        allowUpdates: true
+        
+  skip:
+    runs-on: ubuntu-latest
+    needs: check-for-changes
+    if: needs.check-for-changes.outputs.should_build == 'false'
+    steps:
+    - name: Skip build
+      run: echo "No new commits since last release. Skipping."
+    
