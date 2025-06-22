@@ -594,6 +594,9 @@ implementation
         else
          b:=false;
 
+        if unleashedsettings.override_mode then
+          current_settings.modeswitches := unleashedmodeswitches;
+
 {$ifdef jvm}
           { enable final fields by default for the JVM targets }
           include(current_settings.modeswitches,m_final_fields);
@@ -2947,6 +2950,35 @@ type
         'linkerversion': begin unleashedsettings.linkerversion.isset := true; unleashedsettings.linkerversion.value := GetToken(s, ' '); end;
         'osversion':     begin unleashedsettings.osversion.isset := true;     unleashedsettings.osversion.value     := GetToken(s, ' '); end;
       end;
+    end;
+
+    procedure dir_unleashed;
+    var
+      s, t: string;
+    begin
+      // keep current modeswitches for restoration, only if not yet overriden
+      if not unleashedsettings.override_mode then unleashedsettings.oldmodeswitches := current_settings.modeswitches;
+      // using {$unleashed} directive overrides modeswitches
+      unleashedsettings.override_mode := true;
+      current_settings.modeswitches := unleashedmodeswitches;
+
+      current_scanner.skipspace;
+      s := current_scanner.readcomment();
+      repeat
+        t := GetToken(s, ' ');
+        if t = '' then break;
+
+        case t of
+          // restore previous mode
+          'off': begin
+            unleashedsettings.override_mode := false;
+            current_settings.modeswitches := unleashedsettings.oldmodeswitches;
+          end;
+          'nortti': begin
+            current_settings.modeswitches := current_settings.modeswitches+[m_no_rtti];
+          end;
+        end;
+      until t = '';
     end;
 
 {*****************************************************************************
@@ -7053,6 +7085,7 @@ exit_label:
         AddDirective('DEFINE',directive_all, @dir_define);
         AddDirective('UNDEF',directive_all, @dir_undef);
         AddDirective('OPT',directive_all, @dir_opt);
+        AddDirective('UNLEASHED',directive_all, @dir_unleashed);
 
         AddConditional('IF',directive_all, @dir_if);
         AddConditional('IFDEF',directive_all, @dir_ifdef);

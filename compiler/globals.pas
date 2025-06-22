@@ -786,10 +786,13 @@ Const
       fpcsignature:  toptansi;
       linkerversion: toptansi;
       osversion:     toptansi;
+      override_mode: boolean;
+      oldmodeswitches: tmodeswitches;
     end = (
       fpcsignature:  (isset: false; value: '');
       linkerversion: (isset: false; value: '');
       osversion:     (isset: true;  value: 'XP');
+      override_mode: false;
     );
 
 implementation
