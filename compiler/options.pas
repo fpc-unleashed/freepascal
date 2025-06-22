@@ -1576,6 +1576,34 @@ begin
    end;
 end;
 
+function param_get_arg(param: ansistring; prefix: ansistring=''): ansistring;
+begin
+  if (prefix <> '') and param.StartsWith(prefix) then param := copy(param, length(prefix)+1);
+  if pos('=', param) > 0 then exit(copy(param, 1, pos('=', param)-1));
+  result := param;
+end;
+
+function param_get_val(param: ansistring; prefix: ansistring=''): ansistring;
+begin
+  if pos('=', param) > 0 then exit(copy(param, pos('=', param)+1));
+  result := '';
+end;
+
+procedure parse_unleashed_opt(opt: ansistring);
+var
+  arg, val: ansistring;
+begin
+  arg := param_get_arg(opt, '--');
+  val := param_get_val(opt);
+  if arg = 'unleashed' then begin
+    unleashed_set_options(val.Split(' '));
+  end else
+  if arg.StartsWith('opt-') then begin
+    arg := copy(arg, length('opt-')+1);
+    unleashed_set_setting(arg, val);
+  end;
+end;
+
 procedure TOption.interpret_option(const opt:TCmdStr;ispara:boolean);
 var
   more : TCmdStr;
@@ -1583,6 +1611,11 @@ var
 begin
   if opt='' then
    exit;
+
+  if opt.StartsWith('--unleashed') or opt.StartsWith('--opt-') then begin
+    parse_unleashed_opt(opt);
+    exit;
+  end;
 
   { only parse define,undef,target,verbosity,link etc options the firsttime
     -Us must now also be first-passed to avoid rejection of -Sf options
