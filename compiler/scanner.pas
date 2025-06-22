@@ -310,8 +310,6 @@ interface
         preprocfile     : tpreprocfile;  { used with only preprocessing }
 {$endif PREPROCWRITE}
 
-        rtti_whitelist_tokens: array of shortstring = ();
-
     type
         tdirectivemode = (directive_all, directive_turbo, directive_mac);
 
@@ -2939,6 +2937,16 @@ type
          end;
       end;
 
+{*****************************************************************************
+                                Unleashed
+*****************************************************************************}
+
+    procedure dir_unleashed;
+    begin
+      current_scanner.skipspace;
+      unleashed_set_options(ansistring(current_scanner.readcomment()).Split(' '));
+    end;
+
     procedure dir_opt;
     var
       s, arg, val: string;
@@ -2950,32 +2958,37 @@ type
       unleashed_set_setting(arg, val);
     end;
 
-    procedure dir_unleashed;
-    begin
-      current_scanner.skipspace;
-      unleashed_set_options(ansistring(current_scanner.readcomment()).Split(' '));
-    end;
-
-{*****************************************************************************
-                           No RTTI feat directives
-*****************************************************************************}
-
-    procedure rtti_whitelist_add(s: shortstring);
+    procedure unleashed_rtti_whitelist_add(s: ansistring);
     var
       i: integer;
     begin
-      i := length(rtti_whitelist_tokens);
-      setlength(rtti_whitelist_tokens, i+1);
-      rtti_whitelist_tokens[i] := lower(s);
+      i := length(unleashedsettings.rttiwhitelist);
+      setlength(unleashedsettings.rttiwhitelist, i+1);
+      unleashedsettings.rttiwhitelist[i] := lower(s);
     end;
 
-    procedure rtti_const_expose;
+    procedure unleashed_rtti_whitelist_add(a: array of ansistring);
     var
-      id: string;
+      i: integer;
+    begin
+      for i := 0 to high(a) do unleashed_rtti_whitelist_add(a[i]);
+    end;
+
+    procedure dir_rttiexpose;
+    var
+      s, id: ansistring;
       p: pchar;
     begin
       current_scanner.skipspace;
-      current_scanner.readcomment();
+      s := current_scanner.readcomment();
+
+      // add multiple IDs
+      if s <> '' then begin
+       unleashed_rtti_whitelist_add(s.Split(' '));
+       exit;
+      end;
+
+      // add single token - the next identifier
       p := current_scanner.inputpointer-1;
       while p^ in [#32, #13, #10, #9] do inc(p);
       id := '';
@@ -2983,19 +2996,7 @@ type
         id := id+p^;
         inc(p);
       until not (p^ in ['a'..'z', 'A'..'Z', '0'..'9', '_']);
-      rtti_whitelist_add(id);
-    end;
-
-    procedure rtti_const_whitelist;
-    var
-      comment, token: string;
-    begin
-      current_scanner.skipspace;
-      comment := current_scanner.readcomment();
-      repeat
-        token := GetToken(comment, ' ');
-        if token <> '' then rtti_whitelist_add(token);
-      until token='';
+      unleashed_rtti_whitelist_add(id);
     end;
 
 {*****************************************************************************
@@ -7059,8 +7060,9 @@ exit_label:
         AddDirective('I',directive_all, @dir_include);
         AddDirective('DEFINE',directive_all, @dir_define);
         AddDirective('UNDEF',directive_all, @dir_undef);
-        AddDirective('OPT',directive_all, @dir_opt);
         AddDirective('UNLEASHED',directive_all, @dir_unleashed);
+        AddDirective('OPT',directive_all, @dir_opt);
+        AddDirective('RTTIEXPOSE',directive_all, @dir_rttiexpose);
 
         AddConditional('IF',directive_all, @dir_if);
         AddConditional('IFDEF',directive_all, @dir_ifdef);
@@ -7087,10 +7089,6 @@ exit_label:
         AddConditional('ELSEC',directive_mac, @dir_else);
         AddConditional('ELIFC',directive_mac, @dir_elseif);
         AddConditional('ENDC',directive_mac, @dir_endif);
-
-        { No RTTI feat directives }
-        AddDirective('EXPOSE',directive_all, @rtti_const_expose);
-        AddDirective('RTTIWHITELIST',directive_all, @rtti_const_whitelist);
       end;
 
 

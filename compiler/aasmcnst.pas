@@ -1873,7 +1873,7 @@ implementation
      begin
        result := false;
        s := lower(s);
-       for i := 0 to high(rtti_whitelist_tokens) do if matches(s, rtti_whitelist_tokens[i]) then exit(true);
+       for i := 0 to high(unleashedsettings.rttiwhitelist) do if matches(s, unleashedsettings.rttiwhitelist[i]) then exit(true);
      end;
      begin
        { null the string }

@@ -790,6 +790,7 @@ Const
       osversion:     toptansi;
       override_mode: boolean;
       oldmodeswitches: tmodeswitches;
+      rttiwhitelist: array of ansistring;
     end = (
       fpcsignature:  (isset: false; value: '');
       linkerversion: (isset: false; value: '');
@@ -1900,6 +1901,7 @@ implementation
        'fpcsignature':  begin unleashedsettings.fpcsignature.isset := true;  unleashedsettings.fpcsignature.value  := val; end;
        'linkerversion': begin unleashedsettings.linkerversion.isset := true; unleashedsettings.linkerversion.value := val; end;
        'osversion':     begin unleashedsettings.osversion.isset := true;     unleashedsettings.osversion.value     := val; end;
+       'rttiexpose':    begin unleashedsettings.rttiwhitelist := val.Split(' ');                                           end;
      end;
    end;
 
