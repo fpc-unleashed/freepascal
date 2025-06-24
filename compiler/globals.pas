@@ -793,11 +793,13 @@ Const
       oldmodeswitches: tmodeswitches;
       rttiwhitelist: array of ansistring;
     end = (
-      fpcsignature:  (isset: false; value: '');
-      linkerversion: (isset: false; value: '');
-      osversion:     (isset: true;  value: 'XP');
-      override_mode: false;
-      override_more: []
+      fpcsignature:    (isset: false; value: '');
+      linkerversion:   (isset: false; value: '');
+      osversion:       (isset: true;  value: 'XP');
+      override_mode:   false;
+      override_more:   [];
+      oldmodeswitches: [];
+      rttiwhitelist:   ();
     );
 
 implementation
