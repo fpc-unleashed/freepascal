@@ -789,6 +789,7 @@ Const
       linkerversion: toptansi;
       osversion:     toptansi;
       override_mode: boolean;
+      override_more: set of tmodeswitch;
       oldmodeswitches: tmodeswitches;
       rttiwhitelist: array of ansistring;
     end = (
@@ -796,6 +797,7 @@ Const
       linkerversion: (isset: false; value: '');
       osversion:     (isset: true;  value: 'XP');
       override_mode: false;
+      override_more: []
     );
 
 implementation
@@ -1889,8 +1891,13 @@ implementation
          current_settings.modeswitches := unleashedsettings.oldmodeswitches;
        end;
        // enable no_rtti modeswitch
-       'nortti': begin
+       'nortti', 'nortti+': begin
          current_settings.modeswitches := current_settings.modeswitches+[m_no_rtti];
+         unleashedsettings.override_more := unleashedsettings.override_more+[m_no_rtti];
+       end;
+       'nortti-': begin
+         current_settings.modeswitches := current_settings.modeswitches-[m_no_rtti];
+         unleashedsettings.override_more := unleashedsettings.override_more-[m_no_rtti];
        end;
      end;
    end;

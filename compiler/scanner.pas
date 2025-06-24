@@ -593,7 +593,7 @@ implementation
          b:=false;
 
         if unleashedsettings.override_mode then
-          current_settings.modeswitches := unleashedmodeswitches;
+          current_settings.modeswitches := unleashedmodeswitches+unleashedsettings.override_more;
 
 {$ifdef jvm}
           { enable final fields by default for the JVM targets }
