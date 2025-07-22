@@ -5007,6 +5007,9 @@ begin
   def_system_macro('VER'+version_nr+'_'+release_nr);
   def_system_macro('VER'+version_nr+'_'+release_nr+'_'+patch_nr);
 
+{ unleashed defines }
+  def_system_macro('UNLEASHED');
+
 { Temporary defines, until things settle down }
   def_system_macro('FPC_HAS_OPERATOR_ENUMERATOR');
   def_system_macro('FPC_HAS_CONSTREF');
