@@ -650,23 +650,289 @@ implementation
             end;
 
 
+          { Determine the element type of a for-in collection expression.
+            Returns nil if the type cannot be determined. }
+          function get_for_in_element_type(expr: tnode): tdef;
+            var
+              pd: tprocdef;
+              helperdef: tobjectdef;
+              current: tpropertysym;
+            begin
+              result := nil;
+              if not assigned(expr.resultdef) then
+                exit;
+
+              if expr.nodetype = typen then
+                begin
+                  { for var x in TEnumType }
+                  if expr.resultdef.typ = enumdef then
+                    result := expr.resultdef
+                  else if expr.resultdef.typ = setdef then
+                    result := tsetdef(expr.resultdef).elementdef;
+                  exit;
+                end;
+
+              case expr.resultdef.typ of
+                arraydef:
+                  result := tarraydef(expr.resultdef).elementdef;
+                stringdef:
+                  begin
+                    if is_wide_or_unicode_string(expr.resultdef) or
+                       is_widechararray(expr.resultdef) then
+                      result := cwidechartype
+                    else
+                      result := cansichartype;
+                  end;
+                setdef:
+                  result := tsetdef(expr.resultdef).elementdef;
+                else
+                  begin
+                    { Try enumerator operator }
+                    pd := search_enumerator_operator(expr.resultdef, generrordef);
+                    { Try class/object enumerator method }
+                    if (pd = nil) and (expr.resultdef.typ in [objectdef, recorddef]) then
+                      begin
+                        if search_last_objectpascal_helper(tabstractrecorddef(expr.resultdef), nil, helperdef) then
+                          repeat
+                            pd := helperdef.search_enumerator_get;
+                            helperdef := helperdef.childof;
+                          until (pd <> nil) or (helperdef = nil);
+                        if pd = nil then
+                          pd := tabstractrecorddef(expr.resultdef).search_enumerator_get;
+                      end;
+                    if pd <> nil then
+                      begin
+                        current := tpropertysym(tabstractrecorddef(pd.returndef).search_enumerator_current);
+                        if assigned(current) then
+                          result := current.propdef;
+                      end;
+                  end;
+              end;
+            end;
+
+
+          { For-in with inline var and type inference:
+            the 'in' has already been consumed. Parses collection, infers
+            element type, sets it on the variable, then creates the loop. }
+          function for_in_loop_create_inline(loopvs: tabstractnormalvarsym; hloopvar: tnode): tnode;
+            var
+              expr, hloopbody: tnode;
+              elemdef: tdef;
+            begin
+              include(loopvs.varoptions, vo_is_loop_counter);
+
+              expr := comp_expr([ef_accept_equal]);
+              do_typecheckpass(expr);
+
+              { Infer element type from collection }
+              elemdef := get_for_in_element_type(expr);
+              if assigned(elemdef) and (elemdef <> generrordef) then
+                begin
+                  loopvs.vardef := elemdef;
+                  if loopvs.typ = staticvarsym then
+                    cnodeutils.insertbssdata(tstaticvarsym(loopvs));
+                  { Re-typecheck the loopvar with the inferred type }
+                  do_typecheckpass(hloopvar);
+                end
+              else
+                begin
+                  MessagePos1(expr.fileinfo, sym_e_no_enumerator, expr.resultdef.typename);
+                  expr.free;
+                  hloopvar.free;
+                  result := cerrornode.create;
+                  exit;
+                end;
+
+              consume(_DO);
+
+              set_varstate(hloopvar, vs_written, []);
+              set_varstate(hloopvar, vs_read, [vsf_must_be_valid]);
+
+              hloopbody := statement;
+              exclude(loopvs.varoptions, vo_is_loop_counter);
+              result := create_for_in_loop(hloopvar, hloopbody, expr);
+
+              expr.free;
+            end;
+
+
+          { Like for_loop_create but for inline var with type inference:
+            the ':=' has already been consumed, so we parse 'from' here,
+            infer the type, set it on the variable, then parse the rest. }
+          function for_loop_create_inferred(loopvs: tabstractnormalvarsym; hloopvar: tnode): tnode;
+            var
+               hblock,
+               hto,hfrom : tnode;
+               backward : boolean;
+            begin
+               hfrom:=comp_expr([ef_accept_equal]);
+               typecheckpass(hfrom);
+
+               { Infer the loop variable type from the 'from' expression. }
+               if assigned(hfrom.resultdef) and (hfrom.resultdef <> generrordef) then
+                 begin
+                   loopvs.vardef := hfrom.resultdef;
+                   if loopvs.typ = staticvarsym then
+                     cnodeutils.insertbssdata(tstaticvarsym(loopvs));
+                 end
+               else
+                 begin
+                   Message(parser_e_syntax_error);
+                   hfrom.free;
+                   hloopvar.free;
+                   result := cerrornode.create;
+                   exit;
+                 end;
+
+               { Now typecheck the loopvar with the inferred type. }
+               typecheckpass(hloopvar);
+
+               { variable must be an ordinal }
+               if (
+                   not(is_ordinal(hloopvar.resultdef))
+    {$if not defined(cpu64bitaddr) and not defined(cpu64bitalu)}
+                   or is_64bitint(hloopvar.resultdef)
+    {$endif not cpu64bitaddr and not cpu64bitalu}
+                 ) and
+                 (hloopvar.resultdef.typ<>undefineddef)
+                 then
+                 begin
+                   MessagePos(hloopvar.fileinfo,type_e_ordinal_expr_expected);
+                   hloopvar.resultdef:=generrordef;
+                 end;
+
+               include(loopvs.varoptions,vo_is_loop_counter);
+
+               if try_to_consume(_DOWNTO) then
+                 backward:=true
+               else
+                 begin
+                   consume(_TO);
+                   backward:=false;
+                 end;
+
+               hto:=comp_expr([ef_accept_equal]);
+               consume(_DO);
+
+               check_range(hfrom,hloopvar.resultdef);
+               check_range(hto,hloopvar.resultdef);
+
+               set_varstate(hfrom,vs_read,[vsf_must_be_valid]);
+               typecheckpass(hto);
+               set_varstate(hto,vs_read,[vsf_must_be_valid]);
+               set_varstate(hloopvar,vs_written,[]);
+               set_varstate(hloopvar,vs_read,[vsf_must_be_valid]);
+
+               hblock:=statement;
+
+               exclude(loopvs.varoptions,vo_is_loop_counter);
+
+               result:=cfornode.create(hloopvar,hfrom,hto,hblock,backward);
+               if ([m_objfpc,m_fpc,m_delphi]*current_settings.modeswitches)<>[] then
+                 Include(tfornode(Result).loopflags,lnf_dont_mind_loopvar_on_exit);
+            end;
+
+
       var
          hloopvar: tnode;
+         vs : tabstractnormalvarsym;
+         hdef : tdef;
+         old_block_type : tblock_type;
       begin
          { parse loop header }
          consume(_FOR);
 
-         hloopvar:=factor(false,[]);
-         valid_for_loopvar(hloopvar,true);
+         { Check for inline variable declaration: for var I ... }
+         if (token = _VAR) and (m_inline_var in current_settings.modeswitches) then
+           begin
+             consume(_VAR);
 
-         if try_to_consume(_ASSIGNMENT) then
-           result:=for_loop_create(hloopvar)
-         else if try_to_consume(_IN) then
-           result:=for_in_loop_create(hloopvar)
+             if not (symtablestack.top.symtabletype in [localsymtable,staticsymtable]) then
+               begin
+                 Message(parser_e_syntax_error);
+                 result := cerrornode.create;
+                 exit;
+               end;
+
+             if token <> _ID then
+               begin
+                 consume(_ID);
+                 result := cerrornode.create;
+                 exit;
+               end;
+
+             { Create the loop variable – type may be set explicitly or inferred. }
+             if symtablestack.top.symtabletype = localsymtable then
+               vs := clocalvarsym.create(orgpattern, vs_value, generrordef, [])
+             else
+               vs := cstaticvarsym.create(orgpattern, vs_value, generrordef, []);
+             vs.register_sym;
+             symtablestack.top.insertsym(vs);
+             consume(_ID);
+
+             if try_to_consume(_COLON) then
+               begin
+                 { Explicit type:  for var I: Integer := ... / for var Item: T in ... }
+                 old_block_type := block_type;
+                 block_type := bt_var_type;
+                 read_anon_type(hdef, false, nil);
+                 block_type := old_block_type;
+                 vs.vardef := hdef;
+                 if vs.typ = staticvarsym then
+                   cnodeutils.insertbssdata(tstaticvarsym(vs));
+                 hloopvar := cloadnode.create(vs, vs.owner);
+                 typecheckpass(hloopvar);
+                 valid_for_loopvar(hloopvar, true);
+
+                 if try_to_consume(_ASSIGNMENT) then
+                   result := for_loop_create(hloopvar)
+                 else if try_to_consume(_IN) then
+                   result := for_in_loop_create(hloopvar)
+                 else
+                   begin
+                     consume(_ASSIGNMENT);
+                     result := cerrornode.create;
+                   end;
+               end
+             else if token = _ASSIGNMENT then
+               begin
+                 { Type inference from 'from' expression:  for var I := expr to/downto expr }
+                 consume(_ASSIGNMENT);
+                 { We need to infer the type from the 'from' expression, so we
+                   parse it here, typecheck, set the var type, then call
+                   for_loop_create which will parse the rest (to/downto, body). }
+                 { But for_loop_create expects to parse 'from' itself via comp_expr.
+                   So instead we handle the full for-loop inline here. }
+                 hloopvar := cloadnode.create(vs, vs.owner);
+                 result := for_loop_create_inferred(vs, hloopvar);
+               end
+             else if try_to_consume(_IN) then
+               begin
+                 { Type inference from for-in:  for var Item in Collection }
+                 hloopvar := cloadnode.create(vs, vs.owner);
+                 result := for_in_loop_create_inline(vs, hloopvar);
+               end
+             else
+               begin
+                 consume(_ASSIGNMENT);
+                 result := cerrornode.create;
+               end;
+           end
          else
            begin
-             consume(_ASSIGNMENT); // fail
-             result:=cerrornode.create;
+             { Standard for loop without inline var }
+             hloopvar:=factor(false,[]);
+             valid_for_loopvar(hloopvar,true);
+
+             if try_to_consume(_ASSIGNMENT) then
+               result:=for_loop_create(hloopvar)
+             else if try_to_consume(_IN) then
+               result:=for_in_loop_create(hloopvar)
+             else
+               begin
+                 consume(_ASSIGNMENT); // fail
+                 result:=cerrornode.create;
+               end;
            end;
       end;
 
@@ -1489,6 +1755,144 @@ implementation
       end;
 
 
+    { Parse an inline variable declaration of the form:
+        var name : Type
+        var name : Type := expr
+        var name := expr   (type inference)
+        var name1, name2 : Type
+      Enabled by modeswitch InlineVars (m_inline_var), on by default in
+      $mode unleashed.  Adds the declared variable(s) to the current local
+      symbol table (procedure-wide scope, same as ordinary local variables) and
+      returns an assignment node when an initialiser is present, or a nothing
+      node otherwise. }
+    function inline_var_statement : tnode;
+      var
+        vs             : tabstractnormalvarsym;
+        hdef           : tdef;
+        initexpr       : tnode;
+        i              : longint;
+        sc             : TFPObjectList;
+        old_block_type : tblock_type;
+      begin
+        result := nil;
+        consume(_VAR);
+
+        { Inline var is only meaningful inside a routine body (localsymtable)
+          or in the main program block (staticsymtable at main_program_level). }
+        if not (symtablestack.top.symtabletype in [localsymtable,staticsymtable]) then
+          begin
+            Message(parser_e_syntax_error);
+            result := cerrornode.create;
+            exit;
+          end;
+
+        if token <> _ID then
+          begin
+            consume(_ID);   { generate the expected-identifier error }
+            result := cerrornode.create;
+            exit;
+          end;
+
+        sc := TFPObjectList.create(false);
+        old_block_type := block_type;
+        try
+          { --- collect one or more variable names -------------------------------- }
+          repeat
+            if symtablestack.top.symtabletype = localsymtable then
+              vs := clocalvarsym.create(orgpattern, vs_value, generrordef, [])
+            else
+              vs := cstaticvarsym.create(orgpattern, vs_value, generrordef, []);
+            vs.register_sym;
+            symtablestack.top.insertsym(vs);
+            sc.add(vs);
+            consume(_ID);
+          until not try_to_consume(_COMMA);
+
+          { --- now parse the type or initialiser --------------------------------- }
+          if try_to_consume(_COLON) then
+            begin
+              { Explicit type:  var x [, y, ...] : Type [:= expr] }
+              block_type := bt_var_type;
+              read_anon_type(hdef, false, nil);
+              block_type := bt_var;
+              for i := 0 to sc.count - 1 do
+                begin
+                  tabstractnormalvarsym(sc[i]).vardef := hdef;
+                  if tsym(sc[i]).typ = staticvarsym then
+                    cnodeutils.insertbssdata(tstaticvarsym(sc[i]));
+                end;
+
+              if try_to_consume(_ASSIGNMENT) then
+                begin
+                  { Only one variable may be initialised at a time. }
+                  if sc.count > 1 then
+                    Message(parser_e_initialized_only_one_var);
+                  block_type := old_block_type;
+                  initexpr := expr(true);
+                  tabstractnormalvarsym(sc[0]).varstate := vs_initialised;
+                  result := cassignmentnode.create(
+                    cloadnode.create(tsym(sc[0]), tsym(sc[0]).owner),
+                    initexpr);
+                end
+              else
+                result := cnothingnode.create;
+            end
+          else if token = _ASSIGNMENT then
+            begin
+              { Type inference:  var x := expr }
+              if sc.count > 1 then
+                Message(parser_e_initialized_only_one_var);
+              consume(_ASSIGNMENT);
+              vs := tabstractnormalvarsym(sc[0]);
+              { Restore block_type before parsing the expression so that the
+                scanner does not misinterpret keywords in the RHS. }
+              block_type := old_block_type;
+              initexpr := expr(true);
+              do_typecheckpass(initexpr);
+              hdef := initexpr.resultdef;
+              if not assigned(hdef) or (hdef = generrordef) then
+                begin
+                  { Type inference failed – keep error def on the sym so that
+                    subsequent uses at least get a sensible error, not an ICE. }
+                  initexpr.free;
+                  result := cerrornode.create;
+                end
+              else
+                begin
+                  { String literal constants get type array[0..n] of char
+                    (cst_conststring).  Promote to the default string type
+                    so that comparisons and assignments behave as expected. }
+                  if is_conststring_array(hdef) then
+                    begin
+                      if m_default_unicodestring in current_settings.modeswitches then
+                        hdef := cunicodestringtype
+                      else if m_default_ansistring in current_settings.modeswitches then
+                        hdef := getansistringdef
+                      else
+                        hdef := cshortstringtype;
+                    end;
+                  vs.vardef := hdef;
+                  vs.varstate := vs_initialised;
+                  if vs.typ = staticvarsym then
+                    cnodeutils.insertbssdata(tstaticvarsym(vs));
+                  result := cassignmentnode.create(
+                    cloadnode.create(vs, vs.owner),
+                    initexpr);
+                end;
+            end
+          else
+            begin
+              { Neither ':' nor ':=' – syntax error. }
+              Message(parser_e_syntax_error);
+              result := cerrornode.create;
+            end;
+        finally
+          block_type := old_block_type;
+          sc.free;
+        end;
+      end;
+
+
     function statement : tnode;
       var
          p,
@@ -1608,6 +2012,19 @@ implementation
            _INLINE:
              begin
                code:=tp_inline_statement;
+             end;
+           _VAR:
+             begin
+               if m_inline_var in current_settings.modeswitches then
+                 code:=inline_var_statement
+               else
+                 begin
+                   { In modes without inline vars, 'var' is not a valid
+                     statement keyword – give a clear error and skip. }
+                   Message(parser_e_syntax_error);
+                   consume(_VAR);
+                   code:=cerrornode.create;
+                 end;
              end;
            _EOF :
              if current_scanner.had_multiline_string then
