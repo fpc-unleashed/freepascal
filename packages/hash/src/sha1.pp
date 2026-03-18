@@ -22,7 +22,8 @@
 {$IFNDEF FPC_DOTTEDUNITS}
 unit sha1;
 {$ENDIF FPC_DOTTEDUNITS}
-{$mode objfpc}{$h+}{$macro+}
+{$mode objfpc}{$h+}
+//{$macro+}
 
 interface
 
