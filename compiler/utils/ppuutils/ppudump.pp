@@ -2500,7 +2500,8 @@ const
          'm_multiline_strings',    { multi-line strings denoted with '`' are enabled and valid }
          'm_statement_expressions',{ enables expressions using statements like if, case, try }
          'm_array_equality',       { enables equality operator in addition to ArrayOperators modeswitch }
-         'm_no_rtti'               { hides RTTI ASCII text }
+         'm_no_rtti',              { hides RTTI ASCII text }
+         'm_inline_var'            { allow inline variable declarations inside statement blocks }
        );
        { optimizer }
        optimizerswitchname : array[toptimizerswitch] of string[50] =
