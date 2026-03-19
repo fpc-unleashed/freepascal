@@ -43,7 +43,11 @@ jobs:
 
     steps:
     - name: Install bootstrap compiler
-      run: sudo apt-get install fpc-3.2.2
+      run: |
+        sudo rm -rf /var/lib/apt/lists/*
+        sudo apt-get clean
+        sudo apt-get update -o Acquire::Retries=3
+        sudo apt-get install -y --no-install-recommends fpc-3.2.2
 
     - name: Checkout source
       uses: actions/checkout@v3
