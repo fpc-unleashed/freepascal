@@ -67,16 +67,30 @@ implementation
 
     function branch_type(olddef, branchdef: tdef): tdef; inline;
       begin
-        { Handle promotion of string types to widestring and char types
-          to either char or widechar }
+        { Handle promotion of string and char types for expression results.
+          String constants are typed as chararray (array of char with
+          ado_IsConstString), so chararray must be promoted like strings. }
         if not assigned(olddef) or
-            (is_anychar(olddef) and is_string(branchdef)) then
+            (is_anychar(olddef) and (is_string(branchdef) or is_chararray(branchdef))) then
           result:=branchdef
         else if is_widestring(branchdef) or
-                ((is_ansistring(olddef) or is_chararray(olddef)) and is_widechar(branchdef)) then
+                ((is_ansistring(olddef) or is_shortstring(olddef) or is_chararray(olddef)) and is_widechar(branchdef)) then
           result:=cwidestringtype
         else if is_char(olddef) and is_widechar(branchdef) then
           result:=cwidechartype
+        else if is_shortstring(olddef) and is_shortstring(branchdef) and
+                (tstringdef(branchdef).len>tstringdef(olddef).len) then
+          result:=branchdef
+        else if is_shortstring(olddef) and (is_ansistring(branchdef) or is_unicodestring(branchdef)) then
+          result:=branchdef
+        else if (is_chararray(olddef) or is_chararray(branchdef)) and
+                ((is_chararray(olddef) or is_shortstring(olddef)) and
+                 (is_chararray(branchdef) or is_shortstring(branchdef))) then
+          { Promote to shortstring when mixing chararray (const string) types,
+            so the temp variable is large enough for any branch value }
+          result:=cshortstringtype
+        else if is_chararray(olddef) and (is_ansistring(branchdef) or is_unicodestring(branchdef)) then
+          result:=branchdef
         else
           result:=olddef;
       end;
