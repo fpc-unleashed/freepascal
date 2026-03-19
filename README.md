@@ -38,6 +38,7 @@ The following modeswitches are enabled automatically:
 | `ansistrings` | Uses `AnsiString` as the default string type |
 | `underscoreisseparator` | Allows underscores in numeric literals (`1_000_000`) |
 | `duplicatenames` | Allows reusing identifiers in limited scopes |
+| `multilinestrings` | Allows multi-line string literals without manual concatenation |
 
 > [!NOTE]
 > For the best experience with code completion, we recommend using **[Lazarus Unleashed](https://github.com/fpc-unleashed/lazarus)** - a fork of Lazarus with full support for unleashed mode. If you are using stock Lazarus, enable the mode via `-Munleashed` in the project's Custom Options rather than placing `{$mode unleashed}` directly in the source file, to avoid autocomplete issues and incorrect code insight behavior.
