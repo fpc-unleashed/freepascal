@@ -2,6 +2,8 @@ program Test;
 
 {$Mode ObjFPC}{$H+}
 {$modeswitch ArrayOperators}
+{$modeswitch ArrayEquality}
+
 type TIntArray = array of Integer;
 function head(const arr: TIntArray): PInteger;
 begin

@@ -2,6 +2,7 @@ program Test;
 
 {$Mode ObjFPC}{$H+}
 {$modeswitch ArrayOperators}
+{$modeswitch ArrayEquality}
 
 type TIntArray = array of integer;
 function eq(const lhs,rhs: array of TIntArray): Boolean;

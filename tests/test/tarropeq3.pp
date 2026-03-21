@@ -2,6 +2,7 @@ program Test;
 
 {$Mode ObjFPC}{$H+}
 {$modeswitch ArrayOperators}
+{$modeswitch ArrayEquality}
 
 function head(constref arr: array of Integer): PInteger;
 begin

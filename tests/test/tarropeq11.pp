@@ -2,6 +2,7 @@ program Test;
 
 {$Mode ObjFPC}{$H+}
 {$modeswitch ArrayOperators}
+{$modeswitch ArrayEquality}
 
 function neq(const lhs,rhs: array of Integer): Boolean;
 begin

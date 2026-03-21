@@ -2,6 +2,7 @@ program Test;
 
 {$Mode ObjFPC}{$H+}
 {$modeswitch ArrayOperators}
+{$modeswitch ArrayEquality}
 
 function is1(constref arr: array of Integer): Boolean;
 begin
