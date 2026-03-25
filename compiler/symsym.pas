@@ -68,6 +68,11 @@ interface
           { true when this is the sentinel symbol for an array label declaration,
             e.g. "label foo[1..10]" - the actual targets are foo$1..foo$10 }
           arraylabel : boolean;
+          { for integer array labels: lo..hi range for jump table generation }
+          arraylabel_lo,
+          arraylabel_hi : longint;
+          { for string array labels: list of uppercased string indices }
+          arraylabel_strings : array of string;
           { points to the matching node, only valid resultdef pass is run and
             the goto<->label relation in the node tree is created, should
             be a tnode }
@@ -783,6 +788,9 @@ implementation
          defined:=false;
          nonlocal:=false;
          arraylabel:=false;
+         arraylabel_lo:=0;
+         arraylabel_hi:=0;
+         arraylabel_strings:=nil;
          code:=nil;
       end;
 

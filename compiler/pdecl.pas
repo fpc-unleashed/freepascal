@@ -384,8 +384,9 @@ implementation
     procedure label_dec;
       var
         labelsym : tlabelsym;
+        sentinel : tlabelsym;
         labname  : TIDString;
-        lo, hi, i : longint;
+        lo, hi, i, code : longint;
         strval   : ansistring;
 
       { Create and insert a single label symbol with name n. }
@@ -441,6 +442,7 @@ implementation
                     { Insert sentinel so that "goto name[i]" can find the base name }
                     labelsym:=clabelsym.create(labname);
                     labelsym.arraylabel:=true;
+                    sentinel:=labelsym;  { save before insert_one_label overwrites labelsym }
                     symtablestack.top.insertsym(labelsym);
 
                     if current_scanner.token=_CSTRING then
@@ -450,6 +452,10 @@ implementation
                           strval:=upper(current_scanner.cstringpattern);
                           consume(_CSTRING);
                           insert_one_label(labname+'$'+strval);
+                          { store string index on sentinel for variable goto }
+                          i:=length(sentinel.arraylabel_strings);
+                          setlength(sentinel.arraylabel_strings,i+1);
+                          sentinel.arraylabel_strings[i]:=strval;
                           if current_scanner.token=_COMMA then
                             consume(_COMMA)
                           else
@@ -459,25 +465,34 @@ implementation
                     else
                       begin
                         { Integer: range lo..hi  or  list n1,n2,... }
-                        lo:=StrToInt(current_scanner.pattern);
+                        val(current_scanner.pattern,lo,code);
                         consume(_INTCONST);
                         if current_scanner.token=_POINTPOINT then
                           begin
                             consume(_POINTPOINT);
-                            hi:=StrToInt(current_scanner.pattern);
+                            val(current_scanner.pattern,hi,code);
                             consume(_INTCONST);
                             for i:=lo to hi do
                               insert_one_label(labname+'$'+tostr(i));
+                            { store range on sentinel for variable goto }
+                            sentinel.arraylabel_lo:=lo;
+                            sentinel.arraylabel_hi:=hi;
                           end
                         else
                           begin
                             insert_one_label(labname+'$'+tostr(lo));
+                            sentinel.arraylabel_lo:=lo;
+                            sentinel.arraylabel_hi:=lo;
                             while current_scanner.token=_COMMA do
                               begin
                                 consume(_COMMA);
-                                lo:=StrToInt(current_scanner.pattern);
+                                val(current_scanner.pattern,lo,code);
                                 consume(_INTCONST);
                                 insert_one_label(labname+'$'+tostr(lo));
+                                if lo<sentinel.arraylabel_lo then
+                                  sentinel.arraylabel_lo:=lo;
+                                if lo>sentinel.arraylabel_hi then
+                                  sentinel.arraylabel_hi:=lo;
                               end;
                           end;
                       end;

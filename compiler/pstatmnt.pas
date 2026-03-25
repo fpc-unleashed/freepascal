@@ -1916,6 +1916,57 @@ implementation
       end;
 
 
+    { Generate a case statement for goto label[variable_expr].
+      The sentinel labelsym holds the range lo..hi; we build:
+        case expr of
+          lo: goto LB$lo;
+          lo+1: goto LB$lo+1;
+          ...
+          hi: goto LB$hi;
+        end;
+      This leverages FPC's existing case node which generates efficient
+      jump tables on x86. }
+    function generate_arraylabel_goto(sentinel: tlabelsym; indexexpr: tnode): tnode;
+      var
+        caseexpr   : tnode;
+        casenode   : tcasenode;
+        i          : longint;
+        blockid    : longint;
+        labsym     : tsym;
+        labsymtable: TSymtable;
+        s          : TIDString;
+      begin
+        if length(sentinel.arraylabel_strings)>0 then
+          begin
+            { String array labels don't support variable index }
+            Message(type_e_ordinal_expr_expected);
+            indexexpr.free;
+            result:=cerrornode.create;
+            exit;
+          end;
+        { Ensure index expression is fully typechecked and marked as read }
+        caseexpr:=indexexpr;
+        if not assigned(caseexpr.resultdef) then
+          do_typecheckpass(caseexpr);
+        set_varstate(caseexpr,vs_read,[vsf_must_be_valid]);
+        { Build case node }
+        casenode:=ccasenode.create(caseexpr);
+        blockid:=0;
+        for i:=sentinel.arraylabel_lo to sentinel.arraylabel_hi do
+          begin
+            s:=sentinel.name+'$'+tostr(i);
+            if searchsym(s,labsym,labsymtable) and (labsym.typ=labelsym) then
+              begin
+                casenode.addlabel(blockid,i,i);
+                casenode.addblock(blockid,cgotonode.create(tlabelsym(labsym)));
+                tlabelsym(labsym).used:=true;
+                inc(blockid);
+              end;
+          end;
+        result:=casenode;
+      end;
+
+
     function statement : tnode;
       var
          p,
@@ -1985,28 +2036,45 @@ implementation
                                  consume(_LECKKLAMMER);
                                  if current_scanner.token=_CSTRING then
                                    begin
+                                     { Constant string index - direct goto }
                                      s:=srsym.name+'$'+upper(current_scanner.cstringpattern);
                                      consume(_CSTRING);
-                                   end
-                                 else if current_scanner.token=_INTCONST then
-                                   begin
-                                     val(current_scanner.pattern,labidx,labcode);
-                                    s:=srsym.name+'$'+tostr(labidx);
-                                     consume(_INTCONST);
+                                     consume(_RECKKLAMMER);
+                                     searchsym(s,srsym,srsymtable);
+                                     if (srsym=nil) or (srsym.typ<>labelsym) then
+                                       begin
+                                         identifier_not_found(s);
+                                         srsym:=generrorsym;
+                                         srsymtable:=nil;
+                                         code:=cerrornode.create;
+                                       end;
                                    end
                                  else
                                    begin
-                                     Message(sym_e_label_not_found);
-                                     s:='';
-                                   end;
-                                 consume(_RECKKLAMMER);
-                                 searchsym(s,srsym,srsymtable);
-                                 if (srsym=nil) or (srsym.typ<>labelsym) then
-                                   begin
-                                     identifier_not_found(s);
-                                     srsym:=generrorsym;
-                                     srsymtable:=nil;
-                                     code:=cerrornode.create;
+                                     { Parse index expression }
+                                     p:=expr(true);
+                                     consume(_RECKKLAMMER);
+                                     do_typecheckpass(p);
+                                     if is_constintnode(p) then
+                                       begin
+                                         { Constant integer index - direct goto, zero overhead }
+                                         labidx:=tordconstnode(p).value.svalue;
+                                         s:=srsym.name+'$'+tostr(labidx);
+                                         p.free;
+                                         searchsym(s,srsym,srsymtable);
+                                         if (srsym=nil) or (srsym.typ<>labelsym) then
+                                           begin
+                                             identifier_not_found(s);
+                                             srsym:=generrorsym;
+                                             srsymtable:=nil;
+                                             code:=cerrornode.create;
+                                           end;
+                                       end
+                                     else
+                                       begin
+                                         { Variable index - generate if-chain for jump }
+                                         code:=generate_arraylabel_goto(tlabelsym(srsym),p);
+                                       end;
                                    end;
                                end;
                            end;
