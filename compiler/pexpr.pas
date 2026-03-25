@@ -3052,6 +3052,7 @@ implementation
         arrlabname : TIDString;
         arrlabidx  : longint;
         arrlabcode : word;
+        arrlabtmpnode : tnode;
       begin
         hdef:=nil;
         result:=nil;
@@ -3303,15 +3304,21 @@ implementation
                           arrlabname:=arrlabname+'$'+upper(current_scanner.cstringpattern);
                           consume(_CSTRING);
                         end
-                      else if current_scanner.token=_INTCONST then
-                        begin
-                          val(current_scanner.pattern,arrlabidx,arrlabcode);
-                          arrlabname:=arrlabname+'$'+tostr(arrlabidx);
-                          consume(_INTCONST);
-                        end
                       else
                         begin
-                          Message(sym_e_label_not_found);
+                          { General constant expression: handles integers, -1,
+                            true/false, named constants, etc. }
+                          arrlabtmpnode:=comp_expr([ef_accept_equal]);
+                          do_typecheckpass(arrlabtmpnode);
+                          if arrlabtmpnode.nodetype=ordconstn then
+                            begin
+                              arrlabidx:=longint(int64(tordconstnode(arrlabtmpnode).value));
+                              arrlabname:=arrlabname+'$'+tostr(arrlabidx);
+                            end
+                          else
+                            Message(type_e_ordinal_expr_expected);
+                          arrlabtmpnode.free;
+                          arrlabtmpnode:=nil;
                         end;
                       consume(_RECKKLAMMER);
                       consume(_COLON);

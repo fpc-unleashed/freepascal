@@ -520,6 +520,9 @@ implementation
                         sentinel.arraylabel_hi:=low(longint);
                         repeat
                           p:=expr(true);
+                          { ensure constant expressions like 3-1 in ranges are folded }
+                          if (p.nodetype=rangen) and not assigned(p.resultdef) then
+                            do_typecheckpass(p);
                           if p.nodetype=typen then
                             begin
                               if set_bounds_from_type(p.resultdef,lo,hi) then
