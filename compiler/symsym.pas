@@ -90,6 +90,8 @@ interface
             override ppuwrite_platform instead }
           procedure ppuwrite(ppufile:tcompilerppufile);override;final;
           function mangledname:TSymStr;override;
+          { returns user-visible name: converts internal l$N to l[N] }
+          function prettyname:string;override;
        end;
        tlabelsymclass = class of tlabelsym;
 
@@ -828,6 +830,17 @@ implementation
              current_asmdata.getjumplabel(asmblocklabel);
          end;
        result:=asmblocklabel.name;
+     end;
+
+   function tlabelsym.prettyname:string;
+     var
+       i: integer;
+     begin
+       result:=realname;
+       { convert internal l$N names to user-visible l[N] form }
+       i:=pos('$',result);
+       if (i>0) and not arraylabel then
+         result:=copy(result,1,i-1)+'['+copy(result,i+1,length(result)-i)+']';
      end;
 
 {****************************************************************************

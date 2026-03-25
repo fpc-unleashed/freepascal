@@ -948,10 +948,14 @@ implementation
         if (tsym(sym).typ=labelsym) and
            not(tlabelsym(sym).defined) then
          begin
+           { sentinel for array label (e.g. "l" in "label l[0..3]") is an
+             implementation detail — suppress all warnings for it }
+           if tlabelsym(sym).arraylabel then
+             exit;
            if tlabelsym(sym).used then
-            Message1(sym_e_label_used_and_not_defined,tlabelsym(sym).realname)
+            Message1(sym_e_label_used_and_not_defined,tlabelsym(sym).prettyname)
            else
-            Message1(sym_w_label_not_defined,tlabelsym(sym).realname);
+            Message1(sym_w_label_not_defined,tlabelsym(sym).prettyname);
          end;
       end;
 
@@ -1038,6 +1042,9 @@ implementation
               if (tsym(sym).refs=0) and
                  not(tsym(sym).typ in [enumsym,unitsym,namespacesym]) and
                  not(is_funcret_sym(tsym(sym))) and
+                 { sentinel symbol for array labels (e.g. "l" in "label l[0..3]")
+                   is an implementation detail — suppress hints for it }
+                 not((tsym(sym).typ=labelsym) and tlabelsym(sym).arraylabel) and
                  { don't complain about compiler generated syms for specializations, see also #13405 }
                  not((tsym(sym).typ=typesym) and (df_specialization in ttypesym(sym).typedef.defoptions) and
                     (pos('$',ttypesym(sym).Realname)<>0)) and
