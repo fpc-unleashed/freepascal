@@ -1931,10 +1931,27 @@ implementation
         caseexpr   : tnode;
         casenode   : tcasenode;
         i          : longint;
+        looplo,
+        loophi     : longint;
         blockid    : longint;
         labsym     : tsym;
         labsymtable: TSymtable;
         s          : TIDString;
+        g          : tgotonode;
+        idxlo,
+        idxhi      : TConstExprInt;
+        h          : int64;
+
+      function const_to_longint_clamped(const v: TConstExprInt): longint;
+        begin
+          h:=int64(v);
+          if h<low(longint) then
+            result:=low(longint)
+          else if h>high(longint) then
+            result:=high(longint)
+          else
+            result:=longint(h);
+        end;
       begin
         if length(sentinel.arraylabel_strings)>0 then
           begin
@@ -1949,17 +1966,37 @@ implementation
         if not assigned(caseexpr.resultdef) then
           do_typecheckpass(caseexpr);
         set_varstate(caseexpr,vs_read,[vsf_must_be_valid]);
+        if not is_ordinal(caseexpr.resultdef) then
+          begin
+            Message(type_e_ordinal_expr_expected);
+            caseexpr.free;
+            result:=cerrornode.create;
+            exit;
+          end;
         { Build case node }
         casenode:=ccasenode.create(caseexpr);
+        looplo:=sentinel.arraylabel_lo;
+        loophi:=sentinel.arraylabel_hi;
+        { Restrict generated jump targets to values representable by the
+          index expression type, so that unreachable labels are not treated
+          as used. }
+        getrange(caseexpr.resultdef,idxlo,idxhi);
+        i:=const_to_longint_clamped(idxlo);
+        if i>looplo then
+          looplo:=i;
+        i:=const_to_longint_clamped(idxhi);
+        if i<loophi then
+          loophi:=i;
         blockid:=0;
-        for i:=sentinel.arraylabel_lo to sentinel.arraylabel_hi do
+        for i:=looplo to loophi do
           begin
             s:=sentinel.name+'$'+tostr(i);
             if searchsym(s,labsym,labsymtable) and (labsym.typ=labelsym) then
               begin
                 casenode.addlabel(blockid,i,i);
-                casenode.addblock(blockid,cgotonode.create(tlabelsym(labsym)));
-                tlabelsym(labsym).used:=true;
+                g:=cgotonode.create(tlabelsym(labsym));
+                g.allow_undefined_target:=true;
+                casenode.addblock(blockid,g);
                 inc(blockid);
               end;
           end;

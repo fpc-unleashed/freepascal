@@ -474,6 +474,13 @@ implementation
        begin
          location_reset(location,LOC_VOID,OS_NO);
 
+         if not assigned(labelnode) then
+           begin
+             if not allow_undefined_target then
+               internalerror(2026032401);
+             exit;
+           end;
+
          include(flowcontrol,fc_gotolabel);
          hlcg.a_jmp_always_pascal_goto(current_asmdata.CurrAsmList,tcglabelnode(labelnode).getasmlabel);
          if not(cs_opt_size in current_settings.optimizerswitches) then

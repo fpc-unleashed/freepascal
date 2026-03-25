@@ -189,6 +189,9 @@ interface
           labelsym : tlabelsym;
           labelnode : tlabelnode;
           exceptionblock : integer;
+          { For generated computed gotos (e.g. goto label[idx]), allow
+            unresolved targets and treat them as no-op branches. }
+          allow_undefined_target : boolean;
           constructor create(p : tlabelsym);virtual;
           constructor ppuload(t:tnodetype;ppufile:tcompilerppufile);override;
           procedure ppuwrite(ppufile:tcompilerppufile);override;
@@ -2383,6 +2386,7 @@ implementation
         exceptionblock:=current_exceptblock;
         labelnode:=nil;
         labelsym:=p;
+        allow_undefined_target:=false;
       end;
 
 
@@ -2391,6 +2395,7 @@ implementation
         inherited ppuload(t,ppufile);
         labelnodeidx:=ppufile.getlongint;
         exceptionblock:=ppufile.getbyte;
+        allow_undefined_target:=false;
       end;
 
 
@@ -2488,7 +2493,10 @@ implementation
                   CGMessagePos(self.fileinfo,cg_e_interprocedural_goto_only_to_outer_scope_allowed);
               end
             else
-              CGMessage1(cg_e_goto_label_not_found,labelsym.realname);
+              begin
+                if not allow_undefined_target then
+                  CGMessage1(cg_e_goto_label_not_found,labelsym.realname);
+              end;
           end;
 
         { check if we don't mess with exception blocks }
@@ -2504,6 +2512,7 @@ implementation
      begin
         p:=tgotonode(inherited dogetcopy);
         p.exceptionblock:=exceptionblock;
+        p.allow_undefined_target:=allow_undefined_target;
 
         { generate labelnode if not done yet }
         if not(assigned(labelnode)) then
@@ -2520,9 +2529,9 @@ implementation
           p.labelnode:=labelnode
         else
           begin
-            { don't trigger IE when there was already an error, i.e. the
-              label is not defined. See tw11763 (PFV) }
+            { don't trigger IE when there was already an error, i.e. the label is not defined. }
             if (errorcount=0) and
+               (not allow_undefined_target) and
             { don't trigger IE if it's a global goto }
                ((assigned(labelsym.owner) and (current_procinfo.procdef.parast.symtablelevel=labelsym.owner.symtablelevel)) or
                not(assigned(labelsym.owner))) then

@@ -61,7 +61,7 @@ implementation
        { symtable }
        symconst,symbase,symcpu,symcreat,defutil,defcmp,symtable,symutil,
        { pass 1 }
-       ninl,ncon,nobj,ngenutil,nld,nmem,ncal,pass_1,
+       ninl,ncon,nobj,ngenutil,nld,nmem,ncal,nset,pass_1,
        { parser }
        scanner,
        pbase,pexpr,ptype,ptconst,pdecsub,pdecvar,pdecobj,pgenutil,pparautl,
@@ -386,8 +386,54 @@ implementation
         labelsym : tlabelsym;
         sentinel : tlabelsym;
         labname  : TIDString;
-        lo, hi, i, code : longint;
+        lo, hi, i : longint;
         strval   : ansistring;
+        p        : tnode;
+        lv, hv   : TConstExprInt;
+
+      function const_to_longint(const v: TConstExprInt; out i: longint): boolean;
+        begin
+          if (v<low(longint)) or (v>high(longint)) then
+            begin
+              Message(parser_e_array_range_out_of_bounds);
+              result:=false;
+            end
+          else
+            begin
+              i:=longint(int64(v));
+              result:=true;
+            end;
+        end;
+
+      function set_bounds_from_type(def: tdef; out l, h: longint): boolean;
+        begin
+          if not is_ordinal(def) then
+            begin
+              Message(type_e_ordinal_expr_expected);
+              result:=false;
+              exit;
+            end;
+          getrange(def,lv,hv);
+          result:=const_to_longint(lv,l) and const_to_longint(hv,h);
+        end;
+
+      function get_const_ord_value(n: tnode; out v: TConstExprInt): boolean;
+        begin
+          if not is_constnode(n) then
+            begin
+              Message(type_e_constant_expr_expected);
+              result:=false;
+              exit;
+            end;
+          if n.nodetype<>ordconstn then
+            begin
+              Message(type_e_ordinal_expr_expected);
+              result:=false;
+              exit;
+            end;
+          v:=tordconstnode(n).value;
+          result:=true;
+        end;
 
       { Create and insert a single label symbol with name n. }
       procedure insert_one_label(const n: TIDString);
@@ -464,36 +510,72 @@ implementation
                       end
                     else
                       begin
-                        { Integer: range lo..hi  or  list n1,n2,... }
-                        val(current_scanner.pattern,lo,code);
-                        consume(_INTCONST);
-                        if current_scanner.token=_POINTPOINT then
-                          begin
-                            consume(_POINTPOINT);
-                            val(current_scanner.pattern,hi,code);
-                            consume(_INTCONST);
-                            for i:=lo to hi do
-                              insert_one_label(labname+'$'+tostr(i));
-                            { store range on sentinel for variable goto }
-                            sentinel.arraylabel_lo:=lo;
-                            sentinel.arraylabel_hi:=hi;
-                          end
-                        else
-                          begin
-                            insert_one_label(labname+'$'+tostr(lo));
-                            sentinel.arraylabel_lo:=lo;
-                            sentinel.arraylabel_hi:=lo;
-                            while current_scanner.token=_COMMA do
-                              begin
-                                consume(_COMMA);
-                                val(current_scanner.pattern,lo,code);
-                                consume(_INTCONST);
-                                insert_one_label(labname+'$'+tostr(lo));
-                                if lo<sentinel.arraylabel_lo then
+                        { Ordinal type or constant expression list/ranges:
+                            [byte]
+                            [0..3-1]
+                            [a..b]
+                            [1,2,3]
+                        }
+                        sentinel.arraylabel_lo:=high(longint);
+                        sentinel.arraylabel_hi:=low(longint);
+                        repeat
+                          p:=expr(true);
+                          if p.nodetype=typen then
+                            begin
+                              if set_bounds_from_type(p.resultdef,lo,hi) then
+                                begin
+                                  for i:=lo to hi do
+                                    insert_one_label(labname+'$'+tostr(i));
                                   sentinel.arraylabel_lo:=lo;
-                                if lo>sentinel.arraylabel_hi then
-                                  sentinel.arraylabel_hi:=lo;
-                              end;
+                                  sentinel.arraylabel_hi:=hi;
+                                end;
+                              p.free;
+                              p:=nil;
+                              if current_scanner.token=_COMMA then
+                                Message(sym_e_ill_label_decl);
+                              break;
+                            end
+                          else if p.nodetype=rangen then
+                            begin
+                              if get_const_ord_value(trangenode(p).left,lv) and
+                                 get_const_ord_value(trangenode(p).right,hv) and
+                                 const_to_longint(lv,lo) and
+                                 const_to_longint(hv,hi) then
+                                begin
+                                  if lo>hi then
+                                    Message(parser_e_array_lower_less_than_upper_bound)
+                                  else
+                                    for i:=lo to hi do
+                                      insert_one_label(labname+'$'+tostr(i));
+                                  if lo<sentinel.arraylabel_lo then
+                                    sentinel.arraylabel_lo:=lo;
+                                  if hi>sentinel.arraylabel_hi then
+                                    sentinel.arraylabel_hi:=hi;
+                                end;
+                            end
+                          else
+                            begin
+                              if get_const_ord_value(p,lv) and
+                                 const_to_longint(lv,lo) then
+                                begin
+                                  insert_one_label(labname+'$'+tostr(lo));
+                                  if lo<sentinel.arraylabel_lo then
+                                    sentinel.arraylabel_lo:=lo;
+                                  if lo>sentinel.arraylabel_hi then
+                                    sentinel.arraylabel_hi:=lo;
+                                end;
+                            end;
+                          p.free;
+                          p:=nil;
+                          if current_scanner.token=_COMMA then
+                            consume(_COMMA)
+                          else
+                            break;
+                        until false;
+                        if sentinel.arraylabel_lo>sentinel.arraylabel_hi then
+                          begin
+                            sentinel.arraylabel_lo:=0;
+                            sentinel.arraylabel_hi:=0;
                           end;
                       end;
                     consume(_RECKKLAMMER);
