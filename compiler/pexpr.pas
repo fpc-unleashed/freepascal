@@ -3049,6 +3049,9 @@ implementation
         pd : tprocdef;
         callflags : tcallnodeflags;
         tmpgetaddr : boolean;
+        arrlabname : TIDString;
+        arrlabidx  : longint;
+        arrlabcode : word;
       begin
         hdef:=nil;
         result:=nil;
@@ -3281,6 +3284,59 @@ implementation
                   if srsym.owner<>current_procinfo.procdef.localst then
                     CGMessage(parser_e_label_outside_proc);
                   result:=cloadnode.create(srsym,srsym.owner)
+                end
+              else if tlabelsym(srsym).arraylabel then
+                begin
+                  { Array label definition: sentinel_name[index]:
+                    Handles e.g. lbl[3]: just like regular label: }
+                  if current_scanner.token<>_LECKKLAMMER then
+                    begin
+                      Message(parser_e_syntax_error);
+                      result:=cerrornode.create;
+                    end
+                  else
+                    begin
+                      arrlabname:=srsym.name;
+                      consume(_LECKKLAMMER);
+                      if current_scanner.token=_CSTRING then
+                        begin
+                          arrlabname:=arrlabname+'$'+upper(current_scanner.cstringpattern);
+                          consume(_CSTRING);
+                        end
+                      else if current_scanner.token=_INTCONST then
+                        begin
+                          val(current_scanner.pattern,arrlabidx,arrlabcode);
+                          arrlabname:=arrlabname+'$'+tostr(arrlabidx);
+                          consume(_INTCONST);
+                        end
+                      else
+                        begin
+                          Message(sym_e_label_not_found);
+                        end;
+                      consume(_RECKKLAMMER);
+                      consume(_COLON);
+                      searchsym(arrlabname,srsym,srsymtable);
+                      if assigned(srsym) and (srsym.typ=labelsym) then
+                        begin
+                          if tlabelsym(srsym).defined then
+                            Message(sym_e_label_already_defined);
+                          if symtablestack.top.symtablelevel<>srsymtable.symtablelevel then
+                            begin
+                              include(current_procinfo.flags,pi_has_interproclabel);
+                              if (current_procinfo.procdef.proctypeoption in
+                                  [potype_unitinit,potype_unitfinalize]) then
+                                Message(sym_e_interprocgoto_into_init_final_code_not_allowed);
+                            end;
+                          tlabelsym(srsym).defined:=true;
+                          result:=clabelnode.create(nil,tlabelsym(srsym));
+                          tlabelsym(srsym).code:=result;
+                        end
+                      else
+                        begin
+                          Message1(sym_e_label_used_and_not_defined,arrlabname);
+                          result:=cnothingnode.create;
+                        end;
+                    end;
                 end
               else
                 begin

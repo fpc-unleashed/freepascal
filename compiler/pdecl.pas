@@ -384,6 +384,34 @@ implementation
     procedure label_dec;
       var
         labelsym : tlabelsym;
+        labname  : TIDString;
+        lo, hi, i : longint;
+        strval   : ansistring;
+
+      { Create and insert a single label symbol with name n. }
+      procedure insert_one_label(const n: TIDString);
+        begin
+          labelsym:=clabelsym.create(n);
+          symtablestack.top.insertsym(labelsym);
+          if m_non_local_goto in current_settings.modeswitches then
+            begin
+              if symtablestack.top.symtabletype=localsymtable then
+                begin
+                  labelsym.jumpbuf:=clocalvarsym.create('LABEL$_'+labelsym.name,vs_value,rec_jmp_buf,[]);
+                  symtablestack.top.insertsym(labelsym.jumpbuf);
+                end
+              else
+                begin
+                  labelsym.jumpbuf:=cstaticvarsym.create('LABEL$_'+labelsym.name,vs_value,rec_jmp_buf,[]);
+                  symtablestack.top.insertsym(labelsym.jumpbuf);
+                  cnodeutils.insertbssdata(tstaticvarsym(labelsym.jumpbuf));
+                end;
+              include(labelsym.jumpbuf.symoptions,sp_internal);
+              { the buffer will be setup later, but avoid a hint }
+              tabstractvarsym(labelsym.jumpbuf).varstate:=vs_written;
+            end;
+        end;
+
       begin
          consume(_LABEL);
          if not(cs_support_goto in current_settings.moduleswitches) then
@@ -394,35 +422,70 @@ implementation
            else
              begin
                 if current_scanner.token=_ID then
-                  labelsym:=clabelsym.create(current_scanner.orgpattern)
+                  labname:=current_scanner.orgpattern
                 else
                   begin
                     { strip leading 0's in iso mode }
                     if (([m_iso,m_extpas]*current_settings.modeswitches)<>[]) then
                       while (length(current_scanner.pattern)>1) and (current_scanner.pattern[1]='0') do
                         delete(current_scanner.pattern,1,1);
-                    labelsym:=clabelsym.create(current_scanner.pattern);
+                    labname:=current_scanner.pattern;
                   end;
+                consume(current_scanner.token);
 
-                symtablestack.top.insertsym(labelsym);
-                if m_non_local_goto in current_settings.modeswitches then
+                { Array label syntax: label name[1..N] or name['s1','s2'] }
+                if (cs_support_goto in current_settings.moduleswitches) and
+                   (current_scanner.token=_LECKKLAMMER) then
                   begin
-                    if symtablestack.top.symtabletype=localsymtable then
+                    consume(_LECKKLAMMER);
+                    { Insert sentinel so that "goto name[i]" can find the base name }
+                    labelsym:=clabelsym.create(labname);
+                    labelsym.arraylabel:=true;
+                    symtablestack.top.insertsym(labelsym);
+
+                    if current_scanner.token=_CSTRING then
                       begin
-                        labelsym.jumpbuf:=clocalvarsym.create('LABEL$_'+labelsym.name,vs_value,rec_jmp_buf,[]);
-                        symtablestack.top.insertsym(labelsym.jumpbuf);
+                        { String list: ['str1', 'str2', ...] }
+                        repeat
+                          strval:=upper(current_scanner.cstringpattern);
+                          consume(_CSTRING);
+                          insert_one_label(labname+'$'+strval);
+                          if current_scanner.token=_COMMA then
+                            consume(_COMMA)
+                          else
+                            break;
+                        until false;
                       end
                     else
                       begin
-                        labelsym.jumpbuf:=cstaticvarsym.create('LABEL$_'+labelsym.name,vs_value,rec_jmp_buf,[]);
-                        symtablestack.top.insertsym(labelsym.jumpbuf);
-                        cnodeutils.insertbssdata(tstaticvarsym(labelsym.jumpbuf));
+                        { Integer: range lo..hi  or  list n1,n2,... }
+                        lo:=StrToInt(current_scanner.pattern);
+                        consume(_INTCONST);
+                        if current_scanner.token=_POINTPOINT then
+                          begin
+                            consume(_POINTPOINT);
+                            hi:=StrToInt(current_scanner.pattern);
+                            consume(_INTCONST);
+                            for i:=lo to hi do
+                              insert_one_label(labname+'$'+tostr(i));
+                          end
+                        else
+                          begin
+                            insert_one_label(labname+'$'+tostr(lo));
+                            while current_scanner.token=_COMMA do
+                              begin
+                                consume(_COMMA);
+                                lo:=StrToInt(current_scanner.pattern);
+                                consume(_INTCONST);
+                                insert_one_label(labname+'$'+tostr(lo));
+                              end;
+                          end;
                       end;
-                    include(labelsym.jumpbuf.symoptions,sp_internal);
-                    { the buffer will be setup later, but avoid a hint }
-                    tabstractvarsym(labelsym.jumpbuf).varstate:=vs_written;
-                  end;
-                consume(current_scanner.token);
+                    consume(_RECKKLAMMER);
+                  end
+                else
+                  { Normal single label }
+                  insert_one_label(labname);
              end;
            if current_scanner.token<>_SEMICOLON then consume(_COMMA);
          until not(current_scanner.token in [_ID,_INTCONST]);

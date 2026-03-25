@@ -64,7 +64,10 @@ interface
        tlabelsym = class(tstoredsym)
           used,
           defined,
-          nonlocal : boolean;
+          nonlocal,
+          { true when this is the sentinel symbol for an array label declaration,
+            e.g. "label foo[1..10]" - the actual targets are foo$1..foo$10 }
+          arraylabel : boolean;
           { points to the matching node, only valid resultdef pass is run and
             the goto<->label relation in the node tree is created, should
             be a tnode }
@@ -779,6 +782,7 @@ implementation
          used:=false;
          defined:=false;
          nonlocal:=false;
+         arraylabel:=false;
          code:=nil;
       end;
 

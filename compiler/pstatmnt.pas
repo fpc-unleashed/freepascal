@@ -1925,6 +1925,8 @@ implementation
          srsym      : tsym;
          srsymtable : TSymtable;
          s          : TIDString;
+         labidx     : longint;
+         labcode    : word;
       begin
          filepos:=current_tokenpos;
          code:=nil;
@@ -1970,20 +1972,62 @@ implementation
                        end
                      else
                        begin
-                         { goto outside the current scope? }
-                         if srsym.owner<>current_procinfo.procdef.localst then
+                         { Array label: goto name[index] }
+                         if tlabelsym(srsym).arraylabel then
                            begin
-                             { allowed? }
-                             if not(m_non_local_goto in current_settings.modeswitches) then
-                               Message(parser_e_goto_outside_proc);
-                             include(current_procinfo.flags,pi_has_global_goto);
-                             if is_nested_pd(current_procinfo.procdef) then
-                               current_procinfo.set_needs_parentfp(srsym.owner.symtablelevel);
+                             if current_scanner.token<>_LECKKLAMMER then
+                               begin
+                                 Message(sym_e_label_not_found);
+                                 code:=cerrornode.create;
+                               end
+                             else
+                               begin
+                                 consume(_LECKKLAMMER);
+                                 if current_scanner.token=_CSTRING then
+                                   begin
+                                     s:=srsym.name+'$'+upper(current_scanner.cstringpattern);
+                                     consume(_CSTRING);
+                                   end
+                                 else if current_scanner.token=_INTCONST then
+                                   begin
+                                     val(current_scanner.pattern,labidx,labcode);
+                                    s:=srsym.name+'$'+tostr(labidx);
+                                     consume(_INTCONST);
+                                   end
+                                 else
+                                   begin
+                                     Message(sym_e_label_not_found);
+                                     s:='';
+                                   end;
+                                 consume(_RECKKLAMMER);
+                                 searchsym(s,srsym,srsymtable);
+                                 if (srsym=nil) or (srsym.typ<>labelsym) then
+                                   begin
+                                     identifier_not_found(s);
+                                     srsym:=generrorsym;
+                                     srsymtable:=nil;
+                                     code:=cerrornode.create;
+                                   end;
+                               end;
                            end;
-                         code:=cgotonode.create(tlabelsym(srsym));
-                         tgotonode(code).labelsym:=tlabelsym(srsym);
-                         { set flag that this label is used }
-                         tlabelsym(srsym).used:=true;
+
+                         if not assigned(code) then
+                           begin
+                             { goto outside the current scope? }
+                             if srsym.owner<>current_procinfo.procdef.localst then
+                               begin
+                                 { allowed? }
+                                 if not(m_non_local_goto in current_settings.modeswitches) then
+                                   Message(parser_e_goto_outside_proc);
+                                 include(current_procinfo.flags,pi_has_global_goto);
+                                 if is_nested_pd(current_procinfo.procdef) then
+                                   current_procinfo.set_needs_parentfp(srsym.owner.symtablelevel);
+                               end;
+                             code:=cgotonode.create(tlabelsym(srsym));
+                             tgotonode(code).labelsym:=tlabelsym(srsym);
+                             { set flag that this label is used }
+                             tlabelsym(srsym).used:=true;
+                           end;
                        end;
                   end;
              end;
