@@ -51,7 +51,7 @@ implementation
        paramgr,
        { pass 1 }
        pass_1,htypechk,
-       nutils,ngenutil,nbas,ncal,nmem,nset,ncnv,ncon,nld,nflw,ninl,
+       nutils,ngenutil,nbas,nadd,ncal,nmem,nset,ncnv,ncon,nld,nflw,ninl,
        { parser }
        scanner,
        pbase,ptype,pexpr,
@@ -2003,6 +2003,68 @@ implementation
         result:=casenode;
       end;
 
+    function generate_pointer_goto(pointerexpr: tnode): tnode;
+      var
+        statements : tstatementnode;
+        tempnode   : ttempcreatenode;
+        i          : longint;
+        sym        : tsym;
+        labsym     : tlabelsym;
+        cmp        : tnode;
+        gotostmt   : tnode;
+      begin
+        if not assigned(pointerexpr.resultdef) then
+          do_typecheckpass(pointerexpr);
+        if not assigned(pointerexpr.resultdef) then
+          begin
+            pointerexpr.free;
+            result:=cerrornode.create;
+            exit;
+          end;
+        set_varstate(pointerexpr,vs_read,[vsf_must_be_valid]);
+        if not is_pointer(pointerexpr.resultdef) then
+          begin
+            Message1(type_e_pointer_type_expected,pointerexpr.resultdef.typename);
+            pointerexpr.free;
+            result:=cerrornode.create;
+            exit;
+          end;
+        inserttypeconv(pointerexpr,voidcodepointertype);
+        do_typecheckpass(pointerexpr);
+
+        result:=internalstatements(statements);
+        tempnode:=ctempcreatenode.create_value(
+          voidcodepointertype,
+          voidcodepointertype.size,
+          tt_persistent,
+          true,
+          pointerexpr
+        );
+        addstatement(statements,tempnode);
+
+        for i:=0 to current_procinfo.procdef.localst.SymList.Count-1 do
+          begin
+            sym:=tsym(current_procinfo.procdef.localst.SymList[i]);
+            if not assigned(sym) or
+               (sym.typ<>labelsym) then
+              continue;
+
+            labsym:=tlabelsym(sym);
+            if labsym.arraylabel then
+              continue;
+
+            cmp:=caddnode.create(equaln,
+              ctemprefnode.create(tempnode),
+              caddrnode.create(cloadnode.create(labsym,labsym.owner))
+            );
+            gotostmt:=cgotonode.create(labsym);
+            tgotonode(gotostmt).labelsym:=labsym;
+            labsym.used:=true;
+            addstatement(statements,cifnode.create(cmp,gotostmt,nil));
+          end;
+
+        addstatement(statements,ctempdeletenode.create_normal_temp(tempnode));
+      end;
 
     function statement : tnode;
       var
@@ -2019,123 +2081,125 @@ implementation
          filepos:=current_tokenpos;
          code:=nil;
          case current_scanner.token of
-           _GOTO :
-             begin
-                if not(cs_support_goto in current_settings.moduleswitches) then
-                  Message(sym_e_goto_and_label_not_supported);
-                consume(_GOTO);
-                if (current_scanner.token<>_INTCONST) and (current_scanner.token<>_ID) then
-                  begin
-                    Message(sym_e_label_not_found);
-                    code:=cerrornode.create;
-                  end
-                else
-                  begin
-                     if current_scanner.token=_ID then
-                       consume_sym(srsym,srsymtable)
-                     else
-                      begin
-                        if current_scanner.token<>_INTCONST then
-                          internalerror(201008021);
-
-                        { strip leading 0's in iso mode }
-                        if (([m_iso,m_extpas]*current_settings.modeswitches)<>[]) then
-                          while (length(current_scanner.pattern)>1) and (current_scanner.pattern[1]='0') do
-                            delete(current_scanner.pattern,1,1);
-
-                        searchsym(current_scanner.pattern,srsym,srsymtable);
-                        if srsym=nil then
-                          begin
-                            identifier_not_found(current_scanner.pattern);
-                            srsym:=generrorsym;
-                            srsymtable:=nil;
-                          end;
-                        consume(current_scanner.token);
-                      end;
-
-                     if srsym.typ<>labelsym then
+            _GOTO :
+              begin
+                 if not(cs_support_goto in current_settings.moduleswitches) then
+                   Message(sym_e_goto_and_label_not_supported);
+                 consume(_GOTO);
+                 if (current_scanner.token=_INTCONST) or
+                    ((current_scanner.token=_ID) and
+                     searchsym(current_scanner.pattern,srsym,srsymtable) and
+                     (srsym.typ=labelsym)) then
+                   begin
+                      if current_scanner.token=_ID then
+                        consume_sym(srsym,srsymtable)
+                      else
                        begin
-                          Message(sym_e_id_is_no_label_id);
-                          code:=cerrornode.create;
-                       end
-                     else
-                       begin
-                         { Array label: goto name[index] }
-                         if tlabelsym(srsym).arraylabel then
-                           begin
-                             if current_scanner.token<>_LECKKLAMMER then
-                               begin
-                                 Message(sym_e_label_not_found);
-                                 code:=cerrornode.create;
-                               end
-                             else
-                               begin
-                                 consume(_LECKKLAMMER);
-                                 if current_scanner.token=_CSTRING then
-                                   begin
-                                     { Constant string index - direct goto }
-                                     s:=srsym.name+'$'+upper(current_scanner.cstringpattern);
-                                     consume(_CSTRING);
-                                     consume(_RECKKLAMMER);
-                                     searchsym(s,srsym,srsymtable);
-                                     if (srsym=nil) or (srsym.typ<>labelsym) then
-                                       begin
-                                         identifier_not_found(s);
-                                         srsym:=generrorsym;
-                                         srsymtable:=nil;
-                                         code:=cerrornode.create;
-                                       end;
-                                   end
-                                 else
-                                   begin
-                                     { Parse index expression }
-                                     p:=expr(true);
-                                     consume(_RECKKLAMMER);
-                                     do_typecheckpass(p);
-                                     if is_constintnode(p) then
-                                       begin
-                                         { Constant integer index - direct goto, zero overhead }
-                                         labidx:=tordconstnode(p).value.svalue;
-                                         s:=srsym.name+'$'+tostr(labidx);
-                                         p.free;
-                                         searchsym(s,srsym,srsymtable);
-                                         if (srsym=nil) or (srsym.typ<>labelsym) then
-                                           begin
-                                             identifier_not_found(s);
-                                             srsym:=generrorsym;
-                                             srsymtable:=nil;
-                                             code:=cerrornode.create;
-                                           end;
-                                       end
-                                     else
-                                       begin
-                                         { Variable index - generate if-chain for jump }
-                                         code:=generate_arraylabel_goto(tlabelsym(srsym),p);
-                                       end;
-                                   end;
-                               end;
-                           end;
+                         if current_scanner.token<>_INTCONST then
+                           internalerror(201008021);
 
-                         if not assigned(code) then
+                         { strip leading 0's in iso mode }
+                         if (([m_iso,m_extpas]*current_settings.modeswitches)<>[]) then
+                           while (length(current_scanner.pattern)>1) and (current_scanner.pattern[1]='0') do
+                             delete(current_scanner.pattern,1,1);
+
+                         searchsym(current_scanner.pattern,srsym,srsymtable);
+                         if srsym=nil then
                            begin
-                             { goto outside the current scope? }
-                             if srsym.owner<>current_procinfo.procdef.localst then
-                               begin
-                                 { allowed? }
-                                 if not(m_non_local_goto in current_settings.modeswitches) then
-                                   Message(parser_e_goto_outside_proc);
-                                 include(current_procinfo.flags,pi_has_global_goto);
-                                 if is_nested_pd(current_procinfo.procdef) then
-                                   current_procinfo.set_needs_parentfp(srsym.owner.symtablelevel);
-                               end;
-                             code:=cgotonode.create(tlabelsym(srsym));
-                             tgotonode(code).labelsym:=tlabelsym(srsym);
-                             { set flag that this label is used }
-                             tlabelsym(srsym).used:=true;
+                             identifier_not_found(current_scanner.pattern);
+                             srsym:=generrorsym;
+                             srsymtable:=nil;
                            end;
+                         consume(current_scanner.token);
                        end;
-                  end;
-             end;
+
+                      if srsym.typ<>labelsym then
+                        begin
+                           Message(sym_e_id_is_no_label_id);
+                           code:=cerrornode.create;
+                        end
+                      else
+                        begin
+                          { Array label: goto name[index] }
+                          if tlabelsym(srsym).arraylabel then
+                            begin
+                              if current_scanner.token<>_LECKKLAMMER then
+                                begin
+                                  Message(sym_e_label_not_found);
+                                  code:=cerrornode.create;
+                                end
+                              else
+                                begin
+                                  consume(_LECKKLAMMER);
+                                  if current_scanner.token=_CSTRING then
+                                    begin
+                                      { Constant string index - direct goto }
+                                      s:=srsym.name+'$'+upper(current_scanner.cstringpattern);
+                                      consume(_CSTRING);
+                                      consume(_RECKKLAMMER);
+                                      searchsym(s,srsym,srsymtable);
+                                      if (srsym=nil) or (srsym.typ<>labelsym) then
+                                        begin
+                                          identifier_not_found(s);
+                                          srsym:=generrorsym;
+                                          srsymtable:=nil;
+                                          code:=cerrornode.create;
+                                        end;
+                                    end
+                                  else
+                                    begin
+                                      { Parse index expression }
+                                      p:=expr(true);
+                                      consume(_RECKKLAMMER);
+                                      do_typecheckpass(p);
+                                      if is_constintnode(p) then
+                                        begin
+                                          { Constant integer index - direct goto, zero overhead }
+                                          labidx:=tordconstnode(p).value.svalue;
+                                          s:=srsym.name+'$'+tostr(labidx);
+                                          p.free;
+                                          searchsym(s,srsym,srsymtable);
+                                          if (srsym=nil) or (srsym.typ<>labelsym) then
+                                            begin
+                                              identifier_not_found(s);
+                                              srsym:=generrorsym;
+                                              srsymtable:=nil;
+                                              code:=cerrornode.create;
+                                            end;
+                                        end
+                                      else
+                                        begin
+                                          { Variable index - generate if-chain for jump }
+                                          code:=generate_arraylabel_goto(tlabelsym(srsym),p);
+                                        end;
+                                    end;
+                                end;
+                            end;
+
+                          if not assigned(code) then
+                            begin
+                              { goto outside the current scope? }
+                              if srsym.owner<>current_procinfo.procdef.localst then
+                                begin
+                                  { allowed? }
+                                  if not(m_non_local_goto in current_settings.modeswitches) then
+                                    Message(parser_e_goto_outside_proc);
+                                  include(current_procinfo.flags,pi_has_global_goto);
+                                  if is_nested_pd(current_procinfo.procdef) then
+                                    current_procinfo.set_needs_parentfp(srsym.owner.symtablelevel);
+                                end;
+                              code:=cgotonode.create(tlabelsym(srsym));
+                              tgotonode(code).labelsym:=tlabelsym(srsym);
+                              { set flag that this label is used }
+                              tlabelsym(srsym).used:=true;
+                            end;
+                        end;
+                   end
+                 else
+                   begin
+                     code:=generate_pointer_goto(expr(true));
+                   end;
+              end;
            _BEGIN :
              begin
                code:=statement_block(_BEGIN);
