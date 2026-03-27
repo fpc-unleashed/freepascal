@@ -1885,6 +1885,15 @@ implementation
                       else
                         hdef := cshortstringtype;
                     end;
+                  { For inline var declarations, promote sub-32-bit integer
+                    types to LongInt so that e.g. var i := 10 yields a 4-byte
+                    signed integer instead of a signed byte. Skip promotion
+                    when the user wrote an explicit typecast (e.g. byte(10))
+                    - detected via nf_explicit flag preserved through
+                    constant folding by the typeconv node. }
+                  if not(nf_explicit in initexpr.flags) and is_integer(hdef) and
+                     (torddef(hdef).ordtype in [s8bit,u8bit,s16bit,u16bit]) then
+                    hdef := s32inttype;
                   vs.vardef := hdef;
                   vs.varstate := vs_initialised;
                   if vs.typ = staticvarsym then
