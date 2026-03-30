@@ -69,6 +69,9 @@ interface
 
     procedure identifier_not_found(const s:string);
     procedure identifier_not_found(const s:string;const filepos:tfileposinfo);
+    function get_or_create_labelsym(const s:TIDString; out labsym:tlabelsym; out labsymtable:TSymtable):boolean;
+    function get_or_create_arraylabelsym(const s:TIDString; out labsym:tlabelsym; out labsymtable:TSymtable):boolean;
+    function get_or_create_indexed_labelsym(const basename,suffix:TIDString; stringindex:boolean; ordinalindex:longint; out labsym:tlabelsym; out labsymtable:TSymtable):boolean;
 
 {    function tokenstring(i : ttoken):string;}
 
@@ -117,7 +120,7 @@ interface
 implementation
 
     uses
-       globals,scanner,verbose,fmodule;
+       globals,scanner,verbose,fmodule,procinfo,ngenutil;
 
 {****************************************************************************
                                Token Parsing
@@ -144,6 +147,136 @@ implementation
             (Upper(s)=current_scanner.pattern) and
             (m_class in tokeninfo^[current_scanner.idtoken].keyword) then
            MessagePos(filepos,parser_f_need_objfpc_or_delphi_mode);
+       end;
+
+
+     function get_or_create_labelsym(const s:TIDString; out labsym:tlabelsym; out labsymtable:TSymtable):boolean;
+       var
+         sym: tsym;
+       begin
+         searchsym(s,sym,labsymtable);
+         if assigned(sym) then
+           begin
+             result:=sym.typ=labelsym;
+             if result then
+               labsym:=tlabelsym(sym)
+             else
+               labsym:=nil;
+             exit;
+           end;
+
+         if not assigned(current_procinfo) or
+            not assigned(current_procinfo.procdef) or
+            not assigned(current_procinfo.procdef.localst) then
+           begin
+             labsymtable:=nil;
+             result:=false;
+             exit;
+           end;
+
+         labsym:=clabelsym.create(s);
+         labsymtable:=current_procinfo.procdef.localst;
+         labsymtable.insertsym(labsym);
+         if m_non_local_goto in current_settings.modeswitches then
+           begin
+             if labsymtable.symtabletype=localsymtable then
+               begin
+                 labsym.jumpbuf:=clocalvarsym.create('LABEL$_'+labsym.name,vs_value,rec_jmp_buf,[]);
+                 labsymtable.insertsym(labsym.jumpbuf);
+               end
+             else
+               begin
+                 labsym.jumpbuf:=cstaticvarsym.create('LABEL$_'+labsym.name,vs_value,rec_jmp_buf,[]);
+                 labsymtable.insertsym(labsym.jumpbuf);
+                 cnodeutils.insertbssdata(tstaticvarsym(labsym.jumpbuf));
+               end;
+             include(labsym.jumpbuf.symoptions,sp_internal);
+             tabstractvarsym(labsym.jumpbuf).varstate:=vs_written;
+           end;
+         result:=true;
+       end;
+
+
+     function get_or_create_arraylabelsym(const s:TIDString; out labsym:tlabelsym; out labsymtable:TSymtable):boolean;
+       var
+         sym: tsym;
+       begin
+         searchsym(s,sym,labsymtable);
+         if assigned(sym) then
+           begin
+             result:=(sym.typ=labelsym) and tlabelsym(sym).arraylabel;
+             if result then
+               labsym:=tlabelsym(sym)
+             else
+               labsym:=nil;
+             exit;
+           end;
+
+         if not assigned(current_procinfo) or
+            not assigned(current_procinfo.procdef) or
+            not assigned(current_procinfo.procdef.localst) then
+           begin
+             labsymtable:=nil;
+             result:=false;
+             exit;
+           end;
+
+         labsym:=clabelsym.create(s);
+         labsym.arraylabel:=true;
+         labsym.arraylabel_lo:=1;
+         labsym.arraylabel_hi:=0;
+         labsymtable:=current_procinfo.procdef.localst;
+         labsymtable.insertsym(labsym);
+         result:=true;
+       end;
+
+
+     function get_or_create_indexed_labelsym(const basename,suffix:TIDString; stringindex:boolean; ordinalindex:longint; out labsym:tlabelsym; out labsymtable:TSymtable):boolean;
+       var
+         sentinel: tlabelsym;
+         i: longint;
+         found: boolean;
+       begin
+         if not get_or_create_arraylabelsym(basename,sentinel,labsymtable) then
+           begin
+             labsym:=nil;
+             result:=false;
+             exit;
+           end;
+
+         if stringindex then
+           begin
+             found:=false;
+             for i:=0 to high(sentinel.arraylabel_strings) do
+               if sentinel.arraylabel_strings[i]=suffix then
+                 begin
+                   found:=true;
+                   break;
+                 end;
+             if not found then
+               begin
+                 i:=length(sentinel.arraylabel_strings);
+                 setlength(sentinel.arraylabel_strings,i+1);
+                 sentinel.arraylabel_strings[i]:=suffix;
+               end;
+           end
+         else
+           begin
+             if sentinel.arraylabel_lo>sentinel.arraylabel_hi then
+               begin
+                 sentinel.arraylabel_lo:=ordinalindex;
+                 sentinel.arraylabel_hi:=ordinalindex;
+               end
+             else
+               begin
+                 if ordinalindex<sentinel.arraylabel_lo then
+                   sentinel.arraylabel_lo:=ordinalindex;
+                 if ordinalindex>sentinel.arraylabel_hi then
+                   sentinel.arraylabel_hi:=ordinalindex;
+               end;
+           end;
+
+         result:=get_or_create_labelsym(basename+'$'+suffix,labsym,labsymtable);
        end;
 
 

@@ -2074,7 +2074,10 @@ implementation
          filepos    : tfileposinfo;
          srsym      : tsym;
          srsymtable : TSymtable;
+         labsym     : tlabelsym;
          s          : TIDString;
+         labsuffix  : TIDString;
+         labisstring: boolean;
          labidx     : longint;
          labcode    : word;
       begin
@@ -2106,9 +2109,14 @@ implementation
                          searchsym(current_scanner.pattern,srsym,srsymtable);
                          if srsym=nil then
                            begin
-                             identifier_not_found(current_scanner.pattern);
-                             srsym:=generrorsym;
-                             srsymtable:=nil;
+                             if get_or_create_labelsym(current_scanner.pattern,labsym,srsymtable) then
+                               srsym:=labsym
+                             else
+                               begin
+                                 identifier_not_found(current_scanner.pattern);
+                                 srsym:=generrorsym;
+                                 srsymtable:=nil;
+                               end;
                            end;
                          consume(current_scanner.token);
                        end;
@@ -2194,6 +2202,78 @@ implementation
                               tlabelsym(srsym).used:=true;
                             end;
                         end;
+                   end
+                 else if (current_scanner.token=_ID) and
+                         not searchsym(current_scanner.pattern,srsym,srsymtable) then
+                   begin
+                     s:=current_scanner.orgpattern;
+                     consume(_ID);
+                     if current_scanner.token=_LECKKLAMMER then
+                       begin
+                         consume(_LECKKLAMMER);
+                         labsuffix:='';
+                         labisstring:=false;
+                         if current_scanner.token=_CSTRING then
+                           begin
+                             labsuffix:=upper(current_scanner.cstringpattern);
+                             labisstring:=true;
+                             consume(_CSTRING);
+                             consume(_RECKKLAMMER);
+                           end
+                         else
+                           begin
+                             p:=expr(true);
+                             consume(_RECKKLAMMER);
+                             do_typecheckpass(p);
+                             if is_constintnode(p) then
+                               begin
+                                 labidx:=tordconstnode(p).value.svalue;
+                                 labsuffix:=tostr(labidx);
+                                 p.free;
+                                 p:=nil;
+                               end
+                             else
+                               begin
+                                 if get_or_create_arraylabelsym(s,labsym,srsymtable) and
+                                    (((labsym.arraylabel_lo<=labsym.arraylabel_hi) and not(labisstring)) or
+                                     (length(labsym.arraylabel_strings)>0)) then
+                                   code:=generate_arraylabel_goto(labsym,p)
+                                 else
+                                   begin
+                                     p.free;
+                                     Message(sym_e_label_not_found);
+                                     code:=cerrornode.create;
+                                   end;
+                               end;
+                           end;
+
+                         if not assigned(code) then
+                           begin
+                             if get_or_create_indexed_labelsym(s,labsuffix,labisstring,labidx,labsym,srsymtable) then
+                               begin
+                                 code:=cgotonode.create(labsym);
+                                 tgotonode(code).labelsym:=labsym;
+                                 labsym.used:=true;
+                               end
+                             else
+                               begin
+                                 Message(sym_e_label_not_found);
+                                 code:=cerrornode.create;
+                               end;
+                           end;
+                       end;
+                     if not assigned(code) then
+                       begin
+                         if get_or_create_labelsym(s,labsym,srsymtable) then
+                           begin
+                             srsym:=labsym;
+                             code:=cgotonode.create(tlabelsym(srsym));
+                             tgotonode(code).labelsym:=tlabelsym(srsym);
+                             tlabelsym(srsym).used:=true;
+                           end
+                         else
+                           code:=cerrornode.create;
+                       end;
                    end
                  else
                    begin
@@ -2289,11 +2369,25 @@ implementation
               begin
                 { in iso mode, 0003: is equal to 3: }
                 if (([m_iso,m_extpas]*current_settings.modeswitches)<>[]) then
-                  searchsym(tostr(tordconstnode(p).value),srsym,srsymtable)
+                  begin
+                    s:=tostr(tordconstnode(p).value);
+                    searchsym(s,srsym,srsymtable);
+                  end
                 else
                   searchsym(s,srsym,srsymtable);
                 p.free;
                 p := nil;
+
+                if not assigned(srsym) then
+                  get_or_create_labelsym(s,labsym,srsymtable)
+                else
+                  labsym:=nil;
+
+                if assigned(srsym) and
+                   (srsym.typ=labelsym) then
+                  labsym:=tlabelsym(srsym)
+                else if assigned(labsym) then
+                  srsym:=labsym;
 
                 if assigned(srsym) and
                    (srsym.typ=labelsym) then
@@ -2311,9 +2405,14 @@ implementation
                    p:=clabelnode.create(nil,tlabelsym(srsym));
                    tlabelsym(srsym).code:=p;
                  end
+                else if assigned(srsym) then
+                 begin
+                   Message(sym_e_id_is_no_label_id);
+                   p:=cnothingnode.create;
+                 end
                 else
                  begin
-                   Message1(sym_e_label_used_and_not_defined,s);
+                   identifier_not_found(s);
                    p:=cnothingnode.create;
                  end;
               end;

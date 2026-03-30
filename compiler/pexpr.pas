@@ -3063,9 +3063,12 @@ implementation
         callflags : tcallnodeflags;
         tmpgetaddr : boolean;
         arrlabname : TIDString;
+        arrlabsuffix : TIDString;
+        arrlabisstring : boolean;
         arrlabidx  : longint;
         arrlabcode : word;
         arrlabtmpnode : tnode;
+        arrlabmember : tlabelsym;
       begin
         hdef:=nil;
         result:=nil;
@@ -3311,10 +3314,13 @@ implementation
                   else
                     begin
                       arrlabname:=srsym.name;
+                      arrlabsuffix:='';
+                      arrlabisstring:=false;
                       consume(_LECKKLAMMER);
                       if current_scanner.token=_CSTRING then
                         begin
-                          arrlabname:=arrlabname+'$'+upper(current_scanner.cstringpattern);
+                          arrlabsuffix:=upper(current_scanner.cstringpattern);
+                          arrlabisstring:=true;
                           consume(_CSTRING);
                         end
                       else
@@ -3326,7 +3332,7 @@ implementation
                           if arrlabtmpnode.nodetype=ordconstn then
                             begin
                               arrlabidx:=longint(int64(tordconstnode(arrlabtmpnode).value));
-                              arrlabname:=arrlabname+'$'+tostr(arrlabidx);
+                              arrlabsuffix:=tostr(arrlabidx);
                             end
                           else
                             Message(type_e_ordinal_expr_expected);
@@ -3335,10 +3341,10 @@ implementation
                         end;
                       consume(_RECKKLAMMER);
                       consume(_COLON);
-                      searchsym(arrlabname,srsym,srsymtable);
-                      if assigned(srsym) and (srsym.typ=labelsym) then
+                      if (arrlabisstring or (arrlabsuffix<>'')) and
+                         get_or_create_indexed_labelsym(arrlabname,arrlabsuffix,arrlabisstring,arrlabidx,arrlabmember,srsymtable) then
                         begin
-                          if tlabelsym(srsym).defined then
+                          if arrlabmember.defined then
                             Message(sym_e_label_already_defined);
                           if symtablestack.top.symtablelevel<>srsymtable.symtablelevel then
                             begin
@@ -3347,13 +3353,14 @@ implementation
                                   [potype_unitinit,potype_unitfinalize]) then
                                 Message(sym_e_interprocgoto_into_init_final_code_not_allowed);
                             end;
-                          tlabelsym(srsym).defined:=true;
-                          result:=clabelnode.create(nil,tlabelsym(srsym));
-                          tlabelsym(srsym).code:=result;
+                          arrlabmember.defined:=true;
+                          result:=clabelnode.create(nil,arrlabmember);
+                          arrlabmember.code:=result;
                         end
                       else
                         begin
-                          Message1(sym_e_label_used_and_not_defined,arrlabname);
+                          if arrlabisstring or (arrlabsuffix<>'') then
+                            Message1(sym_e_label_used_and_not_defined,arrlabname+'$'+arrlabsuffix);
                           result:=cnothingnode.create;
                         end;
                     end;
@@ -3429,6 +3436,7 @@ implementation
          var
            srsym: tsym;
            srsymtable: TSymtable;
+           labsym: tlabelsym;
            hdef: tdef;
            orgstoredpattern,
            storedpattern: string;
@@ -3679,16 +3687,25 @@ implementation
                            symbol }
                    not (sp_explicitrename in srsym.symoptions) then
                  begin
+                   if not assigned(srsym) and
+                      (
+                        ((current_scanner.token=_COLON) and
+                         get_or_create_labelsym(orgstoredpattern,labsym,srsymtable)) or
+                        ((current_scanner.token=_LECKKLAMMER) and
+                         get_or_create_arraylabelsym(orgstoredpattern,labsym,srsymtable))
+                      ) then
+                     srsym:=labsym;
                    { if a generic is parsed and when we are inside an with block,
                      a symbol might not be defined }
-                   if assigned(current_procinfo) and (df_generic in current_procinfo.procdef.defoptions) and
+                   if not assigned(srsym) and
+                      assigned(current_procinfo) and (df_generic in current_procinfo.procdef.defoptions) and
                       findwithsymtable then
                      begin
                        { create dummy symbol, it will be freed later on }
                        srsym:=tstoredsym.create(undefinedsym,'$undefinedsym');
                        srsymtable:=nil;
                      end
-                   else
+                   else if not assigned(srsym) then
                      begin
                        if wasgenericdummy then
                          messagepos(tokenpos,parser_e_no_generics_as_types)
