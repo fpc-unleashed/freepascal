@@ -10,6 +10,9 @@
   - [Inline Variables](#inline-variables)
   - [Array Equality](#array-equality)
   - [No RTTI](#no-rtti)
+  - [Indexed Labels](#indexed-labels)
+  - [Lazy Label Declarations](#lazy-label-declarations)
+  - [Compound Assignment for Pascal Operators](#compound-assignment-for-pascal-operators)
 - [Installation](#installation)
 - [Contributing](#contributing)
 
@@ -27,27 +30,26 @@ When using **[Lazarus Unleashed](https://github.com/fpc-unleashed/lazarus)**, th
 
 The following modeswitches are enabled automatically:
 
-| Modeswitch | Description |
-|---|---|
-| `statementexpressions` | Use `if`, `case`, and `try` as expressions |
-| `inlinevars` | Declare variables inline, anywhere inside a `begin..end` block |
-| `anonymousfunctions` | Anonymous procedures and functions |
-| `functionreferences` | Function pointers that capture context |
-| `advancedrecords` | Records with methods, properties, and operators |
-| `arrayoperators` + `arrayequality` | Direct array comparisons with `=` and `<>` |
-| `ansistrings` | Uses `AnsiString` as the default string type |
-| `underscoreisseparator` | Allows underscores in numeric literals (`1_000_000`) |
-| `duplicatenames` | Allows reusing identifiers in limited scopes |
-| `multilinestrings` | Allows multi-line string literals without manual concatenation |
+| Modeswitch                         | Description                                                   |
+| ---------------------------------- | ------------------------------------------------------------- |
+| `statementexpressions`             | Use `if`, `case`, and `try` as expressions                    |
+| `inlinevars`                       | Declare variables inline anywhere inside a `begin..end` block |
+| `anonymousfunctions`               | Anonymous procedures and functions                            |
+| `functionreferences`               | Function pointers that capture context                        |
+| `advancedrecords`                  | Records with methods, properties, and operators               |
+| `arrayoperators` + `arrayequality` | Direct array comparisons with `=` and `<>`                    |
+| `ansistrings`                      | Use `AnsiString` as the default string type                   |
+| `underscoreisseparator`            | Allow underscores in numeric literals (`1_000_000`)           |
+| `duplicatenames`                   | Allow reusing identifiers in limited scopes                   |
+| `multilinestrings`                 | Allow multi-line string literals without manual concatenation |
 
 > [!NOTE]
-> For the best experience with code completion, we recommend using **[Lazarus Unleashed](https://github.com/fpc-unleashed/lazarus)** - a fork of Lazarus with full support for unleashed mode. If you are using stock Lazarus, enable the mode via `-Munleashed` in the project's Custom Options rather than placing `{$mode unleashed}` directly in the source file, to avoid autocomplete issues and incorrect code insight behavior.
-
+> For the best code-completion experience, we recommend using **[Lazarus Unleashed](https://github.com/fpc-unleashed/lazarus)** - a fork of Lazarus with full support for unleashed mode. If you are using stock Lazarus, enable the mode via `-Munleashed` in the project's Custom Options instead of placing `{$mode unleashed}` directly in the source file, to avoid autocomplete issues and incorrect Code Insight behavior.
 ---
 
 ### Statement Expressions
 
-**Activate:** `{$modeswitch statementexpressions}` (or use `{$mode unleashed}`)
+**Activate:** available in Unleashed mode.
 
 Allows using `if`, `case`, and `try` as **expressions** that return a value, enabling a more functional and concise coding style. All branches must return values of the same type.
 
@@ -74,14 +76,13 @@ s := if x > 100 then 'large' else
 
 Only one branch is evaluated - side effects in the other branch are never triggered:
 ```pascal
-function expensive: string;
-begin
-  inc(counter);
-  result := 'computed';
+function loadFromDatabase: string;  
+begin  
+  result := 'data';  
 end;
 
-// ...
-s := if condition then 'fast' else expensive;
+var useCache := false;
+var s := if useCache then 'cached' else loadFromDatabase;
 // expensive is only called when condition is false
 ```
 
@@ -101,7 +102,8 @@ begin
 end.
 ```
 
-Ranges work too:
+#### Ranges
+
 ```pascal
 s := case x of
   0:    'zero';
@@ -110,7 +112,7 @@ s := case x of
 ```
 
 > [!NOTE]
-> When using enums, all values must be covered - otherwise the compiler will reject it. When using integer/ordinal ranges, provide an `else` clause.
+> When using enums, all values must be covered. Otherwise, the compiler will reject the expression. When using integer or ordinal ranges, provide an `else` clause.
 
 #### Try expression
 
@@ -144,7 +146,7 @@ end.
 
 ### Inline Variables
 
-**Activate:** `{$modeswitch inlinevars}` (or use `{$mode unleashed}`)
+**Activate:** available in Unleashed mode.
 
 Declare variables at the point of use inside `begin..end` blocks instead of in a separate `var` section at the top. Supports explicit types and type inference.
 
@@ -207,6 +209,9 @@ end.
 
 > [!NOTE]
 > Inline variables have the same scope as regular local variables - they are visible from the point of declaration until the end of the enclosing routine. They are not block-scoped.
+
+> [!NOTE]
+> Untyped numeric inline variables default to a 32-bit signed integer (`integer`).
 
 ---
 
@@ -445,19 +450,91 @@ Wildcards can be used:
 
 ---
 
-## Installation
+### Indexed Labels
 
-> [!NOTE]
-> This section covers installing **FPC Unleashed** (the compiler) paired with stock Lazarus. A dedicated installation guide for **[Lazarus Unleashed](https://github.com/fpc-unleashed/lazarus)** - which includes full code completion support for unleashed mode - is currently being written. In the meantime, feel free to explore the Lazarus Unleashed repository and try it out yourself.
+Labels now support indexes.
+
+#### Example
+
+```pascal
+label
+  mylabel1,
+  mylabel2[1, 2, 3],
+  mylabel3[1..10],
+  mylabel4['foo', 'bar'];
+
+begin
+  goto mylabel4['foo'];
+
+  writeln('you should not see this');
+
+  mylabel1:
+  mylabel2[2]:
+  mylabel3[10]:
+  mylabel4['foo']:
+
+  writeln('hello!');
+end.
+```
+
+---
+
+### Lazy Label Declarations
+
+Labels no longer need to be declared before use.
+
+#### Example
+
+```pascal
+begin
+  goto mylabel;
+
+  writeln('you should not see this');
+
+  mylabel:
+
+  writeln('hello!');
+end.
+```
+
+---
+
+### Compound Assignment for Pascal Operators
+
+Compound assignment is now supported for Pascal operators such as `div`, `mod`, and `xor`, without requiring `{$COPERATORS ON}`.
+
+#### Example
+
+```pascal
+var
+  i: integer = 10;
+begin
+  i div= 2;   // equivalent to: i := i div 2
+  writeln(i); // prints "5"
+end.
+```
+
+Available: `div=`, `mod=`, `and=`, `or=`, `xor=`, `shl=` and `shr=` .
+
+## Installation
 
 ### Option 1: Fresh install (FPC + Lazarus via fpcupdeluxe)
 
 1. Download [fpcupdeluxe](https://github.com/LongDirtyAnimAlf/fpcupdeluxe) and run it once to generate the `fpcup.ini` file.
 2. Edit `fpcup.ini` and add the following under `[ALIASfpcURL]`:
+
 ```ini
 [ALIASfpcURL]
-fpc-unleashed.git=https://github.com/fpc-unleashed/freepascal.git
+unleashed.git=https://github.com/fpc-unleashed/freepascal.git
 ```
+
+And, for Lazarus Unleashed (with **autocomplete support** for some of the new features), add the following under `[ALIASlazURL]`:  
+
+```ini
+[ALIASlazURL]
+unleashed.git=https://github.com/fpc-unleashed/lazarus.git
+```
+
 3. Reopen **fpcupdeluxe**, uncheck **GitLab**, and select `fpc-unleashed.git` as your FPC version.
 4. Choose any Lazarus version you like.
 
@@ -466,30 +543,30 @@ fpc-unleashed.git=https://github.com/fpc-unleashed/freepascal.git
 5. Click **Install/update FPC+Lazarus**.
 6. Optionally install cross-compilers via the `Cross` tab.
 
-### Option 2: Upgrade existing fpcupdeluxe setup
+### Option 2: Upgrade an existing fpcupdeluxe setup
 
-1. Make sure your existing FPC+Lazarus was installed with **fpcupdeluxe**.
+1. Make sure your existing FPC + Lazarus installation was created with **fpcupdeluxe**.
 2. In your installation directory, delete or rename the `fpcsrc` folder.
 3. Clone the FPC Unleashed repo into the `fpcsrc` directory:
+
 ```bash
 git clone https://github.com/fpc-unleashed/freepascal.git fpcsrc
 ```
+
 4. In **fpcupdeluxe**, go to **Setup+**, check **FPC/Laz rebuild only**, and confirm.
 5. Click **Only FPC** to rebuild the compiler and RTL.
 6. Optionally install cross-compilers via the `Cross` tab.
-
----
 
 ## Contributing
 
 We welcome bold ideas and experimental features that push Pascal forward.
 
-**FPC Unleashed** is a home for innovation - if you have built a language feature that was "too experimental" or "not standard enough" for upstream, this is where it belongs.
+**FPC Unleashed** is a home for innovation. If you have built a language feature that was considered _too experimental_ or _not standard enough_ for upstream, this is where it belongs.
 
 ### What we are looking for
 
-- **New language ideas** - propose modeswitches, syntax extensions, or compiler enhancements via GitHub Issues or Discussions. Even if you don't have an implementation yet, a well-described idea with use cases is valuable.
-- **Complete, high-quality implementations** - we accept pull requests for new language constructs, compiler enhancements, and RTL improvements. We expect production-grade code: clean implementation, proper test coverage, and documentation of the feature.
+* **New language ideas** - Propose modeswitches, syntax extensions, or compiler enhancements via GitHub Issues or Discussions. Even if you do not have an implementation yet, a well-described idea with clear use cases is valuable.
+* **Complete, high-quality implementations** - We accept pull requests for new language constructs, compiler enhancements, and RTL improvements. We expect production-grade code: clean implementation, proper test coverage, and clear documentation of the feature.
 
 ### What we are not looking for
 
