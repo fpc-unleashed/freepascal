@@ -99,6 +99,8 @@ type
     _DIVASN,
     _NOTASN,
     _XORASN,
+    _SHLASN,
+    _SHRASN,
     _GENERICSPECIALTOKEN,
     { Normal words -- ATTENTION: These words must be sorted: }
     { first in length order, then in alphabetical order.     }
@@ -438,14 +440,16 @@ var
     { C like operators }
       (str:'+='            ;special:true ;keyword:[m_none];op:NOTOKEN),
       (str:'-='            ;special:true ;keyword:[m_none];op:NOTOKEN),
-      (str:'&='            ;special:true ;keyword:[m_none];op:NOTOKEN),
-      (str:'|='            ;special:true ;keyword:[m_none];op:NOTOKEN),
+      (str:'and='          ;special:true ;keyword:[m_none];op:NOTOKEN),
+      (str:'or='           ;special:true ;keyword:[m_none];op:NOTOKEN),
       (str:'*='            ;special:true ;keyword:[m_none];op:NOTOKEN),
       (str:'/='            ;special:true ;keyword:[m_none];op:NOTOKEN),
+      (str:'mod='          ;special:true ;keyword:[m_none];op:NOTOKEN),
+      (str:'div='          ;special:true ;keyword:[m_none];op:NOTOKEN),
       (str:''              ;special:true ;keyword:[m_none];op:NOTOKEN),
-      (str:''              ;special:true ;keyword:[m_none];op:NOTOKEN),
-      (str:''              ;special:true ;keyword:[m_none];op:NOTOKEN),
-      (str:''              ;special:true ;keyword:[m_none];op:NOTOKEN),
+      (str:'xor='          ;special:true ;keyword:[m_none];op:NOTOKEN),
+      (str:'shl='          ;special:true ;keyword:[m_none];op:NOTOKEN),
+      (str:'shr='          ;special:true ;keyword:[m_none];op:NOTOKEN),
       (str:'gen. spec.'    ;special:true ;keyword:[m_none];op:NOTOKEN),
     { Normal words -- ATTENTION: These words must be sorted: }
     { first in length order, then in alphabetical order.     }

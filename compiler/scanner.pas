@@ -6282,6 +6282,47 @@ type
                     idtoken:=ttoken(high);
                   end;
             end;
+         { Fold word-style compound assignments into dedicated tokens. These
+           operators are always available and are not gated by $COPERATORS. }
+           if (c='=') then
+             case token of
+               _OP_AND:
+                 begin
+                   readchar;
+                   token:=_ANDASN;
+                 end;
+               _OP_OR:
+                 begin
+                   readchar;
+                   token:=_ORASN;
+                 end;
+               _OP_XOR:
+                 begin
+                   readchar;
+                   token:=_XORASN;
+                 end;
+               _OP_DIV:
+                 begin
+                   readchar;
+                   token:=_DIVASN;
+                 end;
+               _OP_MOD:
+                 begin
+                   readchar;
+                   token:=_MODASN;
+                 end;
+               _OP_SHL:
+                 begin
+                   readchar;
+                   token:=_SHLASN;
+                 end;
+               _OP_SHR:
+                 begin
+                   readchar;
+                   token:=_SHRASN;
+                 end;
+               else ;
+             end;
          { Only process identifiers and not keywords }
            if token=_ID then
             begin
@@ -6348,6 +6389,13 @@ type
 
              '&' :
                begin
+                 if {$ifdef CHECK_INPUTPOINTER_LIMITS}get_inputpointer_char{$else}inputpointer^{$endif}='=' then
+                  begin
+                    readchar;
+                    readchar;
+                    token:=_ANDASN;
+                    goto exit_label;
+                  end;
                  if [m_fpc,m_delphi] * current_settings.modeswitches <> [] then
                   begin
                     readnumber;
@@ -6580,7 +6628,14 @@ type
                end;
 
              '|' :
-               if m_mac in current_settings.modeswitches then
+               if {$ifdef CHECK_INPUTPOINTER_LIMITS}get_inputpointer_char{$else}inputpointer^{$endif}='=' then
+                begin
+                  readchar;
+                  readchar;
+                  token:=_ORASN;
+                  goto exit_label;
+                end
+               else if m_mac in current_settings.modeswitches then
                 begin
                   readchar;
                   token:=_PIPE;

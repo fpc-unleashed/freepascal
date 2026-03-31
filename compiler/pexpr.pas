@@ -228,6 +228,19 @@ implementation
 
 
      function gen_c_style_operator(ntyp:tnodetype;p1,p2:tnode) : tnode;
+       function create_assignop_node(ntyp: tnodetype; left, right: tnode): tnode;
+         begin
+           case ntyp of
+             divn,
+             modn:
+               result:=cmoddivnode.create(ntyp,left,right);
+             shln,
+             shrn:
+               result:=cshlshrnode.create(ntyp,left,right);
+             else
+               result:=caddnode.create(ntyp,left,right);
+           end;
+         end;
        var
          hdef  : tdef;
          temp  : ttempcreatenode;
@@ -243,7 +256,7 @@ implementation
                result can be wrong }
            end;
 
-         if might_have_sideeffects(p1,[]) then
+        if might_have_sideeffects(p1,[]) then
            begin
              typecheckpass(p1);
              result:=internalstatements(newstatement);
@@ -253,13 +266,13 @@ implementation
              addstatement(newstatement,cassignmentnode.create(ctemprefnode.create(temp),caddrnode.create_internal(p1)));
              addstatement(newstatement,cassignmentnode.create(
                  cderefnode.create(ctemprefnode.create(temp)),
-                 caddnode.create(ntyp,
+                 create_assignop_node(ntyp,
                      cderefnode.create(ctemprefnode.create(temp)),
                      p2)));
              addstatement(newstatement,ctempdeletenode.create(temp));
            end
          else
-           result:=cassignmentnode.create(p1,caddnode.create(ntyp,p1.getcopy,p2));
+           result:=cassignmentnode.create(p1,create_assignop_node(ntyp,p1.getcopy,p2));
        end;
 
 
@@ -5062,7 +5075,7 @@ implementation
             dotypecheck then
           do_typecheckpass(p1);
          filepos:=current_tokenpos;
-         if current_scanner.token in [_ASSIGNMENT,_PLUSASN,_MINUSASN,_STARASN,_SLASHASN] then
+         if current_scanner.token in [_ASSIGNMENT,_PLUSASN,_MINUSASN,_ANDASN,_ORASN,_STARASN,_SLASHASN,_MODASN,_DIVASN,_XORASN,_SHLASN,_SHRASN] then
            afterassignment:=true;
          updatefpos:=true;
          case current_scanner.token of
@@ -5113,6 +5126,18 @@ implementation
                p2:=sub_expr(opcompare,[ef_accept_equal],nil);
                p1:=gen_c_style_operator(muln,p1,p2);
             end;
+          _ANDASN :
+            begin
+               consume(_ANDASN);
+               p2:=sub_expr(opcompare,[ef_accept_equal],nil);
+               p1:=gen_c_style_operator(andn,p1,p2);
+            end;
+          _ORASN :
+            begin
+               consume(_ORASN);
+               p2:=sub_expr(opcompare,[ef_accept_equal],nil);
+               p1:=gen_c_style_operator(orn,p1,p2);
+            end;
           _SLASHASN :
             begin
                if not(cs_support_c_operators in current_settings.moduleswitches) then
@@ -5120,6 +5145,36 @@ implementation
                consume(_SLASHASN  );
                p2:=sub_expr(opcompare,[ef_accept_equal],nil);
                p1:=gen_c_style_operator(slashn,p1,p2);
+            end;
+          _MODASN :
+            begin
+               consume(_MODASN);
+               p2:=sub_expr(opcompare,[ef_accept_equal],nil);
+               p1:=gen_c_style_operator(modn,p1,p2);
+            end;
+          _DIVASN :
+            begin
+               consume(_DIVASN);
+               p2:=sub_expr(opcompare,[ef_accept_equal],nil);
+               p1:=gen_c_style_operator(divn,p1,p2);
+            end;
+          _XORASN :
+            begin
+               consume(_XORASN);
+               p2:=sub_expr(opcompare,[ef_accept_equal],nil);
+               p1:=gen_c_style_operator(xorn,p1,p2);
+            end;
+         _SHLASN :
+            begin
+               consume(_SHLASN);
+               p2:=sub_expr(opcompare,[ef_accept_equal],nil);
+               p1:=gen_c_style_operator(shln,p1,p2);
+            end;
+         _SHRASN :
+            begin
+               consume(_SHRASN);
+               p2:=sub_expr(opcompare,[ef_accept_equal],nil);
+               p1:=gen_c_style_operator(shrn,p1,p2);
             end;
           else
             updatefpos:=false;
