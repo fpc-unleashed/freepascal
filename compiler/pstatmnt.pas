@@ -942,18 +942,14 @@ implementation
                  result := cerrornode.create;
                end;
 
-             { Pop the for-loop block scope; register with procinfo for code gen. }
+             { Pop the for-loop block scope; register it with the procdef so it
+               remains available for codegen and debug info emission. }
              if assigned(forblockst) then
                begin
                  symtablestack.pop(forblockst);
-                 if forblockst.SymList.Count > 0 then
-                   begin
-                     if not assigned(current_procinfo.blocklocalsymtables) then
-                       current_procinfo.blocklocalsymtables:=tfpobjectlist.create(true);
-                     current_procinfo.blocklocalsymtables.add(forblockst);
-                   end
-                 else
-                   forblockst.free;
+                 if not assigned(current_procinfo.procdef.blocklocalsymtables) then
+                   current_procinfo.procdef.blocklocalsymtables:=tfpobjectlist.create(true);
+                 current_procinfo.procdef.blocklocalsymtables.add(forblockst);
                end;
            end
          else
@@ -2529,12 +2525,18 @@ implementation
          consume(starttoken);
 
          { Push a block-scope symtable so that inline vars declared inside
-           this begin..end are scoped to the block (Delphi-style). }
+           this begin..end are scoped to the block (Delphi-style).
+           Only active when m_inline_var is set; avoids overhead in other modes. }
          blockst:=nil;
-         if assigned(current_procinfo) then
+         if assigned(current_procinfo) and (m_inline_var in current_settings.modeswitches) then
            begin
-             blockst:=tblocksymtable.create(symtablestack.top);
-             symtablestack.push(blockst);
+             if (starttoken=_BEGIN) and current_procinfo.parsing_main_block then
+               current_procinfo.parsing_main_block:=false
+             else
+               begin
+                 blockst:=tblocksymtable.create(symtablestack.top);
+                 symtablestack.push(blockst);
+               end;
            end;
 
          while not((current_scanner.token=_END) or (current_scanner.token=_FINALIZATION)) do
@@ -2570,22 +2572,19 @@ implementation
          if (starttoken<>_INITIALIZATION) or (current_scanner.token<>_FINALIZATION) then
            consume(_END);
 
-         { Pop the block-scope symtable; if it holds any inline vars, register
-           it with the procinfo so code gen can allocate their stack slots. }
+         { Pop the block-scope symtable and keep it on the procdef so nested
+           debug scopes can still follow the original parent chain later on. }
          if assigned(blockst) then
            begin
              symtablestack.pop(blockst);
-             if blockst.SymList.Count > 0 then
-               begin
-                 if not assigned(current_procinfo.blocklocalsymtables) then
-                   current_procinfo.blocklocalsymtables:=tfpobjectlist.create(true);
-                 current_procinfo.blocklocalsymtables.add(blockst);
-               end
-             else
-               blockst.free;
+             if not assigned(current_procinfo.procdef.blocklocalsymtables) then
+               current_procinfo.procdef.blocklocalsymtables:=tfpobjectlist.create(true);
+             current_procinfo.procdef.blocklocalsymtables.add(blockst);
            end;
 
          last:=cblocknode.create(first);
+         if assigned(blockst) then
+           tblocknode(last).blocksymtable:=blockst;
          last.fileinfo:=filepos;
          statement_block:=last;
       end;

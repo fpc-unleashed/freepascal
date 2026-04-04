@@ -2033,6 +2033,7 @@ implementation
         st             : tsymtable;
         vmtoffset      : pint;
         in_currentunit : boolean;
+        blk_i          : longint;
       begin
         { only write debug info for procedures defined in the current module,
           except in case of methods (gcc-compatible)
@@ -2207,7 +2208,15 @@ implementation
         if in_currentunit and
            assigned(def.localst) and
            (def.localst.symtabletype=localsymtable) then
-          write_symtable_syms(current_asmdata.asmlists[al_dwarf_info],def.localst);
+          begin
+            write_symtable_syms(current_asmdata.asmlists[al_dwarf_info],def.localst);
+            { emit inline vars (block-scoped) as direct DW_TAG_variable children
+              of DW_TAG_subprogram — widest debugger compatibility }
+            if assigned(def.blocklocalsymtables) then
+              for blk_i:=0 to def.blocklocalsymtables.count-1 do
+                write_symtable_syms(current_asmdata.asmlists[al_dwarf_info],
+                  TSymtable(def.blocklocalsymtables[blk_i]));
+          end;
 
         { last write the types from this procdef }
         if assigned(def.parast) then
@@ -2218,6 +2227,11 @@ implementation
            (def.localst.symtabletype=localsymtable) then
           begin
             write_symtable_defs(current_asmdata.asmlists[al_dwarf_info],def.localst);
+            { write types for inline vars }
+            if assigned(def.blocklocalsymtables) then
+              for blk_i:=0 to def.blocklocalsymtables.count-1 do
+                write_symtable_defs(current_asmdata.asmlists[al_dwarf_info],
+                  TSymtable(def.blocklocalsymtables[blk_i]));
             { Write nested procedures -- disabled, see scope check at the
               beginning; currently, these are still written in the global
               scope.  }

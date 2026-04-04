@@ -143,10 +143,9 @@ unit procinfo;
             to be exported in case the function gets inlined }
           localrefsyms : tfpobjectlist;
           localrefdefs : tfpobjectlist;
-
-          { block-scoped symtables for inline vars (m_inline_var); collected
-            during parsing and allocated in gen_alloc_symtable }
-          blocklocalsymtables : tfpobjectlist;
+          { set while parsing the outermost begin..end of a routine body so
+            statement_block can avoid creating an extra blocksymtable there }
+          parsing_main_block : boolean;
 
           { Registers saved by the current procedure - useful for peephole optimizers }
           saved_regs_int,
@@ -255,6 +254,7 @@ implementation
         current_asmdata.getjumplabel(CurrGOTLabel);
         CurrBreakLabel:=nil;
         CurrContinueLabel:=nil;
+        parsing_main_block:=false;
         if Assigned(parent) and (parent.procdef.parast.symtablelevel>=normal_function_level) then
           parent.addnestedproc(Self);
       end;
@@ -277,8 +277,6 @@ implementation
          localrefsyms := nil;
          localrefdefs.free;
          localrefdefs := nil;
-         blocklocalsymtables.free;
-         blocklocalsymtables := nil;
       end;
 
     procedure tprocinfo.destroy_tree;

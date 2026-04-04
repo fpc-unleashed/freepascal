@@ -529,9 +529,9 @@ implementation
            begin
              current_procinfo.procdef.localst.SymList.ForEachCall(@sym_maybe_initialize,@stat);
              { also initialize managed vars in block-scoped symtables (m_inline_var) }
-             if assigned(current_procinfo.blocklocalsymtables) then
-               for blk_i:=0 to current_procinfo.blocklocalsymtables.count-1 do
-                 TSymtable(current_procinfo.blocklocalsymtables[blk_i]).SymList.ForEachCall(@sym_maybe_initialize,@stat);
+             if assigned(pd.blocklocalsymtables) then
+               for blk_i:=0 to pd.blocklocalsymtables.count-1 do
+                 TSymtable(pd.blocklocalsymtables[blk_i]).SymList.ForEachCall(@sym_maybe_initialize,@stat);
            end;
       end;
     end;
@@ -566,9 +566,9 @@ implementation
            begin
              current_procinfo.procdef.localst.SymList.ForEachCall(@local_varsyms_finalize,@stat);
              { also finalize managed vars in block-scoped symtables (m_inline_var) }
-             if assigned(current_procinfo.blocklocalsymtables) then
-               for blk_i:=0 to current_procinfo.blocklocalsymtables.count-1 do
-                 TSymtable(current_procinfo.blocklocalsymtables[blk_i]).SymList.ForEachCall(@local_varsyms_finalize,@stat);
+             if assigned(pd.blocklocalsymtables) then
+               for blk_i:=0 to pd.blocklocalsymtables.count-1 do
+                 TSymtable(pd.blocklocalsymtables[blk_i]).SymList.ForEachCall(@local_varsyms_finalize,@stat);
            end;
       end;
     end;
@@ -691,6 +691,7 @@ implementation
       ressym,
       psym: tsym;
       resdef: tdef;
+      blk_i: longint;
     begin
       result:=maybe_insert_trashing(pd,n);
 
@@ -714,8 +715,14 @@ implementation
         begin
           block:=internalstatements(stat);
           pd.localst.SymList.ForEachCall(@initialize_filerecs,@stat);
+          if assigned(pd.blocklocalsymtables) then
+            for blk_i:=0 to pd.blocklocalsymtables.count-1 do
+              TSymtable(pd.blocklocalsymtables[blk_i]).SymList.ForEachCall(@initialize_filerecs,@stat);
           addstatement(stat,result);
           pd.localst.SymList.ForEachCall(@finalize_filerecs,@stat);
+          if assigned(pd.blocklocalsymtables) then
+            for blk_i:=0 to pd.blocklocalsymtables.count-1 do
+              TSymtable(pd.blocklocalsymtables[blk_i]).SymList.ForEachCall(@finalize_filerecs,@stat);
           result:=block;
         end;
 
@@ -792,6 +799,7 @@ implementation
   class function tnodeutils.maybe_insert_trashing(pd: tprocdef; n: tnode): tnode;
     var
       stat: tstatementnode;
+      blk_i: longint;
     begin
       result:=n;
       if check_insert_trashing(pd) then
@@ -799,6 +807,9 @@ implementation
           result:=internalstatements(stat);
           pd.parast.SymList.ForEachCall(@maybe_trash_variable_callback,@stat);
           pd.localst.SymList.ForEachCall(@maybe_trash_variable_callback,@stat);
+          if assigned(pd.blocklocalsymtables) then
+            for blk_i:=0 to pd.blocklocalsymtables.count-1 do
+              TSymtable(pd.blocklocalsymtables[blk_i]).SymList.ForEachCall(@maybe_trash_variable_callback,@stat);
           addstatement(stat,n);
         end;
     end;

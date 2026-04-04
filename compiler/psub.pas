@@ -327,6 +327,7 @@ implementation
     procedure init_main_block_syms(block: tnode);
       var
          oldfilepos: tfileposinfo;
+         blk_i: longint;
       begin
         { initialized variables }
         if current_procinfo.procdef.localst.symtabletype=localsymtable then
@@ -336,6 +337,9 @@ implementation
            oldfilepos:=current_filepos;
            current_filepos:=current_procinfo.entrypos;
            current_procinfo.procdef.localst.SymList.ForEachCall(@initializevars,block);
+           if assigned(current_procinfo.procdef.blocklocalsymtables) then
+             for blk_i:=0 to current_procinfo.procdef.blocklocalsymtables.count-1 do
+               TSymtable(current_procinfo.procdef.blocklocalsymtables[blk_i]).SymList.ForEachCall(@initializevars,block);
            current_filepos:=oldfilepos;
          end;
 
@@ -406,6 +410,7 @@ implementation
          else
             begin
                { parse routine body }
+               current_procinfo.parsing_main_block:=true;
                block:=statement_block(_BEGIN);
                init_main_block_syms(block);
             end;
@@ -1965,6 +1970,9 @@ implementation
 
         { clear register count }
         procdef.localst.SymList.ForEachCall(@clearrefs,nil);
+        if assigned(procdef.blocklocalsymtables) then
+          for blk_i:=0 to procdef.blocklocalsymtables.count-1 do
+            TSymtable(procdef.blocklocalsymtables[blk_i]).SymList.ForEachCall(@clearrefs,nil);
         procdef.parast.SymList.ForEachCall(@clearrefs,nil);
 
         { there's always a call to FPC_INITIALIZEUNITS/FPC_DO_EXIT in the main program }
@@ -1983,9 +1991,9 @@ implementation
             procdef.parast.SymList.ForEachCall(@check_finalize_paras,nil);
             procdef.localst.SymList.ForEachCall(@check_finalize_locals,nil);
             { also check block-scoped inline vars }
-            if assigned(blocklocalsymtables) then
-              for blk_i:=0 to blocklocalsymtables.count-1 do
-                TSymtable(blocklocalsymtables[blk_i]).SymList.ForEachCall(@check_finalize_locals,nil);
+            if assigned(procdef.blocklocalsymtables) then
+              for blk_i:=0 to procdef.blocklocalsymtables.count-1 do
+                TSymtable(procdef.blocklocalsymtables[blk_i]).SymList.ForEachCall(@check_finalize_locals,nil);
           end;
 
 {$ifdef SUPPORT_SAFECALL}
@@ -2054,9 +2062,9 @@ implementation
             gen_alloc_symtable(aktproccode,procdef,procdef.parast);
             gen_alloc_symtable(aktproccode,procdef,procdef.localst);
             { Allocate space for block-scoped inline vars (m_inline_var) }
-            if assigned(blocklocalsymtables) then
-              for blk_i:=0 to blocklocalsymtables.count-1 do
-                gen_alloc_symtable(aktproccode,procdef,TSymtable(blocklocalsymtables[blk_i]));
+            if assigned(procdef.blocklocalsymtables) then
+              for blk_i:=0 to procdef.blocklocalsymtables.count-1 do
+                gen_alloc_symtable(aktproccode,procdef,TSymtable(procdef.blocklocalsymtables[blk_i]));
 
             { Store temp offset for information about 'real' temps }
             tempstart:=tg.lasttemp;
@@ -2163,6 +2171,9 @@ implementation
               (tlsoffset<>NR_NO) then
               cg.a_reg_sync(aktproccode,tlsoffset);
 
+            if assigned(procdef.blocklocalsymtables) then
+              for blk_i:=procdef.blocklocalsymtables.count-1 downto 0 do
+                gen_free_symtable(aktproccode,TSymtable(procdef.blocklocalsymtables[blk_i]));
             gen_free_symtable(aktproccode,procdef.localst);
             gen_free_symtable(aktproccode,procdef.parast);
 
@@ -2228,9 +2239,12 @@ implementation
             { translate imag. register to their real counter parts
               this is necessary for debuginfo and verbose assembler output
               when SSA will be implemented, this will be more complicated because we've to
-              maintain location lists }
+            maintain location lists }
             procdef.parast.SymList.ForEachCall(@translate_registers,templist);
             procdef.localst.SymList.ForEachCall(@translate_registers,templist);
+            if assigned(procdef.blocklocalsymtables) then
+              for blk_i:=0 to procdef.blocklocalsymtables.count-1 do
+                TSymtable(procdef.blocklocalsymtables[blk_i]).SymList.ForEachCall(@translate_registers,templist);
             if (tf_pic_uses_got in target_info.flags) and (pi_needs_got in flags) and
                not(cs_no_regalloc in current_settings.globalswitches) and
                (got<>NR_NO) then

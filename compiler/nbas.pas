@@ -30,7 +30,7 @@ interface
        cgbase,cgutils,
        aasmtai,aasmdata,aasmcpu,
        node,
-       symtype;
+       symtype,symtable;
 
     type
        tnothingnode = class(tnode)
@@ -125,6 +125,7 @@ interface
 
        tblocknode = class(tunarynode)
           blocknodeflags : TBlockNodeFlags;
+          blocksymtable : tblocksymtable;
           constructor create(l : tnode);virtual;
           destructor destroy; override;
           constructor ppuload(t:tnodetype;ppufile:tcompilerppufile);override;
@@ -637,6 +638,7 @@ implementation
         if (left.nodetype = blockn) and
            ((left.flags*[nf_block_with_exit,nf_usercode_entry]=[]) or
             ((left.flags*[nf_block_with_exit,nf_usercode_entry]=[nf_block_with_exit]) and not has_node_of_type(left, [exitn]))) and
+           not assigned(tblocknode(left).blocksymtable) and
            assigned(tblocknode(left).left) and
            not assigned(tstatementnode(tblocknode(left).left).right) then
           begin
@@ -697,6 +699,7 @@ implementation
       begin
          inherited create(blockn,l);
          blocknodeflags:=[];
+         blocksymtable:=nil;
       end;
 
     destructor tblocknode.destroy;
@@ -721,6 +724,7 @@ implementation
       begin
         inherited ppuload(t,ppufile);
         ppufile.getset(tppuset1(blocknodeflags));
+        blocksymtable:=nil;
       end;
 
 
@@ -735,6 +739,7 @@ implementation
       begin
         Result:=inherited dogetcopy;
         TBlockNode(Result).blocknodeflags:=blocknodeflags;
+        TBlockNode(Result).blocksymtable:=nil;
       end;
 
 
@@ -774,6 +779,8 @@ implementation
                       { if the current block contains only one statement, and
                         this one statement only contains another block, replace
                         this block with that other block.                       }
+                      if assigned(blocksymtable) then
+                        exit;
                       result:=tstatementnode(left).left;
                       tstatementnode(left).left:=nil;
                       { make sure the nf_block_with_exit flag is safeguarded }
@@ -839,6 +846,7 @@ implementation
                         case p.left.nodetype of
                           blockn:
                             if (bnf_strippable in TBlockNode(p.left).blocknodeflags) and
+                              not assigned(TBlockNode(p.left).blocksymtable) and
                               ((p.left.flags * [nf_block_with_exit] = []) or not has_node_of_type(p.left, [exitn])) then
                               begin
                                 { Attempt to merge this block into the main statement

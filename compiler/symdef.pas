@@ -894,6 +894,9 @@ interface
           aliasnames : TCmdStrList;
           { symtables }
           localst : TSymtable;
+          { block-scoped symtables for inline vars; only needed while
+            compiling the current unit, so they are not persisted in ppu }
+          blocklocalsymtables : tfpobjectlist;
           funcretsym : tsym;
           funcretsymderef : tderef;
           struct : tabstractrecorddef;
@@ -6664,6 +6667,7 @@ implementation
          inherited create(procdef,level,doregister);
          implprocdefinfo:=allocmem(sizeof(implprocdefinfo^));
          localst:=tlocalsymtable.create(self,parast.symtablelevel);
+         blocklocalsymtables:=nil;
 {$ifdef symansistr}
          _mangledname:='';
 {$else symansistr}
@@ -6793,6 +6797,7 @@ implementation
          if has_inlininginfo then
            inlininginfo^.code:=ppuloadnodetree(ppufile);
          { default values for no persistent data }
+         blocklocalsymtables:=nil;
          if (cs_link_deffile in current_settings.globalswitches) and
             (tf_need_export in target_info.flags) and
             (po_exports in procoptions) then
@@ -6806,6 +6811,8 @@ implementation
       begin
          aliasnames.free;
          aliasnames:=nil;
+         blocklocalsymtables.free;
+         blocklocalsymtables:=nil;
          if assigned(localst) and
            (localst.symtabletype<>staticsymtable) then
           begin
