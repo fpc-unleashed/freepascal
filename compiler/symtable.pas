@@ -27,6 +27,8 @@ interface
     uses
        { common }
        cutils,cclasses,globtype,tokens,
+       { aasm }
+       aasmbase,
        { symtable }
        symconst,symbase,symtype,symdef,symsym;
 
@@ -291,6 +293,11 @@ interface
 
        tblocksymtable = class(TSymtable)
        public
+          { Labels marking the begin/end of the block in the code stream,
+            used by DWARF to emit DW_TAG_lexical_block entries so that
+            the debugger shows only variables visible in the current scope. }
+          dbg_begin_label,
+          dbg_end_label : TAsmLabel;
           constructor create(aparentst: TSymtable);
           function checkduplicate(var hashedid:THashedIDString;sym:TSymEntry):boolean;override;
        end;
@@ -2887,6 +2894,8 @@ implementation
         inherited create('');
         symtabletype:=blocksymtable;
         blockparentst:=aparentst;
+        dbg_begin_label:=nil;
+        dbg_end_label:=nil;
         { Inherit the nesting level from the enclosing symtable so that
           loop-counter validity checks (which compare symtablelevel against
           the current procedure level) still pass for inline for-loop vars. }
@@ -2897,11 +2906,51 @@ implementation
     function tblocksymtable.checkduplicate(var hashedid:THashedIDString;sym:TSymEntry):boolean;
       var
         hsym : tsym;
+        st   : tsymtable;
       begin
+        result:=false;
+        { check within the same block }
         hsym:=tsym(FindWithHash(hashedid));
         if assigned(hsym) then
-          DuplicateSym(hashedid,sym,hsym,false);
-        result:=assigned(hsym);
+          begin
+            DuplicateSym(hashedid,sym,hsym,false);
+            result:=true;
+            exit;
+          end;
+        { inline vars must not shadow variables from enclosing block scopes
+          or the procedure's var/parameter blocks }
+        st:=blockparentst;
+        while assigned(st) and (st.symtabletype=blocksymtable) do
+          begin
+            hsym:=tsym(st.FindWithHash(hashedid));
+            if assigned(hsym) then
+              begin
+                DuplicateSym(hashedid,sym,hsym,false);
+                result:=true;
+                exit;
+              end;
+            st:=tblocksymtable(st).blockparentst;
+          end;
+        if assigned(st) and (st.symtabletype=localsymtable) then
+          begin
+            hsym:=tsym(st.FindWithHash(hashedid));
+            if assigned(hsym) then
+              begin
+                DuplicateSym(hashedid,sym,hsym,false);
+                result:=true;
+                exit;
+              end;
+            { also check parameters }
+            if assigned(st.defowner) and (st.defowner.typ=procdef) then
+              begin
+                hsym:=tsym(tprocdef(st.defowner).parast.FindWithHash(hashedid));
+                if assigned(hsym) then
+                  begin
+                    DuplicateSym(hashedid,sym,hsym,false);
+                    result:=true;
+                  end;
+              end;
+          end;
       end;
 
 
