@@ -852,6 +852,7 @@ implementation
          vs : tabstractnormalvarsym;
          hdef : tdef;
          old_block_type : tblock_type;
+         forblockst : tblocksymtable;
       begin
          { parse loop header }
          consume(_FOR);
@@ -861,7 +862,7 @@ implementation
            begin
              consume(_VAR);
 
-             if not (symtablestack.top.symtabletype in [localsymtable,staticsymtable]) then
+             if not (symtablestack.top.symtabletype in [localsymtable,staticsymtable,blocksymtable]) then
                begin
                  Message(parser_e_syntax_error);
                  result := cerrornode.create;
@@ -875,11 +876,20 @@ implementation
                  exit;
                end;
 
+             { Push a block-scope symtable to limit the loop variable's
+               visibility to the for-statement (Delphi-style scoping). }
+             forblockst:=nil;
+             if assigned(current_procinfo) then
+               begin
+                 forblockst:=tblocksymtable.create(symtablestack.top);
+                 symtablestack.push(forblockst);
+               end;
+
              { Create the loop variable – type may be set explicitly or inferred. }
-             if symtablestack.top.symtabletype = localsymtable then
-               vs := clocalvarsym.create(orgpattern, vs_value, generrordef, [])
+             if symtablestack.top.symtabletype in [localsymtable,blocksymtable] then
+               vs := clocalvarsym.create(current_scanner.orgpattern, vs_value, generrordef, [])
              else
-               vs := cstaticvarsym.create(orgpattern, vs_value, generrordef, []);
+               vs := cstaticvarsym.create(current_scanner.orgpattern, vs_value, generrordef, []);
              vs.register_sym;
              symtablestack.top.insertsym(vs);
              consume(_ID);
@@ -930,6 +940,20 @@ implementation
                begin
                  consume(_ASSIGNMENT);
                  result := cerrornode.create;
+               end;
+
+             { Pop the for-loop block scope; register with procinfo for code gen. }
+             if assigned(forblockst) then
+               begin
+                 symtablestack.pop(forblockst);
+                 if forblockst.SymList.Count > 0 then
+                   begin
+                     if not assigned(current_procinfo.blocklocalsymtables) then
+                       current_procinfo.blocklocalsymtables:=tfpobjectlist.create(true);
+                     current_procinfo.blocklocalsymtables.add(forblockst);
+                   end
+                 else
+                   forblockst.free;
                end;
            end
          else
@@ -1791,9 +1815,10 @@ implementation
         result := nil;
         consume(_VAR);
 
-        { Inline var is only meaningful inside a routine body (localsymtable)
-          or in the main program block (staticsymtable at main_program_level). }
-        if not (symtablestack.top.symtabletype in [localsymtable,staticsymtable]) then
+        { Inline var is only meaningful inside a routine body (localsymtable,
+          a block-scope symtable) or in the main program block (staticsymtable
+          at main_program_level). }
+        if not (symtablestack.top.symtabletype in [localsymtable,staticsymtable,blocksymtable]) then
           begin
             Message(parser_e_syntax_error);
             result := cerrornode.create;
@@ -1812,10 +1837,11 @@ implementation
         try
           { --- collect one or more variable names -------------------------------- }
           repeat
-            if symtablestack.top.symtabletype = localsymtable then
-              vs := clocalvarsym.create(orgpattern, vs_value, generrordef, [])
+            { blocksymtable is always inside a procedure (local scope) }
+            if symtablestack.top.symtabletype in [localsymtable,blocksymtable] then
+              vs := clocalvarsym.create(current_scanner.orgpattern, vs_value, generrordef, [])
             else
-              vs := cstaticvarsym.create(orgpattern, vs_value, generrordef, []);
+              vs := cstaticvarsym.create(current_scanner.orgpattern, vs_value, generrordef, []);
             vs.register_sym;
             symtablestack.top.insertsym(vs);
             sc.add(vs);
@@ -2494,12 +2520,22 @@ implementation
       var
          first,last : tnode;
          filepos : tfileposinfo;
+         blockst : tblocksymtable;
 
       begin
          first:=nil;
          last:=nil;
          filepos:=current_tokenpos;
          consume(starttoken);
+
+         { Push a block-scope symtable so that inline vars declared inside
+           this begin..end are scoped to the block (Delphi-style). }
+         blockst:=nil;
+         if assigned(current_procinfo) then
+           begin
+             blockst:=tblocksymtable.create(symtablestack.top);
+             symtablestack.push(blockst);
+           end;
 
          while not((current_scanner.token=_END) or (current_scanner.token=_FINALIZATION)) do
            begin
@@ -2533,6 +2569,21 @@ implementation
            an initialization ! }
          if (starttoken<>_INITIALIZATION) or (current_scanner.token<>_FINALIZATION) then
            consume(_END);
+
+         { Pop the block-scope symtable; if it holds any inline vars, register
+           it with the procinfo so code gen can allocate their stack slots. }
+         if assigned(blockst) then
+           begin
+             symtablestack.pop(blockst);
+             if blockst.SymList.Count > 0 then
+               begin
+                 if not assigned(current_procinfo.blocklocalsymtables) then
+                   current_procinfo.blocklocalsymtables:=tfpobjectlist.create(true);
+                 current_procinfo.blocklocalsymtables.add(blockst);
+               end
+             else
+               blockst.free;
+           end;
 
          last:=cblocknode.create(first);
          last.fileinfo:=filepos;

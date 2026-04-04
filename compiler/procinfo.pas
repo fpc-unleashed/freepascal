@@ -144,6 +144,10 @@ unit procinfo;
           localrefsyms : tfpobjectlist;
           localrefdefs : tfpobjectlist;
 
+          { block-scoped symtables for inline vars (m_inline_var); collected
+            during parsing and allocated in gen_alloc_symtable }
+          blocklocalsymtables : tfpobjectlist;
+
           { Registers saved by the current procedure - useful for peephole optimizers }
           saved_regs_int,
           saved_regs_address,
@@ -273,6 +277,8 @@ implementation
          localrefsyms := nil;
          localrefdefs.free;
          localrefdefs := nil;
+         blocklocalsymtables.free;
+         blocklocalsymtables := nil;
       end;
 
     procedure tprocinfo.destroy_tree;

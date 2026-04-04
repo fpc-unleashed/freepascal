@@ -1311,7 +1311,7 @@ implementation
         regidx : Tregisterindex;
       begin
         { There is no space allocated for not referenced locals }
-        if (sym.owner.symtabletype=localsymtable) and (sym.refs=0) then
+        if (sym.owner.symtabletype in [localsymtable,blocksymtable]) and (sym.refs=0) then
           exit;
 
         ss:='';

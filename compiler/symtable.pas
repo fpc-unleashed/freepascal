@@ -289,6 +289,12 @@ interface
           constructor create;
        end;
 
+       tblocksymtable = class(TSymtable)
+       public
+          constructor create(aparentst: TSymtable);
+          function checkduplicate(var hashedid:THashedIDString;sym:TSymEntry):boolean;override;
+       end;
+
        tmacrosymtable = class(tstoredsymtable)
        public
           constructor create(exported: boolean);
@@ -2869,6 +2875,33 @@ implementation
       begin
         inherited create('');
         symtabletype:=exceptsymtable;
+      end;
+
+
+{****************************************************************************
+                          TBlockSymtable
+****************************************************************************}
+
+    constructor tblocksymtable.create(aparentst: TSymtable);
+      begin
+        inherited create('');
+        symtabletype:=blocksymtable;
+        blockparentst:=aparentst;
+        { Inherit the nesting level from the enclosing symtable so that
+          loop-counter validity checks (which compare symtablelevel against
+          the current procedure level) still pass for inline for-loop vars. }
+        symtablelevel:=aparentst.symtablelevel;
+      end;
+
+
+    function tblocksymtable.checkduplicate(var hashedid:THashedIDString;sym:TSymEntry):boolean;
+      var
+        hsym : tsym;
+      begin
+        hsym:=tsym(FindWithHash(hashedid));
+        if assigned(hsym) then
+          DuplicateSym(hashedid,sym,hsym,false);
+        result:=assigned(hsym);
       end;
 
 

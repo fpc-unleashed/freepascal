@@ -95,6 +95,8 @@ interface
           DefList   : TFPObjectList;
           SymList   : TFPHashObjectList;
           defowner  : TDefEntry; { for records and objects }
+          { enclosing symtable for blocksymtable scope; nil for all other types }
+          blockparentst : TSymtable;
           moduleid  : longint;
           refcount  : smallint;
           currentvisibility : tvisibility;

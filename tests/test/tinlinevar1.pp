@@ -71,9 +71,46 @@ begin
     Halt(20);
 end;
 
+procedure TestBlockScoping;
+var
+  OuterVal: Integer;
+begin
+  OuterVal := 0;
+
+  { Variable declared in a nested block is local to that block }
+  begin
+    var Inner := 99;
+    OuterVal := Inner;
+  end;
+  if OuterVal <> 99 then
+    Halt(30);
+
+  { Inner block variable shadowing with same name as another scope }
+  begin
+    var X := 10;
+    begin
+      var X := 20; { inner X shadows outer X in this scope }
+      if X <> 20 then
+        Halt(31);
+    end;
+    { outer X still accessible here }
+    if X <> 10 then
+      Halt(32);
+  end;
+
+  { for-loop inline var is scoped to the loop }
+  var Sum := 0;
+  for var I := 1 to 3 do
+    Sum := Sum + I;
+  if Sum <> 6 then
+    Halt(33);
+  { I is not accessible here (would be a compile error) }
+end;
+
 begin
   TestBasicInlineVar;
   TestForLoopInlineVar;
   TestForInInlineVar;
+  TestBlockScoping;
   WriteLn('OK');
 end.

@@ -700,6 +700,7 @@ type
     parasymtable,          { arguments symtable              }
     withsymtable,          { with operator symtable          }
     exceptsymtable,        { try/except symtable             }
+    blocksymtable,         { inline-var block scope symtable }
     exportedmacrosymtable, { }
     localmacrosymtable,    { }
     enumsymtable,          { symtable for enum members       }

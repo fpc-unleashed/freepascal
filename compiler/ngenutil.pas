@@ -505,6 +505,8 @@ implementation
 
 
   class procedure tnodeutils.procdef_block_add_implicit_initialize_nodes(pd: tprocdef; var stat: tstatementnode);
+    var
+      blk_i: longint;
     begin
       { initialize local data like ansistrings }
       case pd.proctypeoption of
@@ -524,12 +526,20 @@ implementation
          { program init/final is generated in separate procedure }
          potype_proginit: ;
          else
-           current_procinfo.procdef.localst.SymList.ForEachCall(@sym_maybe_initialize,@stat);
+           begin
+             current_procinfo.procdef.localst.SymList.ForEachCall(@sym_maybe_initialize,@stat);
+             { also initialize managed vars in block-scoped symtables (m_inline_var) }
+             if assigned(current_procinfo.blocklocalsymtables) then
+               for blk_i:=0 to current_procinfo.blocklocalsymtables.count-1 do
+                 TSymtable(current_procinfo.blocklocalsymtables[blk_i]).SymList.ForEachCall(@sym_maybe_initialize,@stat);
+           end;
       end;
     end;
 
 
   class procedure tnodeutils.procdef_block_add_implicit_finalize_nodes(pd: tprocdef; var stat: tstatementnode);
+    var
+      blk_i: longint;
     begin
       { no finalization in exceptfilters, they /are/ the finalization code }
       if current_procinfo.procdef.proctypeoption=potype_exceptfilter then
@@ -553,7 +563,13 @@ implementation
          { program init/final is generated in separate procedure }
          potype_proginit: ;
          else
-           current_procinfo.procdef.localst.SymList.ForEachCall(@local_varsyms_finalize,@stat);
+           begin
+             current_procinfo.procdef.localst.SymList.ForEachCall(@local_varsyms_finalize,@stat);
+             { also finalize managed vars in block-scoped symtables (m_inline_var) }
+             if assigned(current_procinfo.blocklocalsymtables) then
+               for blk_i:=0 to current_procinfo.blocklocalsymtables.count-1 do
+                 TSymtable(current_procinfo.blocklocalsymtables[blk_i]).SymList.ForEachCall(@local_varsyms_finalize,@stat);
+           end;
       end;
     end;
 

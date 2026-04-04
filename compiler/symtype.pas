@@ -264,6 +264,8 @@ implementation
                 result:=st;
                 exit;
               end;
+            blocksymtable :
+              st:=st.blockparentst;
             exceptsymtable,
             recordsymtable,
             enumsymtable,
@@ -532,7 +534,12 @@ implementation
           defs when reloading the derived ones from the ppu }
         origowner:=owner;
         while not(origowner.symtabletype in [localsymtable,staticsymtable,globalsymtable,exceptsymtable]) do
-          origowner:=origowner.defowner.owner;
+          begin
+            if origowner.symtabletype=blocksymtable then
+              origowner:=origowner.blockparentst
+            else
+              origowner:=origowner.defowner.owner;
+          end;
         { if the def is in an exceptionsymtable, we can't create a reusable
           def because the original one will be freed when the (always
           temporary) exceptionsymtable is freed }
