@@ -942,14 +942,20 @@ implementation
                  result := cerrornode.create;
                end;
 
-             { Pop the for-loop block scope; register it with the procdef so it
-               remains available for codegen and debug info emission. }
+             { Pop the for-loop block scope; wrap the for-statement in a
+               block node that owns the symtable so codegen emits begin/end
+               labels around the loop and DWARF scopes the loop variable
+               properly. }
              if assigned(forblockst) then
                begin
                  symtablestack.pop(forblockst);
                  if not assigned(current_procinfo.procdef.blocklocalsymtables) then
                    current_procinfo.procdef.blocklocalsymtables:=tfpobjectlist.create(true);
                  current_procinfo.procdef.blocklocalsymtables.add(forblockst);
+                 hloopvar:=cblocknode.create(cstatementnode.create(result,nil));
+                 hloopvar.fileinfo:=result.fileinfo;
+                 tblocknode(hloopvar).blocksymtable:=forblockst;
+                 result:=hloopvar;
                end;
            end
          else
