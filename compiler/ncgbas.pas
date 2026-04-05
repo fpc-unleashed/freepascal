@@ -78,7 +78,7 @@ interface
       globals,
       cutils,verbose,
       aasmbase,aasmcpu,
-      symsym,symconst,defutil,
+      symsym,symconst,symtable,defutil,
       pass_2,ncgutil,
       cgbase,cgobj,hlcgobj,
       procinfo,
@@ -464,6 +464,13 @@ interface
             include(flowcontrol,fc_no_direct_exit);
           end;
 
+        { emit begin label for DWARF lexical block scoping }
+        if assigned(blocksymtable) and (blocksymtable.SymList.Count>0) then
+          begin
+            current_asmdata.getlabel(blocksymtable.dbg_begin_label,alt_dbgtype);
+            cg.a_label(current_asmdata.CurrAsmList,blocksymtable.dbg_begin_label);
+          end;
+
         { do second pass on left node }
         if assigned(left) then
          begin
@@ -479,6 +486,13 @@ interface
               hp:=tstatementnode(hp.right);
             end;
          end;
+
+        { emit end label for DWARF lexical block scoping }
+        if assigned(blocksymtable) and assigned(blocksymtable.dbg_begin_label) then
+          begin
+            current_asmdata.getlabel(blocksymtable.dbg_end_label,alt_dbgtype);
+            cg.a_label(current_asmdata.CurrAsmList,blocksymtable.dbg_end_label);
+          end;
 
         { write exitlabel }
         if nf_block_with_exit in flags then

@@ -2033,7 +2033,12 @@ implementation
         st             : tsymtable;
         vmtoffset      : pint;
         in_currentunit : boolean;
-        blk_i          : longint;
+        blk_i, sym_i   : longint;
+        blk_sym        : tsym;
+        loc_i          : longint;
+        loc_sym        : tsym;
+        conflict_label : tasmlabel;
+        conflict_names : TFPHashList;
       begin
         { only write debug info for procedures defined in the current module,
           except in case of methods (gcc-compatible)
@@ -2209,13 +2214,128 @@ implementation
            assigned(def.localst) and
            (def.localst.symtabletype=localsymtable) then
           begin
+            { Emit localsymtable vars that collide with a same-named var
+              inside a DW_TAG_lexical_block (from an inline-var nested
+              block) wrapped in a lexical block of their own, starting at
+              the end of the conflicting block.  Without this, at a PC
+              inside the nested block both vars would be "visible" to the
+              debugger and Lazarus freezes on the duplicate name. }
+            conflict_names:=nil;
+            if assigned(def.blocklocalsymtables) then
+              begin
+                conflict_names:=TFPHashList.Create;
+                try
+                  { Build name -> latest end_label map from blocksymtables.
+                    Iterate in reverse so that the latest (highest-PC)
+                    end_label wins when a name appears in multiple blocks;
+                    Find returns the first-added entry. }
+                  for blk_i:=def.blocklocalsymtables.count-1 downto 0 do
+                    begin
+                      st:=TSymtable(def.blocklocalsymtables[blk_i]);
+                      if not((st is tblocksymtable) and
+                             assigned(tblocksymtable(st).dbg_end_label)) then
+                        continue;
+                      for sym_i:=0 to st.SymList.Count-1 do
+                        begin
+                          blk_sym:=tsym(st.SymList[sym_i]);
+                          if (blk_sym.visibility=vis_hidden) or
+                             (sp_generic_dummy in blk_sym.symoptions) or
+                             (blk_sym.typ<>localvarsym) then
+                            continue;
+                          if tlocalvarsym(blk_sym).refs=0 then
+                            continue;
+                          if conflict_names.Find(symname(blk_sym,false))<>nil then
+                            continue;
+                          conflict_names.Add(symname(blk_sym,false),
+                            tblocksymtable(st).dbg_end_label);
+                        end;
+                    end;
+                  { For each localst var whose name is in the map, emit it
+                    inside a lexical block starting at that end_label and
+                    covering the rest of the procedure. }
+                  for loc_i:=0 to def.localst.SymList.Count-1 do
+                    begin
+                      loc_sym:=tsym(def.localst.SymList[loc_i]);
+                      if (loc_sym.visibility=vis_hidden) or
+                         loc_sym.isdbgwritten or
+                         (sp_generic_dummy in loc_sym.symoptions) or
+                         (loc_sym.typ<>localvarsym) then
+                        continue;
+                      conflict_label:=tasmlabel(conflict_names.Find(symname(loc_sym,false)));
+                      if not assigned(conflict_label) then
+                        continue;
+                      append_entry(DW_TAG_lexical_block,true,[]);
+                      append_labelentry(DW_AT_low_pc,conflict_label);
+                      append_labelentry(DW_AT_high_pc,procendlabel);
+                      finish_entry;
+                      beforeappendsym(current_asmdata.asmlists[al_dwarf_info],loc_sym);
+                      appendsym_var(
+                        current_asmdata.asmlists[al_dwarf_info],
+                        tlocalvarsym(loc_sym));
+                      loc_sym.isdbgwritten:=true;
+                      finish_children;
+                    end;
+                finally
+                  conflict_names.Free;
+                end;
+              end;
             write_symtable_syms(current_asmdata.asmlists[al_dwarf_info],def.localst);
-            { emit inline vars (block-scoped) as direct DW_TAG_variable children
-              of DW_TAG_subprogram — widest debugger compatibility }
+            { emit block-scoped inline vars inside DW_TAG_lexical_block
+              entries so that the debugger shows only the variables
+              visible in the current scope }
             if assigned(def.blocklocalsymtables) then
               for blk_i:=0 to def.blocklocalsymtables.count-1 do
-                write_symtable_syms(current_asmdata.asmlists[al_dwarf_info],
-                  TSymtable(def.blocklocalsymtables[blk_i]));
+                begin
+                  st:=TSymtable(def.blocklocalsymtables[blk_i]);
+                  if (st is tblocksymtable) and
+                     assigned(tblocksymtable(st).dbg_begin_label) and
+                     assigned(tblocksymtable(st).dbg_end_label) then
+                    begin
+                      { open a lexical block with the code range of
+                        this begin..end block }
+                      append_entry(DW_TAG_lexical_block,true,[]);
+                      append_labelentry(DW_AT_low_pc,tblocksymtable(st).dbg_begin_label);
+                      append_labelentry(DW_AT_high_pc,tblocksymtable(st).dbg_end_label);
+                      finish_entry;
+                      for sym_i:=0 to st.SymList.Count-1 do
+                        begin
+                          blk_sym:=tsym(st.SymList[sym_i]);
+                          if (blk_sym.visibility=vis_hidden) or
+                             blk_sym.isdbgwritten or
+                             (sp_generic_dummy in blk_sym.symoptions) or
+                             (blk_sym.typ<>localvarsym) then
+                            continue;
+                          if tlocalvarsym(blk_sym).refs=0 then
+                            continue;
+                          beforeappendsym(current_asmdata.asmlists[al_dwarf_info],blk_sym);
+                          appendsym_var(
+                            current_asmdata.asmlists[al_dwarf_info],
+                            tlocalvarsym(blk_sym));
+                          blk_sym.isdbgwritten:=true;
+                        end;
+                      finish_children;
+                    end
+                  else
+                    begin
+                      { fallback: emit as flat children of the subprogram }
+                      for sym_i:=0 to st.SymList.Count-1 do
+                        begin
+                          blk_sym:=tsym(st.SymList[sym_i]);
+                          if (blk_sym.visibility=vis_hidden) or
+                             blk_sym.isdbgwritten or
+                             (sp_generic_dummy in blk_sym.symoptions) or
+                             (blk_sym.typ<>localvarsym) then
+                            continue;
+                          if tlocalvarsym(blk_sym).refs=0 then
+                            continue;
+                          beforeappendsym(current_asmdata.asmlists[al_dwarf_info],blk_sym);
+                          appendsym_var(
+                            current_asmdata.asmlists[al_dwarf_info],
+                            tlocalvarsym(blk_sym));
+                          blk_sym.isdbgwritten:=true;
+                        end;
+                    end;
+                end;
           end;
 
         { last write the types from this procdef }
