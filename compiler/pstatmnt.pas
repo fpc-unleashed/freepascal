@@ -1903,8 +1903,11 @@ implementation
                 begin
                   { String literal constants get type array[0..n] of char
                     (cst_conststring).  Promote to the default string type
-                    so that comparisons and assignments behave as expected. }
-                  if is_conststring_array(hdef) then
+                    so that comparisons and assignments behave as expected.
+                    Single char literals are also promoted to string so
+                    that var s := 'x' behaves consistently with var s := 'xx'. }
+                  if is_conststring_array(hdef) or
+                     (not(nf_explicit in initexpr.flags) and is_char(hdef)) then
                     begin
                       if m_default_unicodestring in current_settings.modeswitches then
                         hdef := cunicodestringtype
