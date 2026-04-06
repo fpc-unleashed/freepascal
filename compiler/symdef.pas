@@ -4787,11 +4787,10 @@ implementation
       begin
          if ado_isarrayofconst in arrayoptions then
           getmangledparaname:='array_of_const'
+         else if ((highrange=-1) and (lowrange=0)) then
+          getmangledparaname:='array_of_'+elementdef.mangledparaname
          else
-          if ((highrange=-1) and (lowrange=0)) then
-           getmangledparaname:='array_of_'+elementdef.mangledparaname
-         else
-          internalerror(200204176);
+          getmangledparaname:='array$'+tostr(lowrange)+'$'+tostr(highrange)+'$of$'+elementdef.mangledparaname;
       end;
 
 
