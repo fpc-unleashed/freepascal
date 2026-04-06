@@ -785,7 +785,13 @@ implementation
                { Infer the loop variable type from the 'from' expression. }
                if assigned(hfrom.resultdef) and (hfrom.resultdef <> generrordef) then
                  begin
-                   loopvs.vardef := hfrom.resultdef;
+                   { Promote sub-32-bit integers to LongInt, same as
+                     inline_var_statement does for var i := expr. }
+                   if not(nf_explicit in hfrom.flags) and is_integer(hfrom.resultdef) and
+                      (torddef(hfrom.resultdef).ordtype in [s8bit,u8bit,s16bit,u16bit]) then
+                     loopvs.vardef := s32inttype
+                   else
+                     loopvs.vardef := hfrom.resultdef;
                    if loopvs.typ = staticvarsym then
                      cnodeutils.insertbssdata(tstaticvarsym(loopvs));
                  end
