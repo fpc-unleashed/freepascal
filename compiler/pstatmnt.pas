@@ -2217,8 +2217,16 @@ implementation
                                         end
                                       else
                                         begin
-                                          { Variable index - generate if-chain for jump }
-                                          code:=generate_arraylabel_goto(tlabelsym(srsym),p);
+                                          { Variable index - generate dispatch for jump.
+                                            Requires explicit label declaration with range. }
+                                          if tlabelsym(srsym).arraylabel_lo<=tlabelsym(srsym).arraylabel_hi then
+                                            code:=generate_arraylabel_goto(tlabelsym(srsym),p)
+                                          else
+                                            begin
+                                              p.free;
+                                              Message(sym_e_label_not_found);
+                                              code:=cerrornode.create;
+                                            end;
                                         end;
                                     end;
                                 end;
