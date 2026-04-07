@@ -71,8 +71,11 @@ implementation
           String constants are typed as chararray (array of char with
           ado_IsConstString), so chararray must be promoted like strings. }
         if not assigned(olddef) or
-            (is_anychar(olddef) and (is_string(branchdef) or is_chararray(branchdef))) then
+            (is_anychar(olddef) and is_string(branchdef)) then
           result:=branchdef
+        else if (is_anychar(olddef) and is_chararray(branchdef)) or
+                (is_chararray(olddef) and is_anychar(branchdef)) then
+          result:=cansistringtype
         else if is_widestring(branchdef) or
                 ((is_ansistring(olddef) or is_shortstring(olddef) or is_chararray(olddef)) and is_widechar(branchdef)) then
           result:=cwidestringtype
