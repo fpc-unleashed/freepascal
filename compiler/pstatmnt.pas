@@ -1914,8 +1914,9 @@ implementation
             end
           else if token = _ASSIGNMENT then
             begin
-              { Type inference:  var x := expr }
-              if sc.count > 1 then
+              { Type inference:  var x := expr or var x, y := expr }
+              if (sc.count > 1) and
+                 not(m_multi_var_init in current_settings.modeswitches) then
                 Message(parser_e_initialized_only_one_var);
               consume(_ASSIGNMENT);
               vs := tabstractnormalvarsym(sc[0]);
@@ -1958,13 +1959,30 @@ implementation
                   if not(nf_explicit in initexpr.flags) and is_integer(hdef) and
                      (torddef(hdef).ordtype in [s8bit,u8bit,s16bit,u16bit]) then
                     hdef := s32inttype;
-                  vs.vardef := hdef;
-                  vs.varstate := vs_initialised;
-                  if vs.typ = staticvarsym then
-                    cnodeutils.insertbssdata(tstaticvarsym(vs));
-                  result := cassignmentnode.create(
-                    cloadnode.create(vs, vs.owner),
-                    initexpr);
+                  for i := 0 to sc.count - 1 do
+                    begin
+                      tabstractnormalvarsym(sc[i]).vardef := hdef;
+                      tabstractnormalvarsym(sc[i]).varstate := vs_initialised;
+                      if tsym(sc[i]).typ = staticvarsym then
+                        cnodeutils.insertbssdata(tstaticvarsym(sc[i]));
+                    end;
+                  if sc.count = 1 then
+                    result := cassignmentnode.create(
+                      cloadnode.create(vs, vs.owner),
+                      initexpr)
+                  else
+                    begin
+                      result := internalstatements(statements);
+                      tempnode := ctempcreatenode.create(hdef, hdef.size, tt_persistent, true);
+                      addstatement(statements, tempnode);
+                      addstatement(statements, cassignmentnode.create(
+                        ctemprefnode.create(tempnode), initexpr));
+                      for i := 0 to sc.count - 1 do
+                        addstatement(statements, cassignmentnode.create(
+                          cloadnode.create(tsym(sc[i]), tsym(sc[i]).owner),
+                          ctemprefnode.create(tempnode)));
+                      addstatement(statements, ctempdeletenode.create(tempnode));
+                    end;
                 end;
             end
           else
