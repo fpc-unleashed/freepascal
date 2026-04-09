@@ -1822,6 +1822,8 @@ implementation
         i              : longint;
         sc             : TFPObjectList;
         old_block_type : tblock_type;
+        statements     : tstatementnode;
+        tempnode        : ttempcreatenode;
       begin
         result := nil;
         consume(_VAR);
@@ -1876,14 +1878,36 @@ implementation
               if try_to_consume(_ASSIGNMENT) then
                 begin
                   { Only one variable may be initialised at a time. }
-                  if sc.count > 1 then
+                  if (sc.count > 1) and
+                     not(m_multi_var_init in current_settings.modeswitches) then
                     Message(parser_e_initialized_only_one_var);
                   block_type := old_block_type;
                   initexpr := expr(true);
-                  tabstractnormalvarsym(sc[0]).varstate := vs_initialised;
-                  result := cassignmentnode.create(
-                    cloadnode.create(tsym(sc[0]), tsym(sc[0]).owner),
-                    initexpr);
+                  if sc.count = 1 then
+                    begin
+                      tabstractnormalvarsym(sc[0]).varstate := vs_initialised;
+                      result := cassignmentnode.create(
+                        cloadnode.create(tsym(sc[0]), tsym(sc[0]).owner),
+                        initexpr);
+                    end
+                  else
+                    begin
+                      { multi-var: temp := expr; a := temp; b := temp; }
+                      do_typecheckpass(initexpr);
+                      result := internalstatements(statements);
+                      tempnode := ctempcreatenode.create(hdef, hdef.size, tt_persistent, true);
+                      addstatement(statements, tempnode);
+                      addstatement(statements, cassignmentnode.create(
+                        ctemprefnode.create(tempnode), initexpr));
+                      for i := 0 to sc.count - 1 do
+                        begin
+                          tabstractnormalvarsym(sc[i]).varstate := vs_initialised;
+                          addstatement(statements, cassignmentnode.create(
+                            cloadnode.create(tsym(sc[i]), tsym(sc[i]).owner),
+                            ctemprefnode.create(tempnode)));
+                        end;
+                      addstatement(statements, ctempdeletenode.create(tempnode));
+                    end;
                 end
               else
                 result := cnothingnode.create;

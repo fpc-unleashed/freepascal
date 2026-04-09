@@ -1135,9 +1135,13 @@ implementation
           vs : tabstractnormalvarsym;
           tcsym : tstaticvarsym;
           templist : tasmlist;
+          i : longint;
+          tokenbuf : tdynamicarray;
+          already_recording : boolean;
         begin
           vs:=tabstractnormalvarsym(sc[0]);
-          if sc.count>1 then
+          if (sc.count>1) and
+             not(m_multi_var_init in current_settings.modeswitches) then
             Message(parser_e_initialized_only_one_var);
           if vo_is_thread_var in vs.varoptions then
             Message(parser_e_initialized_not_for_threadvar);
@@ -1156,7 +1160,11 @@ implementation
                   generation for LLVM) }
                 if not parse_generic then
                   begin
-                    vs.defaultconstsym:=tcsym;
+                    for i:=0 to sc.count-1 do
+                      begin
+                        tabstractnormalvarsym(sc[i]).defaultconstsym:=tcsym;
+                        tabstractnormalvarsym(sc[i]).varstate:=vs_initialised;
+                      end;
                     current_asmdata.asmlists[al_typedconsts].concatlist(templist);
                   end;
                 templist.free;
@@ -1165,12 +1173,33 @@ implementation
             staticvarsym :
               begin
                 maybe_guarantee_record_typesym(vs.vardef,vs.vardef.owner);
-                read_typed_const(current_asmdata.asmlists[al_typedconsts],tstaticvarsym(vs),false);
+                if sc.count<=1 then
+                  read_typed_const(current_asmdata.asmlists[al_typedconsts],tstaticvarsym(vs),false)
+                else
+                  begin
+                    { record tokens so we can replay them for each variable }
+                    already_recording:=current_scanner.is_recording_tokens;
+                    tokenbuf:=tdynamicarray.create(256);
+                    if not already_recording then
+                      current_scanner.startrecordtokens(tokenbuf);
+                    read_typed_const(current_asmdata.asmlists[al_typedconsts],tstaticvarsym(vs),false);
+                    if not already_recording then
+                      current_scanner.stoprecordtokens;
+                    for i:=1 to sc.count-1 do
+                      begin
+                        maybe_guarantee_record_typesym(tabstractnormalvarsym(sc[i]).vardef,tabstractnormalvarsym(sc[i]).vardef.owner);
+                        tokenbuf.seek(0);
+                        current_scanner.startreplaytokens(tokenbuf,false);
+                        read_typed_const(current_asmdata.asmlists[al_typedconsts],tstaticvarsym(sc[i]),false);
+                      end;
+                    tokenbuf.free;
+                  end;
               end;
             else
               internalerror(200611051);
           end;
-          vs.varstate:=vs_initialised;
+          for i:=0 to sc.count-1 do
+            tabstractnormalvarsym(sc[i]).varstate:=vs_initialised;
         end;
 
 {$ifdef gpc_mode}
