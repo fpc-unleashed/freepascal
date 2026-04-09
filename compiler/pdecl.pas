@@ -237,20 +237,41 @@ implementation
          skip_initialiser : boolean;
          varspez : tvarspez;
          asmtype : tasmlisttype;
+         names : array of TIDString;
+         positions : array of tfileposinfo;
+         syms : array of tsym;
+         namecount,ni : longint;
+         tokenbuf : tdynamicarray;
+         already_recording : boolean;
       begin
          old_block_type:=block_type;
          block_type:=bt_const;
          had_generic:=false;
          first:=true;
          repeat
-           orgname:=current_scanner.orgpattern;
-           filepos:=current_tokenpos;
-           isgeneric:=not (m_delphi in current_settings.modeswitches) and (current_scanner.token=_ID) and (current_scanner.idtoken=_GENERIC);
-           consume(_ID);
+           { collect one or more names separated by commas }
+           namecount:=0;
+           names:=nil;
+           positions:=nil;
+           syms:=nil;
+           repeat
+             setlength(names,namecount+1);
+             setlength(positions,namecount+1);
+             names[namecount]:=current_scanner.orgpattern;
+             positions[namecount]:=current_tokenpos;
+             inc(namecount);
+             consume(_ID);
+           until not((m_multi_var_init in current_settings.modeswitches) and
+                     try_to_consume(_COMMA));
+           orgname:=names[0];
+           filepos:=positions[0];
+           isgeneric:=not (m_delphi in current_settings.modeswitches) and (namecount=1) and (current_scanner.idtoken=_GENERIC);
            case current_scanner.token of
 
              _EQ:
                 begin
+                   if namecount>1 then
+                     Message(parser_e_initialized_only_one_var);
                    consume(_EQ);
                    sym:=readconstant(orgname,filepos,nodetype);
                    { Support hint directives }
@@ -294,9 +315,6 @@ implementation
                    consume(_COLON);
                    read_anon_type(hdef,false,nil);
                    block_type:=bt_const;
-                   { create symbol }
-                   storetokenpos:=current_tokenpos;
-                   current_tokenpos:=filepos;
                    if not (cs_typed_const_writable in current_settings.localswitches) then
                      begin
                        varspez:=vs_const;
@@ -307,26 +325,34 @@ implementation
                        varspez:=vs_value;
                        asmtype:=al_typedconsts;
                      end;
-                   { if we are dealing with structure const then we need to handle it as a
-                     structure static variable: create a symbol in unit symtable and a reference
-                     to it from the structure or linking will fail }
-                   if symtablestack.top.symtabletype in [recordsymtable,ObjectSymtable] then
+                   { create symbol(s) }
+                   setlength(syms,namecount);
+                   for ni:=0 to namecount-1 do
                      begin
-                       { note: we keep hdef so that we might at least read the
-                               constant data correctly for error recovery }
-                       check_allowed_for_var_or_const(hdef,false);
-                       sym:=cfieldvarsym.create(orgname,varspez,hdef,[]);
-                       symtablestack.top.insertsym(sym);
-                       sym:=make_field_static(symtablestack.top,tfieldvarsym(sym));
-                     end
-                   else
-                     begin
-                       sym:=cstaticvarsym.create(orgname,varspez,hdef,[]);
-                       sym.visibility:=symtablestack.top.currentvisibility;
-                       symtablestack.top.insertsym(sym);
+                       storetokenpos:=current_tokenpos;
+                       current_tokenpos:=positions[ni];
+                       { if we are dealing with structure const then we need to handle it as a
+                         structure static variable: create a symbol in unit symtable and a reference
+                         to it from the structure or linking will fail }
+                       if symtablestack.top.symtabletype in [recordsymtable,ObjectSymtable] then
+                         begin
+                           { note: we keep hdef so that we might at least read the
+                                   constant data correctly for error recovery }
+                           check_allowed_for_var_or_const(hdef,false);
+                           syms[ni]:=cfieldvarsym.create(names[ni],varspez,hdef,[]);
+                           symtablestack.top.insertsym(syms[ni]);
+                           syms[ni]:=make_field_static(symtablestack.top,tfieldvarsym(syms[ni]));
+                         end
+                       else
+                         begin
+                           syms[ni]:=cstaticvarsym.create(names[ni],varspez,hdef,[]);
+                           syms[ni].visibility:=symtablestack.top.currentvisibility;
+                           symtablestack.top.insertsym(syms[ni]);
+                         end;
+                       syms[ni].register_sym;
+                       current_tokenpos:=storetokenpos;
                      end;
-                   sym.register_sym;
-                   current_tokenpos:=storetokenpos;
+                   sym:=syms[0];
                    skip_initialiser:=false;
                    { Anonymous proctype definitions can have proc directives }
                    if (
@@ -355,8 +381,31 @@ implementation
                    if not skip_initialiser then
                     begin
                       consume(_EQ);
-                      maybe_guarantee_record_typesym(tstaticvarsym(sym).vardef,tstaticvarsym(sym).vardef.owner);
-                      read_typed_const(current_asmdata.asmlists[asmtype],tstaticvarsym(sym),in_structure);
+                      if namecount=1 then
+                        begin
+                          maybe_guarantee_record_typesym(tstaticvarsym(sym).vardef,tstaticvarsym(sym).vardef.owner);
+                          read_typed_const(current_asmdata.asmlists[asmtype],tstaticvarsym(sym),in_structure);
+                        end
+                      else
+                        begin
+                          { record tokens for replay }
+                          already_recording:=current_scanner.is_recording_tokens;
+                          tokenbuf:=tdynamicarray.create(256);
+                          if not already_recording then
+                            current_scanner.startrecordtokens(tokenbuf);
+                          maybe_guarantee_record_typesym(tstaticvarsym(sym).vardef,tstaticvarsym(sym).vardef.owner);
+                          read_typed_const(current_asmdata.asmlists[asmtype],tstaticvarsym(sym),in_structure);
+                          if not already_recording then
+                            current_scanner.stoprecordtokens;
+                          for ni:=1 to namecount-1 do
+                            begin
+                              maybe_guarantee_record_typesym(tstaticvarsym(syms[ni]).vardef,tstaticvarsym(syms[ni]).vardef.owner);
+                              tokenbuf.seek(0);
+                              current_scanner.startreplaytokens(tokenbuf,false);
+                              read_typed_const(current_asmdata.asmlists[asmtype],tstaticvarsym(syms[ni]),in_structure);
+                            end;
+                          tokenbuf.free;
+                        end;
                     end;
                 end;
 
