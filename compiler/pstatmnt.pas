@@ -2148,6 +2148,37 @@ implementation
         addstatement(statements,ctempdeletenode.create_normal_temp(tempnode));
       end;
 
+    { Multi-variable assignment: a, b, c := expr
+      first_target is the already-parsed first LHS node. }
+    function multi_var_assign(first_target: tnode): tnode;
+      var
+        targets    : TFPObjectList;
+        initexpr   : tnode;
+        statements : tstatementnode;
+        tempnode    : ttempcreatenode;
+        i          : longint;
+      begin
+        targets:=TFPObjectList.create(false);
+        try
+          targets.add(first_target);
+          { use comp_expr so that := is NOT consumed as part of the target }
+          while try_to_consume(_COMMA) do
+            targets.add(comp_expr([ef_accept_equal]));
+          consume(_ASSIGNMENT);
+          initexpr:=expr(true);
+          do_typecheckpass(initexpr);
+          result:=internalstatements(statements);
+          tempnode:=ctempcreatenode.create(initexpr.resultdef,initexpr.resultdef.size,tt_persistent,true);
+          addstatement(statements,tempnode);
+          addstatement(statements,cassignmentnode.create(ctemprefnode.create(tempnode),initexpr));
+          for i:=0 to targets.count-1 do
+            addstatement(statements,cassignmentnode.create(tnode(targets[i]),ctemprefnode.create(tempnode)));
+          addstatement(statements,ctempdeletenode.create(tempnode));
+        finally
+          targets.free;
+        end;
+      end;
+
     function statement : tnode;
       var
          p,
@@ -2453,6 +2484,16 @@ implementation
              }
              s:=current_scanner.pattern;
 
+             { Multi-variable assignment: a, b, c := expr }
+             if (current_scanner.token=_COMMA) and
+                (m_multi_var_init in current_settings.modeswitches) then
+               begin
+                 p:=multi_var_assign(p);
+                 code:=p;
+               end
+             else
+             begin
+
              { When a colon follows a intconst then transform it into a label }
              if (p.nodetype=ordconstn) and
                 try_to_consume(_COLON) then
@@ -2568,6 +2609,7 @@ implementation
                end;
 
              code:=p;
+           end; { else (not multi-var assign) }
            end;
          end;
          if assigned(code) then
