@@ -1085,6 +1085,30 @@ implementation
          do_typecheckpass(p);
          entrypos:=p.fileinfo;
 
+         { unleashed: `with EnumType do` exposes the type's enum members
+           without qualification (useful with $SCOPEDENUMS). Only a type
+           reference makes sense here - there is no instance to bind, so
+           the regular refnode machinery is skipped entirely. }
+         if (m_unleashed in current_settings.modeswitches) and
+            (p.nodetype=typen) and (p.resultdef.typ=enumdef) then
+           begin
+             st:=tenumdef(p.resultdef).symtable;
+             symtablestack.push(st);
+             if try_to_consume(_COMMA) then
+               result:=_with_statement(seensyms,seenfields,shadowcands)
+             else
+               begin
+                 consume(_DO);
+                 if current_scanner.token<>_SEMICOLON then
+                   result:=statement
+                 else
+                   result:=cnothingnode.create;
+               end;
+             symtablestack.pop(st);
+             p.free;
+             exit;
+           end;
+
          { detect duplicate symbols in the WITH list (only for plain
            symbol references - p^, foo(), a[i] are intentionally skipped) }
          if (m_unleashed in current_settings.modeswitches) and
