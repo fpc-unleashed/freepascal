@@ -986,11 +986,55 @@ implementation
       end;
 
 
-    function _with_statement(seensyms : TFPList) : tnode;
+    type
+      twithshadowcand = class
+        fname : TSymStr;
+        frealname : TSymStr;
+        fpos : tfileposinfo;
+        constructor Create(const an,arn:TSymStr;const afp:tfileposinfo);
+      end;
+
+    constructor twithshadowcand.Create(const an,arn:TSymStr;const afp:tfileposinfo);
+      begin
+        fname:=an;
+        frealname:=arn;
+        fpos:=afp;
+      end;
+
+    { collect names of field symbols actually referenced inside a with-body,
+      used to suppress shadow warnings for unused fields }
+    function with_shadow_collect_used(var n: tnode; arg: pointer): foreachnoderesult;
+      var
+        used : TFPHashList;
+        sym  : tsym;
+      begin
+        used:=TFPHashList(arg);
+        result:=fen_true;
+        case n.nodetype of
+          subscriptn:
+            begin
+              sym:=tsubscriptnode(n).vs;
+              if assigned(sym) and (used.Find(sym.name)=nil) then
+                used.Add(sym.name,sym);
+            end;
+          loadn:
+            begin
+              sym:=tloadnode(n).symtableentry;
+              if assigned(sym) and (sym.typ=fieldvarsym) and
+                 (used.Find(sym.name)=nil) then
+                used.Add(sym.name,sym);
+            end;
+          else
+            ;
+        end;
+      end;
+
+
+    function _with_statement(seensyms : TFPList;seenfields : TFPHashList;shadowcands : TFPObjectList) : tnode;
 
       var
          p   : tnode;
-         i   : longint;
+         i,j : longint;
          st  : TSymtable;
          newblock : tblocknode;
          newstatement : tstatementnode;
@@ -1003,7 +1047,9 @@ implementation
          helperdef : tobjectdef;
          hasimplicitderef : boolean;
          withsymtablelist : TFPObjectList;
-         dupsym : tsym;
+         dupsym,fsym : tsym;
+         localfields : TFPHashList;
+         entrypos : tfileposinfo;
 
          procedure pushobjchild(withdef,obj:tobjectdef);
          var
@@ -1037,6 +1083,7 @@ implementation
          calltempnode:=nil;
          p:=comp_expr([ef_accept_equal]);
          do_typecheckpass(p);
+         entrypos:=p.fileinfo;
 
          { detect duplicate symbols in the WITH list (only for plain
            symbol references - p^, foo(), a[i] are intentionally skipped) }
@@ -1202,8 +1249,38 @@ implementation
                 withsymtablelist.add(st);
               end;
 
+            { warn when a field from this entry shadows a field from an
+              earlier entry in the same WITH list (inheritance inside one
+              entry is collapsed via a local dedup set) }
+            localfields:=TFPHashList.Create;
+            try
+              for i:=0 to withsymtablelist.count-1 do
+                begin
+                  st:=TSymtable(withsymtablelist[i]);
+                  if not assigned(st) then
+                    continue;
+                  for j:=0 to st.SymList.Count-1 do
+                    begin
+                      fsym:=tsym(st.SymList[j]);
+                      if (fsym.typ=fieldvarsym) and
+                         (localfields.Find(fsym.name)=nil) then
+                        localfields.Add(fsym.name,fsym);
+                    end;
+                end;
+              for j:=0 to localfields.Count-1 do
+                begin
+                  fsym:=tsym(localfields.Items[j]);
+                  if seenfields.Find(fsym.name)<>nil then
+                    shadowcands.Add(twithshadowcand.Create(fsym.name,fsym.realname,entrypos))
+                  else
+                    seenfields.Add(fsym.name,fsym);
+                end;
+            finally
+              localfields.Free;
+            end;
+
             if try_to_consume(_COMMA) then
-              p:=_with_statement(seensyms)
+              p:=_with_statement(seensyms,seenfields,shadowcands)
             else
               begin
                 consume(_DO);
@@ -1239,7 +1316,7 @@ implementation
             { try to recover from error }
             if try_to_consume(_COMMA) then
              begin
-               hp:=_with_statement(seensyms);
+               hp:=_with_statement(seensyms,seenfields,shadowcands);
                if (hp=nil) then; { remove warning about unused }
              end
             else
@@ -1257,13 +1334,38 @@ implementation
     function with_statement : tnode;
       var
          seensyms : TFPList;
+         seenfields,usedfields : TFPHashList;
+         shadowcands : TFPObjectList;
+         i : longint;
+         cand : twithshadowcand;
       begin
          consume(_WITH);
          seensyms:=TFPList.Create;
+         seenfields:=TFPHashList.Create;
+         shadowcands:=TFPObjectList.Create(true);
          try
-           with_statement:=_with_statement(seensyms);
+           result:=_with_statement(seensyms,seenfields,shadowcands);
+           { only warn about shadowed fields that are actually referenced
+             inside the with-body (avoids noise for unused fields) }
+           if shadowcands.Count>0 then
+             begin
+               usedfields:=TFPHashList.Create;
+               try
+                 foreachnodestatic(result,@with_shadow_collect_used,usedfields);
+                 for i:=0 to shadowcands.Count-1 do
+                   begin
+                     cand:=twithshadowcand(shadowcands[i]);
+                     if usedfields.Find(cand.fname)<>nil then
+                       MessagePos1(cand.fpos,parser_w_with_shadowed_field,cand.frealname);
+                   end;
+               finally
+                 usedfields.Free;
+               end;
+             end;
          finally
            seensyms.Free;
+           seenfields.Free;
+           shadowcands.Free;
          end;
       end;
 

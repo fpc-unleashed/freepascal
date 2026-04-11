@@ -498,7 +498,7 @@ scan_e_improperly_indented_multiline_string=02120_E_Incorrectly indented multi-l
 #
 # Parser
 #
-# 03375 is the last used one
+# 03376 is the last used one
 #
 % \section{Parser messages}
 % This section lists all parser messages. The parser takes care of the
@@ -1724,6 +1724,9 @@ parser_e_no_suitable_newinstance_method_found=03374_E_No suitable NewInstance me
 parser_e_with_duplicate_symbol=03375_E_Duplicate symbol "$1" in WITH list
 % The same symbol appears more than once in the same \var{with} clause,
 % which is most likely a typo and makes the active scope ambiguous.
+parser_w_with_shadowed_field=03376_W_Field "$1" in WITH entry shadows an earlier field with the same name
+% Two entries in the same \var{with} clause expose a field with the same name.
+% The later entry hides the earlier one, which is most likely unintended.
 %
 % \end{description}
 %
