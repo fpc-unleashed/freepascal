@@ -1087,7 +1087,8 @@ implementation
 
          { detect duplicate symbols in the WITH list (only for plain
            symbol references - p^, foo(), a[i] are intentionally skipped) }
-         if (p.nodetype=loadn) and assigned(tloadnode(p).symtableentry) then
+         if (m_unleashed in current_settings.modeswitches) and
+            (p.nodetype=loadn) and assigned(tloadnode(p).symtableentry) then
            begin
              dupsym:=tloadnode(p).symtableentry;
              if seensyms.IndexOf(dupsym)>=0 then
@@ -1252,32 +1253,35 @@ implementation
             { warn when a field from this entry shadows a field from an
               earlier entry in the same WITH list (inheritance inside one
               entry is collapsed via a local dedup set) }
-            localfields:=TFPHashList.Create;
-            try
-              for i:=0 to withsymtablelist.count-1 do
-                begin
-                  st:=TSymtable(withsymtablelist[i]);
-                  if not assigned(st) then
-                    continue;
-                  for j:=0 to st.SymList.Count-1 do
+            if m_unleashed in current_settings.modeswitches then
+              begin
+                localfields:=TFPHashList.Create;
+                try
+                  for i:=0 to withsymtablelist.count-1 do
                     begin
-                      fsym:=tsym(st.SymList[j]);
-                      if (fsym.typ=fieldvarsym) and
-                         (localfields.Find(fsym.name)=nil) then
-                        localfields.Add(fsym.name,fsym);
+                      st:=TSymtable(withsymtablelist[i]);
+                      if not assigned(st) then
+                        continue;
+                      for j:=0 to st.SymList.Count-1 do
+                        begin
+                          fsym:=tsym(st.SymList[j]);
+                          if (fsym.typ=fieldvarsym) and
+                             (localfields.Find(fsym.name)=nil) then
+                            localfields.Add(fsym.name,fsym);
+                        end;
                     end;
+                  for j:=0 to localfields.Count-1 do
+                    begin
+                      fsym:=tsym(localfields.Items[j]);
+                      if seenfields.Find(fsym.name)<>nil then
+                        shadowcands.Add(twithshadowcand.Create(fsym.name,fsym.realname,entrypos))
+                      else
+                        seenfields.Add(fsym.name,fsym);
+                    end;
+                finally
+                  localfields.Free;
                 end;
-              for j:=0 to localfields.Count-1 do
-                begin
-                  fsym:=tsym(localfields.Items[j]);
-                  if seenfields.Find(fsym.name)<>nil then
-                    shadowcands.Add(twithshadowcand.Create(fsym.name,fsym.realname,entrypos))
-                  else
-                    seenfields.Add(fsym.name,fsym);
-                end;
-            finally
-              localfields.Free;
-            end;
+              end;
 
             if try_to_consume(_COMMA) then
               p:=_with_statement(seensyms,seenfields,shadowcands)

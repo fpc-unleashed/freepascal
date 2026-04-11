@@ -508,7 +508,7 @@ interface
        { Switches which can be changed by a mode (fpc,tp7,delphi) }
        tmodeswitch = (m_none,
          { generic }
-         m_fpc,m_objfpc,m_delphi,m_tp7,m_mac,m_iso,m_extpas,
+         m_fpc,m_objfpc,m_delphi,m_tp7,m_mac,m_iso,m_extpas,m_unleashed,
          {$ifdef gpc_mode}m_gpc,{$endif}
          { more specific }
          m_class,               { delphi class model }
@@ -568,7 +568,7 @@ interface
        tmodeswitches = set of tmodeswitch;
 
     const
-       alllanguagemodes = [m_fpc,m_objfpc,m_delphi,m_tp7,m_mac,m_iso,m_extpas];
+       alllanguagemodes = [m_fpc,m_objfpc,m_delphi,m_tp7,m_mac,m_iso,m_extpas,m_unleashed];
 
     type
        { Application types (platform specific) }
@@ -726,7 +726,7 @@ interface
        cstylearrayofconst = [pocall_cdecl,pocall_cppdecl,pocall_mwpascal,pocall_sysv_abi_cdecl,pocall_ms_abi_cdecl];
 
        modeswitchstr : array[tmodeswitch] of string[30] = ('',
-         '','','','','','','',
+         '','','','','','','','',
          {$ifdef gpc_mode}'',{$endif}
          { more specific }
          'CLASS',

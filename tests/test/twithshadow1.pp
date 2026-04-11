@@ -1,7 +1,7 @@
 { %OPT=-Sew -vw }
 { %FAIL }
 { test with-list shadow warning: field hidden by later entry must warn }
-{$mode objfpc}
+{$mode unleashed}
 
 type
   TA = record

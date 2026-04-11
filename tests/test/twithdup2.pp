@@ -1,6 +1,6 @@
 { %FAIL }
 { test with-list duplicate detection: duplicate symbol must be rejected }
-{$mode objfpc}
+{$mode unleashed}
 
 type
   TPoint = record

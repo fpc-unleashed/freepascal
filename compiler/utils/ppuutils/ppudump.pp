@@ -2447,7 +2447,7 @@ const
        modeswitchname : array[tmodeswitch] of string[50] =
         ('m_none',
          { generic }
-         'm_fpc','m_objfpc','m_delphi','m_tp7','m_mac','m_iso','m_extpas',
+         'm_fpc','m_objfpc','m_delphi','m_tp7','m_mac','m_iso','m_extpas','m_unleashed',
          {$ifdef gpc_mode}'m_gpc',{$endif}
          { more specific }
          'm_class',               { delphi class model }

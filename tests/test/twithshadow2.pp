@@ -1,6 +1,6 @@
 { %OPT=-Sew -vw }
 { test with-list shadow warning: distinct field names must not warn }
-{$mode objfpc}
+{$mode unleashed}
 
 type
   TA = record

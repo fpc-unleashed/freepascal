@@ -1,5 +1,5 @@
 { test with-list duplicate detection: valid cases must compile and run }
-{$mode objfpc}
+{$mode unleashed}
 
 type
   TPoint = record
