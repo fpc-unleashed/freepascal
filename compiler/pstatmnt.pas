@@ -986,7 +986,7 @@ implementation
       end;
 
 
-    function _with_statement : tnode;
+    function _with_statement(seensyms : TFPList) : tnode;
 
       var
          p   : tnode;
@@ -1003,6 +1003,7 @@ implementation
          helperdef : tobjectdef;
          hasimplicitderef : boolean;
          withsymtablelist : TFPObjectList;
+         dupsym : tsym;
 
          procedure pushobjchild(withdef,obj:tobjectdef);
          var
@@ -1036,6 +1037,17 @@ implementation
          calltempnode:=nil;
          p:=comp_expr([ef_accept_equal]);
          do_typecheckpass(p);
+
+         { detect duplicate symbols in the WITH list (only for plain
+           symbol references - p^, foo(), a[i] are intentionally skipped) }
+         if (p.nodetype=loadn) and assigned(tloadnode(p).symtableentry) then
+           begin
+             dupsym:=tloadnode(p).symtableentry;
+             if seensyms.IndexOf(dupsym)>=0 then
+               Message1(parser_e_with_duplicate_symbol,dupsym.realname)
+             else
+               seensyms.Add(dupsym);
+           end;
 
          if (p.nodetype=vecn) and
             (vnf_memseg in tvecnode(p).vecnodeflags) then
@@ -1191,7 +1203,7 @@ implementation
               end;
 
             if try_to_consume(_COMMA) then
-              p:=_with_statement()
+              p:=_with_statement(seensyms)
             else
               begin
                 consume(_DO);
@@ -1227,7 +1239,7 @@ implementation
             { try to recover from error }
             if try_to_consume(_COMMA) then
              begin
-               hp:=_with_statement();
+               hp:=_with_statement(seensyms);
                if (hp=nil) then; { remove warning about unused }
              end
             else
@@ -1243,9 +1255,16 @@ implementation
 
 
     function with_statement : tnode;
+      var
+         seensyms : TFPList;
       begin
          consume(_WITH);
-         with_statement:=_with_statement();
+         seensyms:=TFPList.Create;
+         try
+           with_statement:=_with_statement(seensyms);
+         finally
+           seensyms.Free;
+         end;
       end;
 
 
