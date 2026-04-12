@@ -1974,6 +1974,17 @@ implementation
         statements     : tstatementnode;
         tempnode        : ttempcreatenode;
         tcsym          : tstaticvarsym;
+        { destructuring state }
+        names : array of string;
+        namecount : longint;
+        blk : tblocknode;
+        laststmt : tstatementnode;
+        recdef : trecorddef;
+        sym : tsym;
+        fieldsyms : array of tfieldvarsym;
+        fieldcount : longint;
+        j : longint;
+        destruct_var : tabstractnormalvarsym;
       begin
         result := nil;
         consume(_VAR);
@@ -1988,7 +1999,85 @@ implementation
             exit;
           end;
 
-        if token <> _ID then
+        { destructuring: var (name1, name2, ...) := tuple_expr }
+        if current_scanner.token = _LKLAMMER then
+          begin
+            consume(_LKLAMMER);
+            namecount := 0;
+            setlength(names, 4);
+            repeat
+              if current_scanner.token <> _ID then
+                begin
+                  Message(parser_e_syntax_error);
+                  result := cerrornode.create;
+                  exit;
+                end;
+              if namecount >= length(names) then
+                setlength(names, length(names)*2);
+              names[namecount] := current_scanner.orgpattern;
+              inc(namecount);
+              consume(_ID);
+            until not try_to_consume(_COMMA);
+            consume(_RKLAMMER);
+            consume(_ASSIGNMENT);
+            initexpr := expr(true);
+            do_typecheckpass(initexpr);
+            if not assigned(initexpr.resultdef) or
+               (initexpr.resultdef.typ <> recorddef) then
+              begin
+                Message(parser_e_illegal_expression);
+                initexpr.free;
+                result := cerrornode.create;
+                exit;
+              end;
+            recdef := trecorddef(initexpr.resultdef);
+            fieldcount := 0;
+            setlength(fieldsyms, recdef.symtable.symlist.count);
+            for j := 0 to recdef.symtable.symlist.count-1 do
+              begin
+                sym := tsym(recdef.symtable.symlist[j]);
+                if sym.typ = fieldvarsym then
+                  begin
+                    fieldsyms[fieldcount] := tfieldvarsym(sym);
+                    inc(fieldcount);
+                  end;
+              end;
+            setlength(fieldsyms, fieldcount);
+            if namecount <> fieldcount then
+              begin
+                Message(parser_e_illegal_expression);
+                initexpr.free;
+                result := cerrornode.create;
+                exit;
+              end;
+            { temp := initexpr; var_i := temp.f_i }
+            blk := internalstatements(laststmt);
+            tempnode := ctempcreatenode.create(recdef, recdef.size, tt_persistent, false);
+            addstatement(laststmt, tempnode);
+            addstatement(laststmt,
+              cassignmentnode.create(ctemprefnode.create(tempnode), initexpr));
+            for j := 0 to namecount-1 do
+              begin
+                if symtablestack.top.symtabletype in [localsymtable,blocksymtable] then
+                  destruct_var := clocalvarsym.create(names[j], vs_value, fieldsyms[j].vardef, [])
+                else
+                  destruct_var := cstaticvarsym.create(names[j], vs_value, fieldsyms[j].vardef, []);
+                destruct_var.register_sym;
+                symtablestack.top.insertsym(destruct_var);
+                destruct_var.varstate := vs_initialised;
+                if destruct_var.typ = staticvarsym then
+                  cnodeutils.insertbssdata(tstaticvarsym(destruct_var));
+                addstatement(laststmt,
+                  cassignmentnode.create(
+                    cloadnode.create(destruct_var, destruct_var.owner),
+                    csubscriptnode.create(fieldsyms[j], ctemprefnode.create(tempnode))));
+              end;
+            addstatement(laststmt, ctempdeletenode.create_normal_temp(tempnode));
+            result := blk;
+            exit;
+          end;
+
+        if current_scanner.token <> _ID then
           begin
             consume(_ID);   { generate the expected-identifier error }
             result := cerrornode.create;
@@ -2347,6 +2436,132 @@ implementation
         finally
           targets.free;
         end;
+
+    { Detects ( id, id, ... ) := tuple_expr destructuring assignment at
+      the start of a statement. Uses scanner token recording to peek.
+      Returns a block of per-field assignments if the pattern matches,
+      otherwise nil with scanner state restored via replay. }
+    function try_tuple_destructure_assign : tnode;
+      var
+        buf : tdynamicarray;
+        names : array of string;
+        namecount : longint;
+        match : boolean;
+        initexpr : tnode;
+        recdef : trecorddef;
+        sym : tsym;
+        lookst : tsymtable;
+        fieldsyms : array of tfieldvarsym;
+        fieldcount : longint;
+        i : longint;
+        tempnode : ttempcreatenode;
+        blk : tblocknode;
+        laststmt : tstatementnode;
+        lhs : tnode;
+      begin
+        result:=nil;
+        if current_scanner.is_recording_tokens then
+          exit;
+        buf:=tdynamicarray.create(64);
+        current_scanner.startrecordtokens(buf);
+        consume(_LKLAMMER);
+        namecount:=0;
+        setlength(names,4);
+        match:=true;
+        while current_scanner.token=_ID do
+          begin
+            if namecount>=length(names) then
+              setlength(names,length(names)*2);
+            names[namecount]:=current_scanner.orgpattern;
+            inc(namecount);
+            consume(_ID);
+            if current_scanner.token=_RKLAMMER then
+              break;
+            if current_scanner.token<>_COMMA then
+              begin
+                match:=false;
+                break;
+              end;
+            consume(_COMMA);
+          end;
+        if match and (current_scanner.token=_RKLAMMER) then
+          begin
+            consume(_RKLAMMER);
+            match:=current_scanner.token=_ASSIGNMENT;
+          end
+        else
+          match:=false;
+        current_scanner.stoprecordtokens;
+        if not match or (namecount<2) then
+          begin
+            current_scanner.startreplaytokens(buf,false);
+            exit;
+          end;
+        { consumed already: (, ids, commas, ), := not yet consumed but flags done.
+          Replay gets us back, then re-consume to eat them properly }
+        current_scanner.startreplaytokens(buf,false);
+        consume(_LKLAMMER);
+        for i:=0 to namecount-1 do
+          begin
+            consume(_ID);
+            if i<namecount-1 then
+              consume(_COMMA);
+          end;
+        consume(_RKLAMMER);
+        consume(_ASSIGNMENT);
+
+        initexpr:=expr(true);
+        do_typecheckpass(initexpr);
+        if not assigned(initexpr.resultdef) or
+           (initexpr.resultdef.typ<>recorddef) then
+          begin
+            Message(parser_e_illegal_expression);
+            initexpr.free;
+            result:=cerrornode.create;
+            exit;
+          end;
+        recdef:=trecorddef(initexpr.resultdef);
+        fieldcount:=0;
+        setlength(fieldsyms,recdef.symtable.symlist.count);
+        for i:=0 to recdef.symtable.symlist.count-1 do
+          begin
+            sym:=tsym(recdef.symtable.symlist[i]);
+            if sym.typ=fieldvarsym then
+              begin
+                fieldsyms[fieldcount]:=tfieldvarsym(sym);
+                inc(fieldcount);
+              end;
+          end;
+        setlength(fieldsyms,fieldcount);
+        if namecount<>fieldcount then
+          begin
+            Message(parser_e_illegal_expression);
+            initexpr.free;
+            result:=cerrornode.create;
+            exit;
+          end;
+        blk:=internalstatements(laststmt);
+        tempnode:=ctempcreatenode.create(recdef,recdef.size,tt_persistent,false);
+        addstatement(laststmt,tempnode);
+        addstatement(laststmt,
+          cassignmentnode.create(ctemprefnode.create(tempnode),initexpr));
+        for i:=0 to namecount-1 do
+          begin
+            if not searchsym(upper(names[i]),sym,lookst) then
+              begin
+                Message1(sym_e_id_not_found,names[i]);
+                continue;
+              end;
+            if sym.typ in [localvarsym,staticvarsym,paravarsym] then
+              tabstractnormalvarsym(sym).varstate:=vs_initialised;
+            lhs:=cloadnode.create(sym,sym.owner);
+            addstatement(laststmt,
+              cassignmentnode.create(
+                lhs,
+                csubscriptnode.create(fieldsyms[i],ctemprefnode.create(tempnode))));
+          end;
+        addstatement(laststmt,ctempdeletenode.create_normal_temp(tempnode));
+        result:=blk;
       end;
 
     function statement : tnode;
@@ -2642,6 +2857,14 @@ implementation
                Message(scan_f_end_of_file);
          else
            begin
+             { (a, b) := tuple_expr destructuring to existing vars }
+             if (m_tuples in current_settings.modeswitches) and
+                (current_scanner.token=_LKLAMMER) then
+               begin
+                 code:=try_tuple_destructure_assign;
+                 if assigned(code) then
+                   exit(code);
+               end;
              { don't typecheck yet, because that will also simplify, which may
                result in not detecting certain kinds of syntax errors --
                see mantis #15594 }
