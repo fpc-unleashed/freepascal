@@ -498,7 +498,7 @@ scan_e_improperly_indented_multiline_string=02120_E_Incorrectly indented multi-l
 #
 # Parser
 #
-# 03376 is the last used one
+# 03377 is the last used one
 #
 % \section{Parser messages}
 % This section lists all parser messages. The parser takes care of the
@@ -1728,13 +1728,13 @@ parser_w_with_shadowed_field=03376_W_Field "$1" in WITH entry shadows an earlier
 % Two entries in the same \var{with} clause expose a field with the same name.
 % The later entry hides the earlier one, which is most likely unintended.
 %
-parser_e_tuple_needs_type=03375_E_Tuple fields need type annotation, e.g. (x, y, z: Integer)
+parser_e_tuple_needs_type=03377_E_Tuple fields need type annotation, e.g. (x, y, z: Integer)
 %
 % \end{description}
 %
 # Type Checking
 #
-# 04134 is the last used one
+# 04136 is the last used one
 #
 % \section{Type checking errors}
 % This section lists all errors that can occur when type checking is

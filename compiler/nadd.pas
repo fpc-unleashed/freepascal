@@ -2348,6 +2348,8 @@ const
             else
               begin
                 Message(type_e_tuples_not_comparable);
+                left.free; left:=nil;
+                right.free; right:=nil;
                 result:=cordconstnode.create(0,pasbool1type,false);
               end;
             exit;

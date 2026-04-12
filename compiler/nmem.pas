@@ -1125,6 +1125,7 @@ implementation
              if right.nodetype<>ordconstn then
                begin
                  Message(type_e_tuple_index_must_be_const);
+                 result:=cerrornode.create;
                  exit;
                end;
              tup_idx:=tordconstnode(right).value.svalue;
@@ -1145,6 +1146,7 @@ implementation
                  dec(tup_idx);
                end;
              Message(parser_e_illegal_expression);
+             result:=cerrornode.create;
              exit;
            end;
 

@@ -2582,6 +2582,7 @@ implementation
         finally
           targets.free;
         end;
+      end;
 
     { Detects ( id, id, ... ) := tuple_expr destructuring assignment at
       the start of a statement. Uses scanner token recording to peek.
