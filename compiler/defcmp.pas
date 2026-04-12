@@ -192,6 +192,8 @@ interface
     { procdefs the parameters defs shall belong to.                       }
     function equal_genfunc_paradefs(fwdef,currdef:tdef;fwpdst,currpdst:tsymtable):boolean;
 
+    function tuples_have_equal_shape(a,b:trecorddef):boolean;
+
 
 implementation
 
@@ -210,6 +212,35 @@ implementation
     function same_objectdef_implementedinterfaces(intffrom,intfto:tobject):boolean;
       begin
         result:=equal_defs(TImplementedInterface(intffrom).IntfDef,TImplementedInterface(intfto).IntfDef);
+      end;
+
+
+    { two tuple records are shape-equal if they have the same fields
+      with matching names and types, in order }
+    function tuples_have_equal_shape(a,b:trecorddef):boolean;
+      var
+        lista,listb : tfphashobjectlist;
+        i : longint;
+        fa,fb : tfieldvarsym;
+      begin
+        result:=false;
+        lista:=a.symtable.symlist;
+        listb:=b.symtable.symlist;
+        if lista.count<>listb.count then
+          exit;
+        for i:=0 to lista.count-1 do
+          begin
+            if (tsym(lista[i]).typ<>fieldvarsym) or
+               (tsym(listb[i]).typ<>fieldvarsym) then
+              exit;
+            fa:=tfieldvarsym(lista[i]);
+            fb:=tfieldvarsym(listb[i]);
+            if fa.name<>fb.name then
+              exit;
+            if not equal_defs(fa.vardef,fb.vardef) then
+              exit;
+          end;
+        result:=true;
       end;
 
 
@@ -304,6 +335,19 @@ implementation
           begin
             doconv:=tc_equal;
             compare_defs_ext:=te_exact;
+            exit;
+          end;
+
+         { two anonymous tuple records with matching shape are equal by
+           structure (same field count, names and types in order) }
+         if (def_from.typ=recorddef) and
+            (def_to.typ=recorddef) and
+            (df_tuple in def_from.defoptions) and
+            (df_tuple in def_to.defoptions) and
+            tuples_have_equal_shape(trecorddef(def_from),trecorddef(def_to)) then
+          begin
+            doconv:=tc_equal;
+            compare_defs_ext:=te_equal;
             exit;
           end;
 
