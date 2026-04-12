@@ -879,6 +879,7 @@ implementation
               wraplast : tstatementnode;
               uniq : string;
               orig_hloopvar : tnode;
+              forblockst : tblocksymtable;
             begin
               result := nil;
               consume(_LKLAMMER);
@@ -932,6 +933,14 @@ implementation
                 end;
 
               consume(_DO);
+
+              { block scope for destructured variables }
+              forblockst:=nil;
+              if assigned(current_procinfo) then
+                begin
+                  forblockst:=tblocksymtable.create(symtablestack.top);
+                  symtablestack.push(forblockst);
+                end;
 
               { hidden loop variable holds each collection element }
               str(current_tokenpos.line, uniq);
@@ -989,6 +998,19 @@ implementation
 
               result := create_for_in_loop(orig_hloopvar, wrappedbody, collexpr);
               collexpr.free;
+
+              { pop block scope and wrap in blocknode }
+              if assigned(forblockst) then
+                begin
+                  symtablestack.pop(forblockst);
+                  if not assigned(current_procinfo.procdef.blocklocalsymtables) then
+                    current_procinfo.procdef.blocklocalsymtables:=tfpobjectlist.create(true);
+                  current_procinfo.procdef.blocklocalsymtables.add(forblockst);
+                  wrappedbody:=cblocknode.create(cstatementnode.create(result,nil));
+                  wrappedbody.fileinfo:=result.fileinfo;
+                  tblocknode(wrappedbody).blocksymtable:=forblockst;
+                  result:=wrappedbody;
+                end;
             end;
 
 
