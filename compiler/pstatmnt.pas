@@ -434,25 +434,94 @@ implementation
 
       function parse_branch_cond(has_subject:boolean;subject:tnode) : tnode;
         { Parse pattern(s) for a branch. Subject mode supports comma-separated
-          patterns (OR'd). }
+          patterns (OR'd) and tuple patterns with _ wildcards. }
         var
-          pat : tnode;
+          pat,cond : tnode;
+          fields : array of tnode;
+          fieldcount,i,symidx : integer;
+          sym : tsym;
+          recdef : trecorddef;
         begin
-          pat:=comp_expr([ef_accept_equal]);
-          do_typecheckpass(pat);
-          if has_subject then
+          { tuple pattern with potential _ wildcards }
+          if has_subject and (current_scanner.token=_LKLAMMER) and
+             assigned(subject.resultdef) and (subject.resultdef.typ=recorddef) and
+             (df_tuple in subject.resultdef.defoptions) then
             begin
-              result:=caddnode.create(equaln,subject.getcopy,pat);
-              while try_to_consume(_COMMA) do
+              consume(_LKLAMMER);
+              fieldcount:=0;
+              setlength(fields,8);
+              repeat
+                if fieldcount>=length(fields) then
+                  setlength(fields,fieldcount*2);
+                if (current_scanner.token=_ID) and (current_scanner.pattern='_') then
+                  begin
+                    fields[fieldcount]:=nil;
+                    consume(_ID);
+                  end
+                else
+                  begin
+                    fields[fieldcount]:=comp_expr([ef_accept_equal]);
+                    do_typecheckpass(fields[fieldcount]);
+                  end;
+                inc(fieldcount);
+              until not try_to_consume(_COMMA);
+              { single expression in parens = parenthesized expr, not tuple }
+              if fieldcount=1 then
                 begin
-                  pat:=comp_expr([ef_accept_equal]);
-                  do_typecheckpass(pat);
-                  result:=caddnode.create(orn,result,
-                    caddnode.create(equaln,subject.getcopy,pat));
+                  consume(_RKLAMMER);
+                  if fields[0]=nil then
+                    result:=cordconstnode.create(1,pasbool1type,false)
+                  else
+                    result:=caddnode.create(equaln,subject.getcopy,fields[0]);
+                  exit;
                 end;
+              consume(_RKLAMMER);
+              { build per-field AND chain, skipping wildcards }
+              recdef:=trecorddef(subject.resultdef);
+              cond:=nil;
+              i:=0;
+              for symidx:=0 to recdef.symtable.symlist.count-1 do
+                begin
+                  sym:=tsym(recdef.symtable.symlist[symidx]);
+                  if sym.typ<>fieldvarsym then
+                    continue;
+                  if i>=fieldcount then
+                    break;
+                  if fields[i]<>nil then
+                    begin
+                      pat:=caddnode.create(equaln,
+                        csubscriptnode.create(tfieldvarsym(sym),subject.getcopy),
+                        fields[i]);
+                      if cond=nil then
+                        cond:=pat
+                      else
+                        cond:=caddnode.create(andn,cond,pat);
+                    end;
+                  inc(i);
+                end;
+              if cond=nil then
+                cond:=cordconstnode.create(1,pasbool1type,false);
+              result:=cond;
             end
           else
-            result:=pat;
+            begin
+              { normal pattern with optional comma-separated OR }
+              pat:=comp_expr([ef_accept_equal]);
+              do_typecheckpass(pat);
+              if has_subject then
+                begin
+                  result:=caddnode.create(equaln,subject.getcopy,pat);
+                  while try_to_consume(_COMMA) do
+                    begin
+                      pat:=comp_expr([ef_accept_equal]);
+                      do_typecheckpass(pat);
+                      result:=caddnode.create(orn,result,
+                        caddnode.create(equaln,subject.getcopy,pat));
+                    end;
+                end
+              else
+                result:=pat;
+            end;
         end;
 
       var
