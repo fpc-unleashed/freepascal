@@ -5222,9 +5222,11 @@ implementation
 
         consume(_LKLAMMER);
 
-        { disambiguate positional vs named: peek at _ID _COLON prefix }
+        { disambiguate positional vs named: peek at _ID _COLON prefix.
+          Skip peek when already recording (generic decl body) to avoid
+          nested-record internalerror; assume positional in that case. }
         is_named:=false;
-        if current_scanner.token=_ID then
+        if (current_scanner.token=_ID) and not current_scanner.is_recording_tokens then
           begin
             peekbuf:=tdynamicarray.create(32);
             current_scanner.startrecordtokens(peekbuf);
@@ -5332,9 +5334,10 @@ implementation
           end;
         setlength(fieldsyms,fieldcount);
 
-        { named tuple literal? peek _ID _COLON }
+        { named tuple literal? peek _ID _COLON, but only if not inside an
+          outer recording (generic decl body) to avoid nested-record ICE }
         is_named:=false;
-        if current_scanner.token=_ID then
+        if (current_scanner.token=_ID) and not current_scanner.is_recording_tokens then
           begin
             peekbuf:=tdynamicarray.create(32);
             current_scanner.startrecordtokens(peekbuf);

@@ -836,8 +836,16 @@ implementation
             exit(false);
         end;
 
-        { _ID that is not a type: scan ahead with token recording to see
-          whether a : follows (named tuple) or we hit )/= (enum) }
+        { _ID that is not a type: named tuple vs enum. If the scanner is
+          already recording tokens (generic declaration context), nested
+          recording would internalerror, so assume named tuple and let the
+          named parser surface a clear error if we guessed wrong. }
+        if current_scanner.is_recording_tokens then
+          begin
+            def:=named_tuple_type;
+            exit(true);
+          end;
+
         buf:=tdynamicarray.create(64);
         current_scanner.startrecordtokens(buf);
         while current_scanner.token=_ID do
