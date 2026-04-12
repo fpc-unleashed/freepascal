@@ -1728,6 +1728,8 @@ parser_w_with_shadowed_field=03376_W_Field "$1" in WITH entry shadows an earlier
 % Two entries in the same \var{with} clause expose a field with the same name.
 % The later entry hides the earlier one, which is most likely unintended.
 %
+parser_e_tuple_needs_type=03375_E_Tuple fields need type annotation, e.g. (x, y, z: Integer)
+%
 % \end{description}
 %
 # Type Checking

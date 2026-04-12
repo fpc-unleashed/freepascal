@@ -970,7 +970,7 @@ implementation
               hbody := statement;
               exclude(itempvs.varoptions, vo_is_loop_counter);
 
-              { wrap body: { user_i := $forTup.f_i }* ; original body }
+              // wrap body: prepend field assignments, then original body
               wrapblk := internalstatements(wraplast);
               for i := 0 to tcount-1 do
                 begin

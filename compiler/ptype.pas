@@ -567,7 +567,12 @@ implementation
                      consume(_LKLAMMER);
                      if not try_consume_tuple_type(def) then
                        begin
-                         message(type_e_type_id_expected);
+                         Message(parser_e_tuple_needs_type);
+                         { skip remaining tokens to ) }
+                         while not(current_scanner.token in [_RKLAMMER,_SEMICOLON,_EOF]) do
+                           consume(current_scanner.token);
+                         if current_scanner.token=_RKLAMMER then
+                           consume(_RKLAMMER);
                          def:=generrordef;
                        end;
                    end
@@ -870,6 +875,7 @@ implementation
           end
         else
           begin
+            { not a tuple - replay and fall through to enum parsing }
             current_scanner.startreplaytokens(buf,false);
             result:=false;
           end;
