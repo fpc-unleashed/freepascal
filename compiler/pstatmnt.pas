@@ -456,9 +456,11 @@ implementation
         end;
 
       var
-        subject,cond,stmt,ifchain,firstcond,stmtblock : tnode;
-        fallthrough,has_subject : boolean;
-        stmts : tstatementnode;
+        subject,cond,stmt,ifchain,firstcond,walknode,stmtblock : tnode;
+        fallthrough,has_subject,has_catchall : boolean;
+        stmts,exprstatements : tstatementnode;
+        resultdef : tdef;
+        resultvar : ttempcreatenode;
       begin
         consume(_MATCH);
         { check for 'all' (context-sensitive) }
@@ -521,13 +523,22 @@ implementation
         else
           begin
             { first-match: if-elseif chain }
+            resultdef:=nil;
+            has_catchall:=false;
             ifchain:=nil;
             repeat
               if is_wildcard_underscore then
                 begin
+                  has_catchall:=true;
                   consume(_ID);
                   consume(_COLON);
-                  stmt:=statement;
+                  if is_expr then
+                    begin
+                      stmt:=expr(true);
+                      resultdef:=branch_type(resultdef,stmt.resultdef);
+                    end
+                  else
+                    stmt:=statement;
                   append_else(ifchain,stmt);
                   if not(current_scanner.token in [_END]) then
                     consume(_SEMICOLON);
@@ -541,7 +552,13 @@ implementation
               else
                 cond:=parse_branch_cond(has_subject,subject);
               consume(_COLON);
-              stmt:=statement;
+              if is_expr then
+                begin
+                  stmt:=expr(true);
+                  resultdef:=branch_type(resultdef,stmt.resultdef);
+                end
+              else
+                stmt:=statement;
               stmt:=cifnode.create(cond,stmt,nil);
               append_else(ifchain,stmt);
               if not(current_scanner.token in [_ELSE,_OTHERWISE,_END]) then
@@ -549,14 +566,53 @@ implementation
             until current_scanner.token in [_ELSE,_OTHERWISE,_END];
             if try_to_consume(_ELSE) or try_to_consume(_OTHERWISE) then
               begin
-                stmt:=statements_til_end;
+                has_catchall:=true;
+                if is_expr then
+                  begin
+                    stmt:=expr(true);
+                    resultdef:=branch_type(resultdef,stmt.resultdef);
+                  end
+                else
+                  stmt:=statements_til_end;
                 append_else(ifchain,stmt);
               end
+            else if is_expr and not has_catchall then
+              consume(_ELSE)
             else
               consume(_END);
             if has_subject then
               subject.free;
-            result:=ifchain;
+            if not is_expr then
+              result:=ifchain
+            else
+              begin
+                { expression mode: wrap branches in temp var assignments }
+                result:=internalstatements(exprstatements);
+                resultvar:=ctempcreatenode.create(resultdef,resultdef.size,tt_persistent,true);
+                addstatement(exprstatements,resultvar);
+                { walk if-chain, wrap each branch value in assignment }
+                walknode:=ifchain;
+                while walknode.nodetype=ifn do
+                  begin
+                    tifnode(walknode).right:=cassignmentnode.create(
+                      ctemprefnode.create(resultvar),tifnode(walknode).right);
+                    if assigned(tifnode(walknode).t1) and (tifnode(walknode).t1.nodetype=ifn) then
+                      walknode:=tifnode(walknode).t1
+                    else
+                      begin
+                        if assigned(tifnode(walknode).t1) then
+                          tifnode(walknode).t1:=cassignmentnode.create(
+                            ctemprefnode.create(resultvar),tifnode(walknode).t1);
+                        break;
+                      end;
+                  end;
+                if ifchain.nodetype<>ifn then
+                  { single catch-all value }
+                  ifchain:=cassignmentnode.create(ctemprefnode.create(resultvar),ifchain);
+                addstatement(exprstatements,ifchain);
+                addstatement(exprstatements,ctempdeletenode.create_normal_temp(resultvar));
+                addstatement(exprstatements,ctemprefnode.create(resultvar));
+              end;
           end;
       end;
 
@@ -3503,6 +3559,7 @@ implementation
         case current_scanner.token of
         _IF: p1:=if_statement(true);
         _CASE: p1:=case_statement(true);
+        _MATCH: p1:=match_statement(true);
         _TRY: p1:=try_statement(true);
         else
           result:=false;
