@@ -946,9 +946,11 @@ implementation
               include(itempvs.varoptions, vo_is_loop_counter);
               hdef := elemdef;
 
-              { user variables }
+              { user variables (skip _ wildcards) }
               for i := 0 to tcount-1 do
                 begin
+                  if tnames[i]='_' then
+                    continue;
                   if symtablestack.top.symtabletype in [localsymtable,blocksymtable] then
                     uservs := clocalvarsym.create(tnames[i], vs_value, fieldsyms[i].vardef, [])
                   else
@@ -972,7 +974,8 @@ implementation
               wrapblk := internalstatements(wraplast);
               for i := 0 to tcount-1 do
                 begin
-                  if not searchsym(upper(tnames[i]), sym, st_unused) then
+                  if (tnames[i]='_') or
+                     not searchsym(upper(tnames[i]), sym, st_unused) then
                     continue;
                   addstatement(wraplast,
                     cassignmentnode.create(
@@ -2199,6 +2202,8 @@ implementation
               cassignmentnode.create(ctemprefnode.create(tempnode), initexpr));
             for j := 0 to namecount-1 do
               begin
+                if names[j]='_' then
+                  continue;
                 if symtablestack.top.symtabletype in [localsymtable,blocksymtable] then
                   destruct_var := clocalvarsym.create(names[j], vs_value, fieldsyms[j].vardef, [])
                 else
@@ -2688,6 +2693,8 @@ implementation
           cassignmentnode.create(ctemprefnode.create(tempnode),initexpr));
         for i:=0 to namecount-1 do
           begin
+            if names[i]='_' then
+              continue;
             if not searchsym(upper(names[i]),sym,lookst) then
               begin
                 Message1(sym_e_id_not_found,names[i]);

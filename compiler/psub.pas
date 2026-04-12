@@ -2551,7 +2551,7 @@ implementation
                     inc(pos);
                   end;
                 inc(pos);
-                if uname='' then
+                if (uname='') or (uname='_') then
                   continue;
                 if not searchsym(upper(uname),lsym,lookst) then
                   continue;
