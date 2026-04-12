@@ -3781,17 +3781,16 @@ implementation
                          Factor_Read_Set
          ---------------------------------------------}
 
-         { Parses a tuple literal expression ( e1, e2, ... ) at the current
-           _LKLAMMER, used inside array constructors. A single ( e ) falls
-           through and returns e. The tuple form builds an anonymous tuple
-           record from the expression types and evaluates to a temp of
-           that record type. }
-         function tuple_lit_expr:tnode;
+         { Given a first expression parsed right after _LKLAMMER and the
+           comma still pending, parses remaining comma-separated expressions
+           up to _RKLAMMER and returns a block that evaluates to a temp
+           tuple record holding (first_expr, rest...). Used by both array
+           constructor elements and plain (e1, e2, ...) factors. }
+         function tuple_lit_as_tempref(first_expr:tnode):tnode;
          var
            exprs : array of tnode;
            exprcount : longint;
            i : longint;
-           first_expr : tnode;
            recdef : trecorddef;
            blk : tblocknode;
            laststmt : tstatementnode;
@@ -3799,13 +3798,6 @@ implementation
            fieldsym : tsym;
            elemdef : tdef;
          begin
-           consume(_LKLAMMER);
-           first_expr:=comp_expr([ef_accept_equal]);
-           if current_scanner.token<>_COMMA then
-             begin
-               consume(_RKLAMMER);
-               exit(first_expr);
-             end;
            setlength(exprs,4);
            exprs[0]:=first_expr;
            exprcount:=1;
@@ -3881,7 +3873,14 @@ implementation
             repeat
               if (m_tuples in current_settings.modeswitches) and
                  (current_scanner.token=_LKLAMMER) then
-                p1:=tuple_lit_expr
+                begin
+                  consume(_LKLAMMER);
+                  p1:=comp_expr([ef_accept_equal]);
+                  if current_scanner.token=_COMMA then
+                    p1:=tuple_lit_as_tempref(p1)
+                  else
+                    consume(_RKLAMMER);
+                end
               else
                 p1:=comp_expr([ef_accept_equal]);
               if try_to_consume(_POINTPOINT) then
@@ -4459,7 +4458,14 @@ implementation
                begin
                  consume(_LKLAMMER);
                  p1:=comp_expr([ef_accept_equal]);
-                 consume(_RKLAMMER);
+                 if (m_tuples in current_settings.modeswitches) and
+                    (current_scanner.token=_COMMA) then
+                   begin
+                     { tuple literal expression: (e1, e2, ...) }
+                     p1:=tuple_lit_as_tempref(p1);
+                   end
+                 else
+                   consume(_RKLAMMER);
                  { it's not a good solution
                    but (a+b)^ makes some problems  }
                  if current_scanner.token in postfixoperator_tokens then
