@@ -84,6 +84,7 @@ implementation
        ;
 
     function sub_expr(pred_level:Toperator_precedence;flags:texprflags;factornode:tnode):tnode;forward;
+    function exit_tuple_body(out block:tnode;out single_expr:tnode):boolean;forward;
 
     var
        { true, if the inherited call is anonymous }
@@ -283,6 +284,8 @@ implementation
         prev_in_args : boolean;
         def : tdef;
         exit_procinfo: tprocinfo;
+        tuple_block  : tnode;
+        tuple_last   : tstatementnode;
       begin
         prev_in_args:=in_args;
         case l of
@@ -314,17 +317,38 @@ implementation
           in_exit :
             begin
               statement_syssym:=nil;
+              p1:=nil;
+              tuple_block:=nil;
               if try_to_consume(_LKLAMMER) then
                 begin
                   if not (m_mac in current_settings.modeswitches) then
                     begin
                       if not(try_to_consume(_RKLAMMER)) then
                         begin
-                          p1:=comp_expr([ef_accept_equal]);
-                          consume(_RKLAMMER);
-                          if not assigned(current_procinfo) or
-                             (current_procinfo.procdef.proctypeoption in [potype_constructor,potype_destructor]) or
-                             is_void(current_procinfo.procdef.returndef) then
+                          { tuple Exit shorthand: Exit(a,b,...) or Exit(n:v,...) }
+                          if (m_tuples in current_settings.modeswitches) and
+                             assigned(current_procinfo) and
+                             (current_procinfo.procdef.returndef.typ=recorddef) and
+                             (df_tuple in current_procinfo.procdef.returndef.defoptions) then
+                            begin
+                              if exit_tuple_body(tuple_block,p1) then
+                                begin
+                                  tuple_last:=laststatement(tblocknode(tuple_block));
+                                  addstatement(tuple_last,cexitnode.create(nil));
+                                  statement_syssym:=tuple_block;
+                                  p1:=nil;
+                                end;
+                              { else single expression, p1 was set and _RKLAMMER consumed }
+                            end
+                          else
+                            begin
+                              p1:=comp_expr([ef_accept_equal]);
+                              consume(_RKLAMMER);
+                            end;
+                          if assigned(p1) and
+                             (not assigned(current_procinfo) or
+                              (current_procinfo.procdef.proctypeoption in [potype_constructor,potype_destructor]) or
+                              is_void(current_procinfo.procdef.returndef)) then
                             begin
                               Message(parser_e_void_function);
                               { recovery }
@@ -5170,6 +5194,141 @@ implementation
           Message(parser_e_illegal_expression);
 
         result:=blk;
+      end;
+
+
+    { Used by Exit(...) when the current function returns a tuple. Assumes
+      _LKLAMMER was already consumed. Tries to interpret the body as a
+      tuple literal that should be assigned to Result; if the body is a
+      single expression, returns false with single_expr set so the caller
+      can fall through to the normal single-value Exit path. In both
+      cases _RKLAMMER is consumed. }
+    function exit_tuple_body(out block:tnode;out single_expr:tnode):boolean;
+      var
+        recdef     : trecorddef;
+        fieldsyms  : array of tfieldvarsym;
+        fieldcount : longint;
+        exprcount  : longint;
+        i          : longint;
+        e          : tnode;
+        blk        : tblocknode;
+        laststmt   : tstatementnode;
+        sym        : tsym;
+        is_named   : boolean;
+        peekbuf    : tdynamicarray;
+        fname      : TIDString;
+        field      : tfieldvarsym;
+        first_expr : tnode;
+
+      function resultref:tnode;
+        begin
+          result:=cloadnode.create(current_procinfo.procdef.funcretsym,
+            current_procinfo.procdef.funcretsym.owner);
+        end;
+
+      begin
+        result:=false;
+        block:=nil;
+        single_expr:=nil;
+        recdef:=trecorddef(current_procinfo.procdef.returndef);
+
+        fieldcount:=0;
+        setlength(fieldsyms,recdef.symtable.symlist.count);
+        for i:=0 to recdef.symtable.symlist.count-1 do
+          begin
+            sym:=tsym(recdef.symtable.symlist[i]);
+            if sym.typ=fieldvarsym then
+              begin
+                fieldsyms[fieldcount]:=tfieldvarsym(sym);
+                inc(fieldcount);
+              end;
+          end;
+        setlength(fieldsyms,fieldcount);
+
+        { named tuple literal? peek _ID _COLON }
+        is_named:=false;
+        if current_scanner.token=_ID then
+          begin
+            peekbuf:=tdynamicarray.create(32);
+            current_scanner.startrecordtokens(peekbuf);
+            consume(_ID);
+            current_scanner.stoprecordtokens;
+            is_named:=current_scanner.token=_COLON;
+            current_scanner.startreplaytokens(peekbuf,false);
+          end;
+
+        if is_named then
+          begin
+            blk:=internalstatements(laststmt);
+            exprcount:=0;
+            repeat
+              fname:=current_scanner.pattern;
+              consume(_ID);
+              consume(_COLON);
+              e:=comp_expr([ef_accept_equal]);
+              field:=nil;
+              for i:=0 to fieldcount-1 do
+                if upper(fieldsyms[i].name)=fname then
+                  begin
+                    field:=fieldsyms[i];
+                    break;
+                  end;
+              if assigned(field) then
+                addstatement(laststmt,
+                  cassignmentnode.create(
+                    csubscriptnode.create(field,resultref),
+                    e))
+              else
+                begin
+                  Message1(sym_e_illegal_field,fname);
+                  e.free;
+                end;
+              inc(exprcount);
+            until not try_to_consume(_COMMA);
+            consume(_RKLAMMER);
+            if exprcount<>fieldcount then
+              Message(parser_e_illegal_expression);
+            block:=blk;
+            result:=true;
+            exit;
+          end;
+
+        { not named: parse first expression, decide by next token }
+        first_expr:=comp_expr([ef_accept_equal]);
+        if current_scanner.token<>_COMMA then
+          begin
+            consume(_RKLAMMER);
+            single_expr:=first_expr;
+            exit;
+          end;
+
+        { positional tuple literal: first_expr -> field 0, continue }
+        blk:=internalstatements(laststmt);
+        if fieldcount>0 then
+          addstatement(laststmt,
+            cassignmentnode.create(
+              csubscriptnode.create(fieldsyms[0],resultref),
+              first_expr))
+        else
+          first_expr.free;
+        exprcount:=1;
+        consume(_COMMA);
+        repeat
+          e:=comp_expr([ef_accept_equal]);
+          if exprcount<fieldcount then
+            addstatement(laststmt,
+              cassignmentnode.create(
+                csubscriptnode.create(fieldsyms[exprcount],resultref),
+                e))
+          else
+            e.free;
+          inc(exprcount);
+        until not try_to_consume(_COMMA);
+        consume(_RKLAMMER);
+        if exprcount<>fieldcount then
+          Message(parser_e_illegal_expression);
+        block:=blk;
+        result:=true;
       end;
 
 
