@@ -704,7 +704,12 @@ implementation
 
     function result_type(options:TSingleTypeOptions):tdef;
       begin
-        single_type(result,options);
+        { for array-of-X return types, use read_anon_type; otherwise
+          stick with single_type to avoid breaking type resolution }
+        if current_scanner.token in [_ARRAY,_PACKED,_BITPACKED] then
+          read_anon_type(result,false,nil)
+        else
+          single_type(result,options);
         { file types cannot be function results }
         if result.typ=filedef then
           message(parser_e_illegal_function_result);
