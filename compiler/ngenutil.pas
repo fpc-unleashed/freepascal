@@ -523,8 +523,15 @@ implementation
            end;
          { units have separate code for initialization and finalization }
          potype_unitfinalize: ;
-         { program init/final is generated in separate procedure }
-         potype_proginit: ;
+         { program init/final is generated in separate procedure,
+           but block-scoped local vars (from inline var / for-in
+           destructuring) live on the stack and need explicit init }
+         potype_proginit:
+           begin
+             if assigned(pd.blocklocalsymtables) then
+               for blk_i:=0 to pd.blocklocalsymtables.count-1 do
+                 TSymtable(pd.blocklocalsymtables[blk_i]).SymList.ForEachCall(@sym_maybe_initialize,@stat);
+           end;
          else
            begin
              current_procinfo.procdef.localst.SymList.ForEachCall(@sym_maybe_initialize,@stat);
@@ -560,8 +567,14 @@ implementation
            end;
          { units/progs have separate code for initialization and finalization }
          potype_unitinit: ;
-         { program init/final is generated in separate procedure }
-         potype_proginit: ;
+         { program init/final is generated in separate procedure,
+           but block-scoped local vars need explicit finalization }
+         potype_proginit:
+           begin
+             if assigned(pd.blocklocalsymtables) then
+               for blk_i:=0 to pd.blocklocalsymtables.count-1 do
+                 TSymtable(pd.blocklocalsymtables[blk_i]).SymList.ForEachCall(@local_varsyms_finalize,@stat);
+           end;
          else
            begin
              current_procinfo.procdef.localst.SymList.ForEachCall(@local_varsyms_finalize,@stat);
