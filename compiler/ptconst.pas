@@ -27,7 +27,7 @@ interface
 
    uses symtype,symsym,aasmdata;
 
-    procedure read_typed_const(list:tasmlist;sym:tstaticvarsym;in_structure:boolean);
+    procedure read_typed_const(list:tasmlist;sym:tstaticvarsym;in_structure:boolean;parse_tail:boolean=true);
 
 
 implementation
@@ -41,7 +41,7 @@ implementation
        symconst,symbase,symdef
        ;
 
-    procedure read_typed_const(list:tasmlist;sym:tstaticvarsym;in_structure:boolean);
+    procedure read_typed_const(list:tasmlist;sym:tstaticvarsym;in_structure:boolean;parse_tail:boolean=true);
       var
         storefilepos : tfileposinfo;
         section      : ansistring;
@@ -82,44 +82,47 @@ implementation
               current_module.tcinitcode:=restree;
           end;
 
-        { Parse hints }
-        try_consume_hintdirective(sym.symoptions,sym.deprecatedmsg);
-
-        consume(_SEMICOLON);
-
-        { parse public/external/export/... }
-        if not in_structure and
-           (
-            (
-             (current_scanner.token = _ID) and
-             ((current_scanner.idtoken in [_EXPORT,_EXTERNAL,_PUBLIC,_CVAR]) or (current_scanner.idtoken = _WEAKEXTERNAL)) and
-             (m_cvar_support in current_settings.modeswitches)
-            ) or
-            (
-             (m_mac in current_settings.modeswitches) and
-             (
-              (cs_external_var in current_settings.localswitches) or
-              (cs_externally_visible in current_settings.localswitches)
-             )
-            )
-           ) then
-          read_public_and_external(sym);
-
-
-        { try to parse a section directive }
-        if not in_structure and (target_info.system in systems_allow_section) and
-           (symtablestack.top.symtabletype in [staticsymtable,globalsymtable]) and
-           (current_scanner.idtoken=_SECTION) then
+        if parse_tail then
           begin
-            try_consume_sectiondirective(section);
-            if section<>'' then
+            { Parse hints }
+            try_consume_hintdirective(sym.symoptions,sym.deprecatedmsg);
+
+            consume(_SEMICOLON);
+
+            { parse public/external/export/... }
+            if not in_structure and
+               (
+                (
+                 (current_scanner.token = _ID) and
+                 ((current_scanner.idtoken in [_EXPORT,_EXTERNAL,_PUBLIC,_CVAR]) or (current_scanner.idtoken = _WEAKEXTERNAL)) and
+                 (m_cvar_support in current_settings.modeswitches)
+                ) or
+                (
+                 (m_mac in current_settings.modeswitches) and
+                 (
+                  (cs_external_var in current_settings.localswitches) or
+                  (cs_externally_visible in current_settings.localswitches)
+                 )
+                )
+               ) then
+              read_public_and_external(sym);
+
+
+            { try to parse a section directive }
+            if not in_structure and (target_info.system in systems_allow_section) and
+               (symtablestack.top.symtabletype in [staticsymtable,globalsymtable]) and
+               (current_scanner.idtoken=_SECTION) then
               begin
-                if (sym.varoptions *[vo_is_external,vo_is_weak_external])<>[] then
-                  Message(parser_e_externals_no_section);
-                if sym.typ<>staticvarsym then
-                  Message(parser_e_section_no_locals);
-                tstaticvarsym(sym).section:=section;
-                include(sym.varoptions, vo_has_section);
+                try_consume_sectiondirective(section);
+                if section<>'' then
+                  begin
+                    if (sym.varoptions *[vo_is_external,vo_is_weak_external])<>[] then
+                      Message(parser_e_externals_no_section);
+                    if sym.typ<>staticvarsym then
+                      Message(parser_e_section_no_locals);
+                    tstaticvarsym(sym).section:=section;
+                    include(sym.varoptions, vo_has_section);
+                  end;
               end;
           end;
 

@@ -54,7 +54,7 @@ implementation
        nutils,ngenutil,nbas,nadd,ncal,nmem,nset,ncnv,ncon,nld,nflw,ninl,
        { parser }
        scanner,
-       pbase,ptype,pexpr,
+       pbase,ptype,pexpr,ptconst,
        { codegen }
        procinfo,cgbase,
        { assembler reader }
@@ -1973,6 +1973,7 @@ implementation
         old_block_type : tblock_type;
         statements     : tstatementnode;
         tempnode        : ttempcreatenode;
+        tcsym          : tstaticvarsym;
       begin
         result := nil;
         consume(_VAR);
@@ -2031,6 +2032,26 @@ implementation
                      not(m_multi_var_init in current_settings.modeswitches) then
                     Message(parser_e_initialized_only_one_var);
                   block_type := old_block_type;
+                  { Aggregate literal (array/record) init: reuse the typed
+                    constant parser via a hidden static sym, then copy it
+                    into the inline var at the declaration point. The plain
+                    expression parser cannot handle (a, b, c) notation. }
+                  if (sc.count = 1) and
+                     (current_scanner.token = _LKLAMMER) and
+                     ((hdef.typ = arraydef) or (hdef.typ = recorddef)) then
+                    begin
+                      tcsym := cstaticvarsym.create('$inlinetc_'+tsym(sc[0]).realname,
+                                                    vs_const, hdef, []);
+                      include(tcsym.symoptions, sp_internal);
+                      symtablestack.top.insertsym(tcsym);
+                      read_typed_const(current_asmdata.asmlists[al_typedconsts],
+                                       tcsym, false, false);
+                      tabstractnormalvarsym(sc[0]).varstate := vs_initialised;
+                      result := cassignmentnode.create(
+                        cloadnode.create(tsym(sc[0]), tsym(sc[0]).owner),
+                        cloadnode.create(tcsym, tcsym.owner));
+                      exit;
+                    end;
                   initexpr := expr(true);
                   if sc.count = 1 then
                     begin
