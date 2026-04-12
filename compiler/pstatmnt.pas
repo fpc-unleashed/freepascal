@@ -432,11 +432,33 @@ implementation
             end;
         end;
 
+      function parse_branch_cond(has_subject:boolean;subject:tnode) : tnode;
+        { Parse pattern(s) for a branch. Subject mode supports comma-separated
+          patterns (OR'd). }
+        var
+          pat : tnode;
+        begin
+          pat:=comp_expr([ef_accept_equal]);
+          do_typecheckpass(pat);
+          if has_subject then
+            begin
+              result:=caddnode.create(equaln,subject.getcopy,pat);
+              while try_to_consume(_COMMA) do
+                begin
+                  pat:=comp_expr([ef_accept_equal]);
+                  do_typecheckpass(pat);
+                  result:=caddnode.create(orn,result,
+                    caddnode.create(equaln,subject.getcopy,pat));
+                end;
+            end
+          else
+            result:=pat;
+        end;
+
       var
         subject,cond,stmt,ifchain,firstcond,stmtblock : tnode;
         fallthrough,has_subject : boolean;
         stmts : tstatementnode;
-        pat : tnode;
       begin
         consume(_MATCH);
         { check for 'all' (context-sensitive) }
@@ -480,14 +502,7 @@ implementation
                   firstcond:=nil;
                 end
               else
-                begin
-                  pat:=comp_expr([ef_accept_equal]);
-                  do_typecheckpass(pat);
-                  if has_subject then
-                    cond:=caddnode.create(equaln,subject.getcopy,pat)
-                  else
-                    cond:=pat;
-                end;
+                cond:=parse_branch_cond(has_subject,subject);
               consume(_COLON);
               addstatement(stmts,cifnode.create(cond,statement,nil));
               if not(current_scanner.token in [_ELSE,_OTHERWISE,_END]) then
@@ -524,14 +539,7 @@ implementation
                   firstcond:=nil;
                 end
               else
-                begin
-                  pat:=comp_expr([ef_accept_equal]);
-                  do_typecheckpass(pat);
-                  if has_subject then
-                    cond:=caddnode.create(equaln,subject.getcopy,pat)
-                  else
-                    cond:=pat;
-                end;
+                cond:=parse_branch_cond(has_subject,subject);
               consume(_COLON);
               stmt:=statement;
               stmt:=cifnode.create(cond,stmt,nil);
