@@ -1642,7 +1642,8 @@ function get_next_varsym(def: tabstractrecorddef; const SymList:TFPHashObjectLis
         fillbytes  : {$ifdef CPU8BITALU}smallint{$else}aint{$endif};
         bp   : tbitpackedval;
         error,
-        is_packed: boolean;
+        is_packed,
+        is_positional_tuple: boolean;
         startoffset: {$ifdef CPU8BITALU}word{$else}aword{$endif};
 
       procedure handle_stringconstn;
@@ -1707,13 +1708,26 @@ function get_next_varsym(def: tabstractrecorddef; const SymList:TFPHashObjectLis
         recsym := nil;
         startoffset:=curoffset;
         error := false;
+        { positional tuple literal: (1, 2) instead of (_1: 1; _2: 2)
+          detected when record has df_tuple flag and first token isn't _ID }
+        is_positional_tuple := (df_tuple in def.defoptions) and
+                               (current_scanner.token<>_ID);
         while current_scanner.token<>_RKLAMMER do
           begin
+            if is_positional_tuple then
+              begin
+                s := srsym.name;
+                sorg := s;
+                recsym := srsym;
+              end
+            else
+              begin
             s:=current_scanner.pattern;
             sorg:=current_scanner.orgpattern;
             consume(_ID);
             consume(_COLON);
             recsym := tsym(def.symtable.Find(s));
+              end;
             if not assigned(recsym) or (recsym.typ<>fieldvarsym) then
               begin
                 Message1(sym_e_illegal_field,sorg);
@@ -1817,7 +1831,9 @@ function get_next_varsym(def: tabstractrecorddef; const SymList:TFPHashObjectLis
 
                 if current_scanner.token=_SEMICOLON then
                   consume(_SEMICOLON)
-                else if (current_scanner.token=_COMMA) and (m_mac in current_settings.modeswitches) then
+                else if (current_scanner.token=_COMMA) and
+                        ((m_mac in current_settings.modeswitches) or
+                         (df_tuple in def.defoptions)) then
                   consume(_COMMA)
                 else
                   break;
@@ -2056,7 +2072,8 @@ function get_next_varsym(def: tabstractrecorddef; const SymList:TFPHashObjectLis
         sorg,s  : TIDString;
         recoffset : {$ifdef CPU8BITALU}smallint{$else}aint{$endif};
         error,
-        is_packed: boolean;
+        is_packed,
+        is_positional_tuple: boolean;
 
       procedure handle_stringconstn;
         begin
@@ -2113,14 +2130,26 @@ function get_next_varsym(def: tabstractrecorddef; const SymList:TFPHashObjectLis
         recsym := nil;
         orgbasenode:=basenode;
         basenode:=nil;
+        { positional tuple literal: (1, 2) instead of (_1: 1; _2: 2) }
+        is_positional_tuple := (df_tuple in def.defoptions) and
+                               (current_scanner.token<>_ID);
         while current_scanner.token<>_RKLAMMER do
           begin
+            error := false;
+            if is_positional_tuple then
+              begin
+                s := srsym.name;
+                sorg := s;
+                recsym := srsym;
+              end
+            else
+              begin
             s:=current_scanner.pattern;
             sorg:=current_scanner.orgpattern;
             consume(_ID);
             consume(_COLON);
-            error := false;
             recsym := tsym(def.symtable.Find(s));
+              end;
             if not assigned(recsym) then
               begin
                 Message1(sym_e_illegal_field,sorg);
@@ -2196,7 +2225,9 @@ function get_next_varsym(def: tabstractrecorddef; const SymList:TFPHashObjectLis
                 srsym:=get_next_varsym(def,SymList,symidx);
                 if current_scanner.token=_SEMICOLON then
                   consume(_SEMICOLON)
-                else if (current_scanner.token=_COMMA) and (m_mac in current_settings.modeswitches) then
+                else if (current_scanner.token=_COMMA) and
+                        ((m_mac in current_settings.modeswitches) or
+                         (df_tuple in def.defoptions)) then
                   consume(_COMMA)
                 else
                   break;
