@@ -277,6 +277,82 @@ implementation
        end;
 
 
+     { Walks a Write/WriteLn callparanode chain and expands any tuple
+       arguments into per-field subscript nodes so that WriteLn(t)
+       becomes WriteLn(t._1, t._2, ...). Returns the (possibly new)
+       head of the chain. }
+     function expand_tuple_write_paras(head:tnode):tnode;
+       var
+         cur,prev,next,newhead,tail : tcallparanode;
+         recdef : trecorddef;
+         sym : tsym;
+         fsym : tfieldvarsym;
+         i : longint;
+         sub : tnode;
+         first_new,last_new : tcallparanode;
+       begin
+         result:=head;
+         prev:=nil;
+         cur:=tcallparanode(head);
+         while assigned(cur) do
+           begin
+             next:=tcallparanode(cur.right);
+             { skip colon-format params }
+             if cpf_is_colon_para in cur.callparaflags then
+               begin
+                 prev:=cur;
+                 cur:=next;
+                 continue;
+               end;
+             typecheckpass(cur.left);
+             if assigned(cur.left.resultdef) and
+                (cur.left.resultdef.typ=recorddef) and
+                (df_tuple in cur.left.resultdef.defoptions) then
+               begin
+                 recdef:=trecorddef(cur.left.resultdef);
+                 { build chain with fields prepended so that Write
+                   (which consumes back-to-front) prints them in order }
+                 first_new:=nil;
+                 for i:=0 to recdef.symtable.symlist.count-1 do
+                   begin
+                     sym:=tsym(recdef.symtable.symlist[i]);
+                     if sym.typ<>fieldvarsym then
+                       continue;
+                     fsym:=tfieldvarsym(sym);
+                     sub:=csubscriptnode.create(fsym,cur.left.getcopy);
+                     { separator between fields (before non-first) }
+                     if i>0 then
+                       first_new:=ccallparanode.create(
+                         cstringconstnode.createstr(', '),
+                         first_new);
+                     first_new:=ccallparanode.create(sub,first_new);
+                   end;
+                 last_new:=first_new;
+                 if assigned(last_new) then
+                   while assigned(last_new.right) do
+                     last_new:=tcallparanode(last_new.right);
+                 if assigned(first_new) then
+                   begin
+                     last_new.right:=next;
+                     if assigned(prev) then
+                       prev.right:=first_new
+                     else
+                       result:=first_new;
+                     cur.left.free;
+                     cur.left:=nil;
+                     cur.right:=nil;
+                     cur.free;
+                     cur:=first_new;
+                     prev:=last_new;
+                     cur:=next;
+                     continue;
+                   end;
+               end;
+             prev:=cur;
+             cur:=next;
+           end;
+       end;
+
      function statement_syssym(l : tinlinenumber) : tnode;
       var
         p1,p2,paras  : tnode;
@@ -858,6 +934,9 @@ implementation
                begin
                  paras:=parse_paras(true,false,_RKLAMMER);
                  consume(_RKLAMMER);
+                 if (m_tuples in current_settings.modeswitches) and
+                    assigned(paras) then
+                   paras:=expand_tuple_write_paras(tnode(paras));
                end
               else
                paras:=nil;
