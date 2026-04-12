@@ -3781,6 +3781,89 @@ implementation
                          Factor_Read_Set
          ---------------------------------------------}
 
+         { Parses a tuple literal expression ( e1, e2, ... ) at the current
+           _LKLAMMER, used inside array constructors. A single ( e ) falls
+           through and returns e. The tuple form builds an anonymous tuple
+           record from the expression types and evaluates to a temp of
+           that record type. }
+         function tuple_lit_expr:tnode;
+         var
+           exprs : array of tnode;
+           exprcount : longint;
+           i : longint;
+           first_expr : tnode;
+           recdef : trecorddef;
+           blk : tblocknode;
+           laststmt : tstatementnode;
+           tempnode : ttempcreatenode;
+           fieldsym : tsym;
+           elemdef : tdef;
+         begin
+           consume(_LKLAMMER);
+           first_expr:=comp_expr([ef_accept_equal]);
+           if current_scanner.token<>_COMMA then
+             begin
+               consume(_RKLAMMER);
+               exit(first_expr);
+             end;
+           setlength(exprs,4);
+           exprs[0]:=first_expr;
+           exprcount:=1;
+           while try_to_consume(_COMMA) do
+             begin
+               if exprcount>=length(exprs) then
+                 setlength(exprs,length(exprs)*2);
+               exprs[exprcount]:=comp_expr([ef_accept_equal]);
+               inc(exprcount);
+             end;
+           consume(_RKLAMMER);
+
+           { promote common literal types so [(1,'a'),(2,'b')] matches
+             declared types like array-of-(Integer, String) }
+           for i:=0 to exprcount-1 do
+             begin
+               typecheckpass(exprs[i]);
+               elemdef:=exprs[i].resultdef;
+               if is_integer(elemdef) and
+                  (torddef(elemdef).ordtype in [s8bit,u8bit,s16bit,u16bit]) then
+                 elemdef:=s32inttype
+               else if is_conststring_array(elemdef) then
+                 begin
+                   if m_default_unicodestring in current_settings.modeswitches then
+                     elemdef:=cunicodestringtype
+                   else if m_default_ansistring in current_settings.modeswitches then
+                     elemdef:=getansistringdef
+                   else
+                     elemdef:=cshortstringtype;
+                 end;
+               if elemdef<>exprs[i].resultdef then
+                 begin
+                   exprs[i]:=ctypeconvnode.create_internal(exprs[i],elemdef);
+                   typecheckpass(exprs[i]);
+                 end;
+             end;
+
+           recdef:=make_tuple_recdef;
+           for i:=0 to exprcount-1 do
+             add_tuple_field(recdef,'_'+tostr(i+1),exprs[i].resultdef);
+           trecordsymtable(recdef.symtable).addalignmentpadding;
+
+           blk:=internalstatements(laststmt);
+           tempnode:=ctempcreatenode.create(recdef,recdef.size,tt_persistent,false);
+           addstatement(laststmt,tempnode);
+           for i:=0 to exprcount-1 do
+             begin
+               fieldsym:=tsym(trecordsymtable(recdef.symtable).find('_'+tostr(i+1)));
+               addstatement(laststmt,
+                 cassignmentnode.create(
+                   csubscriptnode.create(fieldsym,ctemprefnode.create(tempnode)),
+                   exprs[i]));
+             end;
+           addstatement(laststmt,ctempdeletenode.create_normal_temp(tempnode));
+           addstatement(laststmt,ctemprefnode.create(tempnode));
+           result:=blk;
+         end;
+
          { Read a set between [] }
          function factor_read_set:tnode;
          var
@@ -3796,7 +3879,11 @@ implementation
              buildp:=carrayconstructornode.create(nil,buildp)
            else
             repeat
-              p1:=comp_expr([ef_accept_equal]);
+              if (m_tuples in current_settings.modeswitches) and
+                 (current_scanner.token=_LKLAMMER) then
+                p1:=tuple_lit_expr
+              else
+                p1:=comp_expr([ef_accept_equal]);
               if try_to_consume(_POINTPOINT) then
                 begin
                   p2:=comp_expr([ef_accept_equal]);

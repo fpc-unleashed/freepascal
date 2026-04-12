@@ -45,6 +45,10 @@ interface
     { ... but rejects types that cannot be returned from functions }
     function result_type(options:TSingleTypeOptions):tdef;
 
+    { helpers to build anonymous tuple records, exported for pexpr }
+    function make_tuple_recdef:trecorddef;
+    procedure add_tuple_field(recdef:trecorddef;const fname:TIDString;ftype:tdef);
+
 
     { reads any type declaration, where the resulting type will get name as type identifier }
     procedure read_named_type(var def:tdef;const newsym:tsym;genericdef:tstoreddef;genericlist:tfphashobjectlist;parseprocvardir:boolean;var hadtypetoken:boolean);

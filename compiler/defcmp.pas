@@ -198,6 +198,7 @@ interface
 implementation
 
     uses
+      cutils,
       verbose,systems,constexp,
       symtable,symsym,symcpu,
       defutil,symutil;
@@ -215,19 +216,44 @@ implementation
       end;
 
 
-    { two tuple records are shape-equal if they have the same fields
-      with matching names and types, in order }
+    { true if a tuple record uses auto-generated _1, _2, _3 ... field names }
+    function is_positional_tuple(t:trecorddef):boolean;
+      var
+        i,idx : longint;
+        sym : tsym;
+      begin
+        result:=false;
+        idx:=0;
+        for i:=0 to t.symtable.symlist.count-1 do
+          begin
+            sym:=tsym(t.symtable.symlist[i]);
+            if sym.typ<>fieldvarsym then
+              continue;
+            inc(idx);
+            if sym.name<>'_'+tostr(idx) then
+              exit;
+          end;
+        result:=idx>0;
+      end;
+
+
+    { two tuple records are shape-equal if the fields line up by index
+      with equal types. Field names must also match, UNLESS one side is
+      positional (auto _1, _2 ...), in which case names on the other
+      side are ignored. }
     function tuples_have_equal_shape(a,b:trecorddef):boolean;
       var
         lista,listb : tfphashobjectlist;
         i : longint;
         fa,fb : tfieldvarsym;
+        ignore_names : boolean;
       begin
         result:=false;
         lista:=a.symtable.symlist;
         listb:=b.symtable.symlist;
         if lista.count<>listb.count then
           exit;
+        ignore_names:=is_positional_tuple(a) or is_positional_tuple(b);
         for i:=0 to lista.count-1 do
           begin
             if (tsym(lista[i]).typ<>fieldvarsym) or
@@ -235,7 +261,7 @@ implementation
               exit;
             fa:=tfieldvarsym(lista[i]);
             fb:=tfieldvarsym(listb[i]);
-            if fa.name<>fb.name then
+            if (not ignore_names) and (fa.name<>fb.name) then
               exit;
             if not equal_defs(fa.vardef,fb.vardef) then
               exit;
