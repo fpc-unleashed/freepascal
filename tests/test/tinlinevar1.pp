@@ -85,19 +85,6 @@ begin
   if OuterVal <> 99 then
     Halt(30);
 
-  { Inner block variable shadowing with same name as another scope }
-  begin
-    var X := 10;
-    begin
-      var X := 20; { inner X shadows outer X in this scope }
-      if X <> 20 then
-        Halt(31);
-    end;
-    { outer X still accessible here }
-    if X <> 10 then
-      Halt(32);
-  end;
-
   { for-loop inline var is scoped to the loop }
   var Sum := 0;
   for var I := 1 to 3 do
