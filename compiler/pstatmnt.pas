@@ -856,6 +856,139 @@ implementation
             end;
 
 
+          { for var (x, y, ...) in collection do body - destructure each
+            tuple element into fresh locals and prepend field assignments
+            to the body. Entered after 'for var' was consumed; the current
+            token is '('. }
+          function for_in_destructure_loop : tnode;
+            var
+              tnames : array of string;
+              tcount : longint;
+              itempvs : tabstractnormalvarsym;
+              uservs : tabstractnormalvarsym;
+              hdef : tdef;
+              elemdef : tdef;
+              collexpr, hbody, wrappedbody : tnode;
+              recdef : trecorddef;
+              fieldsyms : array of tfieldvarsym;
+              fieldcount : longint;
+              sym : tsym;
+              st_unused : tsymtable;
+              i : longint;
+              wrapblk : tblocknode;
+              wraplast : tstatementnode;
+              uniq : string;
+              orig_hloopvar : tnode;
+            begin
+              result := nil;
+              consume(_LKLAMMER);
+              tcount := 0;
+              setlength(tnames, 4);
+              repeat
+                if current_scanner.token <> _ID then
+                  begin
+                    Message(parser_e_syntax_error);
+                    exit(cerrornode.create);
+                  end;
+                if tcount >= length(tnames) then
+                  setlength(tnames, length(tnames)*2);
+                tnames[tcount] := current_scanner.orgpattern;
+                inc(tcount);
+                consume(_ID);
+              until not try_to_consume(_COMMA);
+              consume(_RKLAMMER);
+              consume(_IN);
+
+              collexpr := comp_expr([ef_accept_equal]);
+              do_typecheckpass(collexpr);
+              elemdef := get_for_in_element_type(collexpr);
+              if not assigned(elemdef) or (elemdef = generrordef) or
+                 (elemdef.typ <> recorddef) then
+                begin
+                  Message(parser_e_illegal_expression);
+                  collexpr.free;
+                  exit(cerrornode.create);
+                end;
+              recdef := trecorddef(elemdef);
+
+              { collect field syms }
+              fieldcount := 0;
+              setlength(fieldsyms, recdef.symtable.symlist.count);
+              for i := 0 to recdef.symtable.symlist.count-1 do
+                begin
+                  sym := tsym(recdef.symtable.symlist[i]);
+                  if sym.typ = fieldvarsym then
+                    begin
+                      fieldsyms[fieldcount] := tfieldvarsym(sym);
+                      inc(fieldcount);
+                    end;
+                end;
+              setlength(fieldsyms, fieldcount);
+              if tcount <> fieldcount then
+                begin
+                  Message(parser_e_illegal_expression);
+                  collexpr.free;
+                  exit(cerrornode.create);
+                end;
+
+              consume(_DO);
+
+              { hidden loop variable holds each collection element }
+              str(current_tokenpos.line, uniq);
+              if symtablestack.top.symtabletype in [localsymtable,blocksymtable] then
+                itempvs := clocalvarsym.create('$forTup'+uniq, vs_value, elemdef, [])
+              else
+                itempvs := cstaticvarsym.create('$forTup'+uniq, vs_value, elemdef, []);
+              itempvs.register_sym;
+              symtablestack.top.insertsym(itempvs);
+              if itempvs.typ = staticvarsym then
+                cnodeutils.insertbssdata(tstaticvarsym(itempvs));
+              include(itempvs.varoptions, vo_is_loop_counter);
+              hdef := elemdef;
+
+              { user variables }
+              for i := 0 to tcount-1 do
+                begin
+                  if symtablestack.top.symtabletype in [localsymtable,blocksymtable] then
+                    uservs := clocalvarsym.create(tnames[i], vs_value, fieldsyms[i].vardef, [])
+                  else
+                    uservs := cstaticvarsym.create(tnames[i], vs_value, fieldsyms[i].vardef, []);
+                  uservs.register_sym;
+                  symtablestack.top.insertsym(uservs);
+                  if uservs.typ = staticvarsym then
+                    cnodeutils.insertbssdata(tstaticvarsym(uservs));
+                  uservs.varstate := vs_initialised;
+                end;
+
+              orig_hloopvar := cloadnode.create(itempvs, itempvs.owner);
+              typecheckpass(orig_hloopvar);
+              set_varstate(orig_hloopvar, vs_written, []);
+              set_varstate(orig_hloopvar, vs_read, [vsf_must_be_valid]);
+
+              hbody := statement;
+              exclude(itempvs.varoptions, vo_is_loop_counter);
+
+              { wrap body: { user_i := $forTup.f_i }* ; original body }
+              wrapblk := internalstatements(wraplast);
+              for i := 0 to tcount-1 do
+                begin
+                  if not searchsym(upper(tnames[i]), sym, st_unused) then
+                    continue;
+                  addstatement(wraplast,
+                    cassignmentnode.create(
+                      cloadnode.create(sym, sym.owner),
+                      csubscriptnode.create(fieldsyms[i],
+                        cloadnode.create(itempvs, itempvs.owner))));
+                end;
+              if assigned(hbody) then
+                addstatement(wraplast, hbody);
+              wrappedbody := wrapblk;
+
+              result := create_for_in_loop(orig_hloopvar, wrappedbody, collexpr);
+              collexpr.free;
+            end;
+
+
       var
          hloopvar: tnode;
          vs : tabstractnormalvarsym;
@@ -878,7 +1011,15 @@ implementation
                  exit;
                end;
 
-             if token <> _ID then
+             { tuple destructuring: for var (x, y, ...) in expr do body }
+             if (m_tuples in current_settings.modeswitches) and
+                (current_scanner.token = _LKLAMMER) then
+               begin
+                 result := for_in_destructure_loop;
+                 exit;
+               end;
+
+             if current_scanner.token <> _ID then
                begin
                  consume(_ID);
                  result := cerrornode.create;
