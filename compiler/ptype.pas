@@ -746,7 +746,7 @@ implementation
         fieldcount:=0;
         repeat
           inc(fieldcount);
-          single_type(elemdef,[stoAllowSpecialization]);
+          read_anon_type(elemdef,false,nil);
           add_tuple_field(recdef,'_'+tostr(fieldcount),elemdef);
         until not try_to_consume(_COMMA);
 
@@ -788,7 +788,7 @@ implementation
           until not try_to_consume(_COMMA);
 
           consume(_COLON);
-          single_type(grouptype,[stoAllowSpecialization]);
+          read_anon_type(grouptype,false,nil);
 
           for i:=0 to groupcount-1 do
             add_tuple_field(recdef,groupnames[i],grouptype);
@@ -821,7 +821,7 @@ implementation
       begin
         def:=nil;
         case current_scanner.token of
-          _STRING,_FILE:
+          _STRING,_FILE,_ARRAY,_RECORD,_CARET,_SET,_PACKED,_BITPACKED:
             begin
               def:=positional_tuple_type;
               exit(true);
