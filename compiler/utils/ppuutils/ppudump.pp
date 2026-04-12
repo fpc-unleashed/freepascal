@@ -2868,7 +2868,8 @@ const
      (mask:df_internal;       str:'Internal'),
      (mask:df_has_global_ref; str:'Has Global Ref'),
      (mask:df_has_generic_fields; str:'Has generic fields'),
-     (mask:df_llvm_no_typename; str:'LLVM no typename')
+     (mask:df_llvm_no_typename; str:'LLVM no typename'),
+     (mask:df_tuple;          str:'Tuple')
   );
   defstate : array[1..ord(high(tdefstate))] of tdefstateinfo=(
      (mask:ds_vmt_written;           str:'VMT Written'),

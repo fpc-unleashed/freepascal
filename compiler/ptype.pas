@@ -716,6 +716,7 @@ implementation
         { let init/fini RTTI be emitted if the tuple has managed fields }
         exclude(result.defstates,ds_init_table_written);
         exclude(result.defstates,ds_rtti_table_written);
+        include(result.defoptions,df_tuple);
       end;
 
 

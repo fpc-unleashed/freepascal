@@ -5076,6 +5076,103 @@ implementation
       end;
 
 
+    { Builds a block of per-field assignments for a tuple literal
+      ( e1, e2, ... ) or ( name: e1, name: e2, ... ) assigned to lhs.
+      Consumes ( ... ). lhs must have resultdef set to a df_tuple record. }
+    function tuple_lit_assignment(lhs:tnode):tnode;
+      var
+        recdef     : trecorddef;
+        fieldsyms  : array of tfieldvarsym;
+        fieldcount : longint;
+        exprcount  : longint;
+        i          : longint;
+        e          : tnode;
+        blk        : tblocknode;
+        laststmt   : tstatementnode;
+        sym        : tsym;
+        is_named   : boolean;
+        peekbuf    : tdynamicarray;
+        fname      : TIDString;
+        field      : tfieldvarsym;
+      begin
+        recdef:=trecorddef(lhs.resultdef);
+        fieldcount:=0;
+        setlength(fieldsyms,recdef.symtable.symlist.count);
+        for i:=0 to recdef.symtable.symlist.count-1 do
+          begin
+            sym:=tsym(recdef.symtable.symlist[i]);
+            if sym.typ=fieldvarsym then
+              begin
+                fieldsyms[fieldcount]:=tfieldvarsym(sym);
+                inc(fieldcount);
+              end;
+          end;
+        setlength(fieldsyms,fieldcount);
+
+        consume(_LKLAMMER);
+
+        { disambiguate positional vs named: peek at _ID _COLON prefix }
+        is_named:=false;
+        if current_scanner.token=_ID then
+          begin
+            peekbuf:=tdynamicarray.create(32);
+            current_scanner.startrecordtokens(peekbuf);
+            consume(_ID);
+            current_scanner.stoprecordtokens;
+            is_named:=current_scanner.token=_COLON;
+            current_scanner.startreplaytokens(peekbuf,false);
+          end;
+
+        blk:=internalstatements(laststmt);
+        exprcount:=0;
+        if is_named then
+          repeat
+            fname:=current_scanner.pattern;
+            consume(_ID);
+            consume(_COLON);
+            e:=comp_expr([ef_accept_equal]);
+            field:=nil;
+            for i:=0 to fieldcount-1 do
+              if upper(fieldsyms[i].name)=fname then
+                begin
+                  field:=fieldsyms[i];
+                  break;
+                end;
+            if assigned(field) then
+              addstatement(laststmt,
+                cassignmentnode.create(
+                  csubscriptnode.create(field,lhs.getcopy),
+                  e))
+            else
+              begin
+                Message1(sym_e_illegal_field,fname);
+                e.free;
+              end;
+            inc(exprcount);
+          until not try_to_consume(_COMMA)
+        else
+          repeat
+            e:=comp_expr([ef_accept_equal]);
+            if exprcount<fieldcount then
+              addstatement(laststmt,
+                cassignmentnode.create(
+                  csubscriptnode.create(fieldsyms[exprcount],lhs.getcopy),
+                  e))
+            else
+              e.free;
+            inc(exprcount);
+          until not try_to_consume(_COMMA);
+        consume(_RKLAMMER);
+
+        lhs.free;
+
+        if exprcount<>fieldcount then
+          Message(parser_e_illegal_expression);
+
+        result:=blk;
+      end;
+
+
     function expr(dotypecheck : boolean) : tnode;
 
       var
@@ -5105,19 +5202,33 @@ implementation
            _ASSIGNMENT :
              begin
                 consume(_ASSIGNMENT);
-                if assigned(p1.resultdef) then
-                  if (p1.resultdef.typ=procvardef) then
-                    getprocvardef:=tprocvardef(p1.resultdef)
-                  else if is_invokable(p1.resultdef) then
-                    getfuncrefdef:=tobjectdef(p1.resultdef);
-                p2:=sub_expr(opcompare,[ef_accept_equal],nil);
-                if assigned(getprocvardef) then
-                  handle_procvar(getprocvardef,p2)
-                else if assigned(getfuncrefdef) then
-                  handle_funcref(getfuncrefdef,p2);
-                getprocvardef:=nil;
-                getfuncrefdef:=nil;
-                p1:=cassignmentnode.create(p1,p2);
+                { tuple literal RHS? rewrite as per-field assignments }
+                if (m_tuples in current_settings.modeswitches) and
+                   (current_scanner.token=_LKLAMMER) and
+                   (not assigned(p1.resultdef)) then
+                  do_typecheckpass(p1);
+                if (m_tuples in current_settings.modeswitches) and
+                   (current_scanner.token=_LKLAMMER) and
+                   assigned(p1.resultdef) and
+                   (p1.resultdef.typ=recorddef) and
+                   (df_tuple in p1.resultdef.defoptions) then
+                  p1:=tuple_lit_assignment(p1)
+                else
+                  begin
+                    if assigned(p1.resultdef) then
+                      if (p1.resultdef.typ=procvardef) then
+                        getprocvardef:=tprocvardef(p1.resultdef)
+                      else if is_invokable(p1.resultdef) then
+                        getfuncrefdef:=tobjectdef(p1.resultdef);
+                    p2:=sub_expr(opcompare,[ef_accept_equal],nil);
+                    if assigned(getprocvardef) then
+                      handle_procvar(getprocvardef,p2)
+                    else if assigned(getfuncrefdef) then
+                      handle_funcref(getfuncrefdef,p2);
+                    getprocvardef:=nil;
+                    getfuncrefdef:=nil;
+                    p1:=cassignmentnode.create(p1,p2);
+                  end;
              end;
            _PLUSASN :
              begin
