@@ -221,8 +221,14 @@ implementation
         paranr : integer;
         explicit_paraloc,
         need_array,
-        is_univ: boolean;
+        is_univ,
+        is_tuple_destructure: boolean;
         stoptions : TSingleTypeOptions;
+        dtup_names : array of TIDString;
+        dtup_count : longint;
+        dtup_grouptype : tdef;
+        dtup_recdef : trecorddef;
+        dtup_i : longint;
 
         procedure handle_default_para_value;
           var
@@ -327,6 +333,66 @@ implementation
           hdef:=nil;
           { read identifiers and insert with error type }
           sc.clear;
+          { destructuring param: (id, id, ...): TupleType }
+          is_tuple_destructure:=false;
+          if (m_tuples in current_settings.modeswitches) and
+             (current_scanner.token=_LKLAMMER) then
+            begin
+              is_tuple_destructure:=true;
+              consume(_LKLAMMER);
+              locationstr:='$dtup';
+              dtup_count:=0;
+              setlength(dtup_names,8);
+              repeat
+                if dtup_count>=length(dtup_names) then
+                  setlength(dtup_names,length(dtup_names)*2);
+                dtup_names[dtup_count]:=current_scanner.orgpattern;
+                inc(dtup_count);
+                locationstr:=locationstr+'$'+current_scanner.orgpattern;
+                consume(_ID);
+              until not try_to_consume(_COMMA);
+              if current_scanner.token=_COLON then
+                begin
+                  { inline named tuple: (a, b: Integer) or (a, b: Integer; s: String)
+                    builds the tuple type directly from the parsed names }
+                  dtup_recdef:=make_tuple_recdef;
+                  consume(_COLON);
+                  single_type(dtup_grouptype,[]);
+                  for dtup_i:=0 to dtup_count-1 do
+                    add_tuple_field(dtup_recdef,dtup_names[dtup_i],dtup_grouptype);
+                  { additional groups separated by ; }
+                  while try_to_consume(_SEMICOLON) do
+                    begin
+                      dtup_count:=0;
+                      repeat
+                        if dtup_count>=length(dtup_names) then
+                          setlength(dtup_names,length(dtup_names)*2);
+                        dtup_names[dtup_count]:=current_scanner.orgpattern;
+                        inc(dtup_count);
+                        locationstr:=locationstr+'$'+current_scanner.orgpattern;
+                        consume(_ID);
+                      until not try_to_consume(_COMMA);
+                      consume(_COLON);
+                      single_type(dtup_grouptype,[]);
+                      for dtup_i:=0 to dtup_count-1 do
+                        add_tuple_field(dtup_recdef,dtup_names[dtup_i],dtup_grouptype);
+                    end;
+                  trecordsymtable(dtup_recdef.symtable).addalignmentpadding;
+                  hdef:=dtup_recdef;
+                  consume(_RKLAMMER);
+                end
+              else
+                consume(_RKLAMMER);
+              inc(paranr);
+              vs:=cparavarsym.create(locationstr,paranr*10,varspez,generrordef,[]);
+              include(vs.symoptions,sp_internal);
+              currparast.insertsym(vs);
+              if assigned(vs.owner) then
+                sc.add(vs)
+              else
+                vs.free;
+            end
+          else
           repeat
             inc(paranr);
             vs:=cparavarsym.create(current_scanner.orgpattern,paranr*10,varspez,generrordef,[]);
@@ -364,7 +430,11 @@ implementation
              hdef:=pv;
            end
           else
-          { read type declaration, force reading for value paras }
+          { read type declaration, force reading for value paras
+            skip if inline tuple already set hdef }
+           if (hdef<>nil) then
+             { type already set by inline tuple destructuring }
+           else
            if (current_scanner.token=_COLON) or (varspez=vs_value) then
            begin
              consume(_COLON);
@@ -419,6 +489,11 @@ implementation
                     single_type(hdef,[stoAllowSpecialization]);
                     block_type:=bt_var;
                   end;
+
+                { destructured param type must be a tuple record }
+                if is_tuple_destructure then
+                  if not ((hdef.typ=recorddef) and (df_tuple in hdef.defoptions)) then
+                    Message(parser_e_tuple_needs_type);
 
                 { open string ? }
                 if is_shortstring(hdef) then
