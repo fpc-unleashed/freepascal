@@ -410,8 +410,7 @@ implementation
     function match_statement(is_expr:boolean=false) : tnode;
       { Match statement: first-match (if-elseif) or fallthrough (match all).
         Subject-based: match EXPR of pat: stmt; end;
-        Supports `_` wildcard, `else` catch-all, `match all` fallthrough,
-        and `leave` for early exit from fallthrough. }
+        Condition-based: match cond: stmt; end; }
 
       function is_wildcard_underscore : boolean; inline;
         begin
@@ -434,8 +433,8 @@ implementation
         end;
 
       var
-        subject,cond,stmt,ifchain,stmtblock : tnode;
-        fallthrough : boolean;
+        subject,cond,stmt,ifchain,firstcond,stmtblock : tnode;
+        fallthrough,has_subject : boolean;
         stmts : tstatementnode;
         pat : tnode;
       begin
@@ -444,10 +443,23 @@ implementation
         fallthrough:=(current_scanner.token=_ID) and (current_scanner.pattern='ALL');
         if fallthrough then
           consume(_ID);
-        subject:=comp_expr([ef_accept_equal]);
-        do_typecheckpass(subject);
-        set_varstate(subject,vs_read,[vsf_must_be_valid]);
-        consume(_OF);
+        { determine mode: subject-based (match X of) vs condition-based }
+        has_subject:=false;
+        subject:=nil;
+        firstcond:=nil;
+        if not is_wildcard_underscore then
+          begin
+            firstcond:=comp_expr([ef_accept_equal]);
+            do_typecheckpass(firstcond);
+            if current_scanner.token=_OF then
+              begin
+                has_subject:=true;
+                subject:=firstcond;
+                set_varstate(subject,vs_read,[vsf_must_be_valid]);
+                consume(_OF);
+                firstcond:=nil;
+              end;
+          end;
         if fallthrough then
           begin
             { fallthrough: independent if-statements in repeat..until true }
@@ -462,9 +474,20 @@ implementation
                     consume(_SEMICOLON);
                   break;
                 end;
-              pat:=comp_expr([ef_accept_equal]);
-              do_typecheckpass(pat);
-              cond:=caddnode.create(equaln,subject.getcopy,pat);
+              if firstcond<>nil then
+                begin
+                  cond:=firstcond;
+                  firstcond:=nil;
+                end
+              else
+                begin
+                  pat:=comp_expr([ef_accept_equal]);
+                  do_typecheckpass(pat);
+                  if has_subject then
+                    cond:=caddnode.create(equaln,subject.getcopy,pat)
+                  else
+                    cond:=pat;
+                end;
               consume(_COLON);
               addstatement(stmts,cifnode.create(cond,statement,nil));
               if not(current_scanner.token in [_ELSE,_OTHERWISE,_END]) then
@@ -474,7 +497,8 @@ implementation
               addstatement(stmts,statements_til_end)
             else
               consume(_END);
-            subject.free;
+            if has_subject then
+              subject.free;
             result:=cwhilerepeatnode.create(
               cordconstnode.create(1,pasbool1type,false),
               stmtblock,false,true);
@@ -494,9 +518,20 @@ implementation
                     consume(_SEMICOLON);
                   break;
                 end;
-              pat:=comp_expr([ef_accept_equal]);
-              do_typecheckpass(pat);
-              cond:=caddnode.create(equaln,subject.getcopy,pat);
+              if firstcond<>nil then
+                begin
+                  cond:=firstcond;
+                  firstcond:=nil;
+                end
+              else
+                begin
+                  pat:=comp_expr([ef_accept_equal]);
+                  do_typecheckpass(pat);
+                  if has_subject then
+                    cond:=caddnode.create(equaln,subject.getcopy,pat)
+                  else
+                    cond:=pat;
+                end;
               consume(_COLON);
               stmt:=statement;
               stmt:=cifnode.create(cond,stmt,nil);
@@ -511,7 +546,8 @@ implementation
               end
             else
               consume(_END);
-            subject.free;
+            if has_subject then
+              subject.free;
             result:=ifchain;
           end;
       end;
