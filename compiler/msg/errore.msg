@@ -2196,6 +2196,13 @@ type_e_cannot_determine_size_of_wasm_reference_type=04133_E_WebAssembly referenc
 % WebAssembly reference types are opaque, meaning neither their size, nor their bit pattern can be observed.
 type_e_ordinal_or_pointer_expr_expected=04134_E_Ordinal or pointer expression expected
 % The expression must be of an ordinal or pointer type.
+type_e_tuples_not_comparable=04135_E_Tuples have different shapes and cannot be compared
+% The two tuple operands have different field counts or field types,
+% so ordering comparison is not possible.
+type_e_tuple_index_must_be_const=04136_E_Tuple index must be a compile-time constant
+% Tuple fields can have different types, so the result type of t[i]
+% cannot be determined when i is a variable. Use a constant index
+% (t[0], t[1]) or named access (t._1, t._2).
 %
 % \end{description}
 #

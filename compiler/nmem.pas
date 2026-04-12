@@ -1110,10 +1110,43 @@ implementation
          newordtyp: tordtype;
          valid : boolean;
          minvalue, maxvalue: Tconstexprint;
+         tup_idx, tup_fld : longint;
+         tup_sym : tsym;
       begin
          result:=nil;
          typecheckpass(left);
          typecheckpass(right);
+
+         { tuple[const_index] -> subscript to the Nth field }
+         if assigned(left.resultdef) and
+            (left.resultdef.typ=recorddef) and
+            (df_tuple in left.resultdef.defoptions) then
+           begin
+             if right.nodetype<>ordconstn then
+               begin
+                 Message(type_e_tuple_index_must_be_const);
+                 exit;
+               end;
+             tup_idx:=tordconstnode(right).value.svalue;
+             tup_fld:=0;
+             for tup_fld:=0 to trecorddef(left.resultdef).symtable.symlist.count-1 do
+               begin
+                 tup_sym:=tsym(trecorddef(left.resultdef).symtable.symlist[tup_fld]);
+                 if tup_sym.typ<>fieldvarsym then
+                   continue;
+                 if tup_idx=0 then
+                   begin
+                     result:=csubscriptnode.create(tup_sym,left);
+                     left:=nil;
+                     right.free;
+                     right:=nil;
+                     exit;
+                   end;
+                 dec(tup_idx);
+               end;
+             Message(parser_e_illegal_expression);
+             exit;
+           end;
 
          { implicitly convert stringconstant to stringdef,
            see tbs/tb0476.pp for a test }

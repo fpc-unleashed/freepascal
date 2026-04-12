@@ -2423,6 +2423,18 @@ implementation
                    typecheckpass(p1);
                  end;
 
+               { tuple[N] indexed access - route to vecnode }
+               if (m_tuples in current_settings.modeswitches) and
+                  assigned(p1.resultdef) and
+                  (p1.resultdef.typ=recorddef) and
+                  (df_tuple in p1.resultdef.defoptions) then
+                 begin
+                   consume(_LECKKLAMMER);
+                   p2:=comp_expr([ef_accept_equal]);
+                   consume(_RECKKLAMMER);
+                   p1:=cvecnode.create(p1,p2);
+                 end
+               else
                if is_class_or_interface_or_object(p1.resultdef) or
                   is_dispinterface(p1.resultdef) or
                   is_record(p1.resultdef) or
