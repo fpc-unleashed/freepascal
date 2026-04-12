@@ -2194,12 +2194,148 @@ const
       end;
 
 
+    { builds a field-by-field equality/inequality chain for two tuple
+      records of identical shape; expects l and r already typechecked }
+    function build_tuple_eq_chain(l,r:tnode;wantequal:boolean):tnode;
+      var
+        recdef : trecorddef;
+        sym : tsym;
+        fsym : tfieldvarsym;
+        i,fcount : longint;
+        cmp,subl,subr,chain : tnode;
+      begin
+        recdef:=trecorddef(l.resultdef);
+        chain:=nil;
+        fcount:=0;
+        for i:=0 to recdef.symtable.symlist.count-1 do
+          begin
+            sym:=tsym(recdef.symtable.symlist[i]);
+            if sym.typ<>fieldvarsym then
+              continue;
+            fsym:=tfieldvarsym(sym);
+            subl:=csubscriptnode.create(fsym,l.getcopy);
+            subr:=csubscriptnode.create(fsym,r.getcopy);
+            if wantequal then
+              cmp:=caddnode.create(equaln,subl,subr)
+            else
+              cmp:=caddnode.create(unequaln,subl,subr);
+            if chain=nil then
+              chain:=cmp
+            else if wantequal then
+              chain:=caddnode.create(andn,chain,cmp)
+            else
+              chain:=caddnode.create(orn,chain,cmp);
+            inc(fcount);
+          end;
+        if chain=nil then
+          chain:=cordconstnode.create(ord(wantequal),pasbool1type,false);
+        l.free;
+        r.free;
+        result:=chain;
+      end;
+
+
+    { Recursively builds a lexicographic comparison chain:
+       (l.fi < r.fi) OR ((l.fi = r.fi) AND tail), with the last level
+       using last_op (< or <=). The caller provides the fieldsyms list
+       in order and starts at field_idx=0. }
+    function build_lex_rest(l,r:tnode;const fields:array of tfieldvarsym;
+      field_idx:longint;last_op:tnodetype):tnode;
+      var
+        subl,subr,subl_eq,subr_eq,eqcmp,ltcmp,tail : tnode;
+      begin
+        if field_idx=high(fields) then
+          begin
+            subl:=csubscriptnode.create(fields[field_idx],l.getcopy);
+            subr:=csubscriptnode.create(fields[field_idx],r.getcopy);
+            result:=caddnode.create(last_op,subl,subr);
+            exit;
+          end;
+        subl:=csubscriptnode.create(fields[field_idx],l.getcopy);
+        subr:=csubscriptnode.create(fields[field_idx],r.getcopy);
+        ltcmp:=caddnode.create(ltn,subl,subr);
+        subl_eq:=csubscriptnode.create(fields[field_idx],l.getcopy);
+        subr_eq:=csubscriptnode.create(fields[field_idx],r.getcopy);
+        eqcmp:=caddnode.create(equaln,subl_eq,subr_eq);
+        tail:=build_lex_rest(l,r,fields,field_idx+1,last_op);
+        result:=caddnode.create(orn,ltcmp,caddnode.create(andn,eqcmp,tail));
+      end;
+
+
+    { Expands a tuple < / <= / > / >= comparison into a lexicographic
+      chain. >  and >= are rewritten by swapping l and r so the chain
+      builder only needs to handle < and <=. }
+    function build_tuple_lex_chain(l,r:tnode;op:tnodetype):tnode;
+      var
+        recdef : trecorddef;
+        sym : tsym;
+        fields : array of tfieldvarsym;
+        i,fcount : longint;
+        last_op : tnodetype;
+        tmp : tnode;
+      begin
+        if op in [gtn,gten] then
+          begin
+            tmp:=l; l:=r; r:=tmp;
+            if op=gtn then op:=ltn else op:=lten;
+          end;
+        last_op:=op;
+        recdef:=trecorddef(l.resultdef);
+        fcount:=0;
+        setlength(fields,recdef.symtable.symlist.count);
+        for i:=0 to recdef.symtable.symlist.count-1 do
+          begin
+            sym:=tsym(recdef.symtable.symlist[i]);
+            if sym.typ=fieldvarsym then
+              begin
+                fields[fcount]:=tfieldvarsym(sym);
+                inc(fcount);
+              end;
+          end;
+        setlength(fields,fcount);
+        if fcount=0 then
+          result:=cordconstnode.create(0,pasbool1type,false)
+        else
+          result:=build_lex_rest(l,r,fields,0,last_op);
+        l.free;
+        r.free;
+      end;
+
+
     function taddnode.pass_typecheck:tnode;
       begin
         { This function is small to keep the stack small for recursive of
           large + operations }
         typecheckpass(left);
         typecheckpass(right);
+        { tuple equality / inequality expand to per-field and/or chain }
+        if (nodetype in [equaln,unequaln]) and
+           assigned(left.resultdef) and assigned(right.resultdef) and
+           (left.resultdef.typ=recorddef) and (right.resultdef.typ=recorddef) and
+           (df_tuple in left.resultdef.defoptions) and
+           (df_tuple in right.resultdef.defoptions) and
+           tuples_have_equal_shape(trecorddef(left.resultdef),trecorddef(right.resultdef)) then
+          begin
+            result:=build_tuple_eq_chain(left,right,nodetype=equaln);
+            left:=nil;
+            right:=nil;
+            typecheckpass(result);
+            exit;
+          end;
+        { tuple lexicographic ordering: < <= > >= }
+        if (nodetype in [ltn,lten,gtn,gten]) and
+           assigned(left.resultdef) and assigned(right.resultdef) and
+           (left.resultdef.typ=recorddef) and (right.resultdef.typ=recorddef) and
+           (df_tuple in left.resultdef.defoptions) and
+           (df_tuple in right.resultdef.defoptions) and
+           tuples_have_equal_shape(trecorddef(left.resultdef),trecorddef(right.resultdef)) then
+          begin
+            result:=build_tuple_lex_chain(left,right,nodetype);
+            left:=nil;
+            right:=nil;
+            typecheckpass(result);
+            exit;
+          end;
         result:=pass_typecheck_internal;
       end;
 
