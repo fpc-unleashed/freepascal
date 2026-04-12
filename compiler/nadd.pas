@@ -2308,18 +2308,27 @@ const
           large + operations }
         typecheckpass(left);
         typecheckpass(right);
-        { tuple equality / inequality expand to per-field and/or chain }
+        { tuple equality / inequality }
         if (nodetype in [equaln,unequaln]) and
            assigned(left.resultdef) and assigned(right.resultdef) and
            (left.resultdef.typ=recorddef) and (right.resultdef.typ=recorddef) and
            (df_tuple in left.resultdef.defoptions) and
-           (df_tuple in right.resultdef.defoptions) and
-           tuples_have_equal_shape(trecorddef(left.resultdef),trecorddef(right.resultdef)) then
+           (df_tuple in right.resultdef.defoptions) then
           begin
-            result:=build_tuple_eq_chain(left,right,nodetype=equaln);
-            left:=nil;
-            right:=nil;
-            typecheckpass(result);
+            if tuples_have_equal_shape(trecorddef(left.resultdef),trecorddef(right.resultdef)) then
+              begin
+                result:=build_tuple_eq_chain(left,right,nodetype=equaln);
+                left:=nil;
+                right:=nil;
+                typecheckpass(result);
+              end
+            else
+              begin
+                { different shapes: always false for =, always true for <> }
+                left.free; left:=nil;
+                right.free; right:=nil;
+                result:=cordconstnode.create(ord(nodetype=unequaln),pasbool1type,false);
+              end;
             exit;
           end;
         { tuple lexicographic ordering: < <= > >= }
@@ -2327,13 +2336,20 @@ const
            assigned(left.resultdef) and assigned(right.resultdef) and
            (left.resultdef.typ=recorddef) and (right.resultdef.typ=recorddef) and
            (df_tuple in left.resultdef.defoptions) and
-           (df_tuple in right.resultdef.defoptions) and
-           tuples_have_equal_shape(trecorddef(left.resultdef),trecorddef(right.resultdef)) then
+           (df_tuple in right.resultdef.defoptions) then
           begin
-            result:=build_tuple_lex_chain(left,right,nodetype);
-            left:=nil;
-            right:=nil;
-            typecheckpass(result);
+            if tuples_have_equal_shape(trecorddef(left.resultdef),trecorddef(right.resultdef)) then
+              begin
+                result:=build_tuple_lex_chain(left,right,nodetype);
+                left:=nil;
+                right:=nil;
+                typecheckpass(result);
+              end
+            else
+              begin
+                Message(type_e_tuples_not_comparable);
+                result:=cordconstnode.create(0,pasbool1type,false);
+              end;
             exit;
           end;
         result:=pass_typecheck_internal;
