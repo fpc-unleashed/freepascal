@@ -496,7 +496,7 @@ implementation
 
           in_leave :
             begin
-              if m_mac in current_settings.modeswitches then
+              if [m_mac,m_match]*current_settings.modeswitches<>[] then
                 statement_syssym:=cbreaknode.create
               else
                 begin

@@ -408,9 +408,10 @@ implementation
 
 
     function match_statement(is_expr:boolean=false) : tnode;
-      { Match statement with first-match (if-elseif) semantics.
-        match EXPR of pat: stmt; ... end;
-        Supports `_` wildcard and `else` catch-all. }
+      { Match statement: first-match (if-elseif) or fallthrough (match all).
+        Subject-based: match EXPR of pat: stmt; end;
+        Supports `_` wildcard, `else` catch-all, `match all` fallthrough,
+        and `leave` for early exit from fallthrough. }
 
       function is_wildcard_underscore : boolean; inline;
         begin
@@ -433,46 +434,86 @@ implementation
         end;
 
       var
-        subject,cond,stmt,ifchain : tnode;
+        subject,cond,stmt,ifchain,stmtblock : tnode;
+        fallthrough : boolean;
+        stmts : tstatementnode;
         pat : tnode;
       begin
         consume(_MATCH);
+        { check for 'all' (context-sensitive) }
+        fallthrough:=(current_scanner.token=_ID) and (current_scanner.pattern='ALL');
+        if fallthrough then
+          consume(_ID);
         subject:=comp_expr([ef_accept_equal]);
         do_typecheckpass(subject);
         set_varstate(subject,vs_read,[vsf_must_be_valid]);
         consume(_OF);
-        ifchain:=nil;
-        repeat
-          if is_wildcard_underscore then
-            begin
-              { `_` = unconditional catch-all }
-              consume(_ID);
-              consume(_COLON);
-              stmt:=statement;
-              append_else(ifchain,stmt);
-              if not(current_scanner.token in [_END]) then
-                consume(_SEMICOLON);
-              break;
-            end;
-          pat:=comp_expr([ef_accept_equal]);
-          do_typecheckpass(pat);
-          cond:=caddnode.create(equaln,subject.getcopy,pat);
-          consume(_COLON);
-          stmt:=statement;
-          stmt:=cifnode.create(cond,stmt,nil);
-          append_else(ifchain,stmt);
-          if not(current_scanner.token in [_ELSE,_OTHERWISE,_END]) then
-            consume(_SEMICOLON);
-        until current_scanner.token in [_ELSE,_OTHERWISE,_END];
-        if try_to_consume(_ELSE) or try_to_consume(_OTHERWISE) then
+        if fallthrough then
           begin
-            stmt:=statements_til_end;
-            append_else(ifchain,stmt);
+            { fallthrough: independent if-statements in repeat..until true }
+            stmtblock:=internalstatements(stmts);
+            repeat
+              if is_wildcard_underscore then
+                begin
+                  consume(_ID);
+                  consume(_COLON);
+                  addstatement(stmts,statement);
+                  if not(current_scanner.token in [_END]) then
+                    consume(_SEMICOLON);
+                  break;
+                end;
+              pat:=comp_expr([ef_accept_equal]);
+              do_typecheckpass(pat);
+              cond:=caddnode.create(equaln,subject.getcopy,pat);
+              consume(_COLON);
+              addstatement(stmts,cifnode.create(cond,statement,nil));
+              if not(current_scanner.token in [_ELSE,_OTHERWISE,_END]) then
+                consume(_SEMICOLON);
+            until current_scanner.token in [_ELSE,_OTHERWISE,_END];
+            if try_to_consume(_ELSE) or try_to_consume(_OTHERWISE) then
+              addstatement(stmts,statements_til_end)
+            else
+              consume(_END);
+            subject.free;
+            result:=cwhilerepeatnode.create(
+              cordconstnode.create(1,pasbool1type,false),
+              stmtblock,false,true);
           end
         else
-          consume(_END);
-        subject.free;
-        result:=ifchain;
+          begin
+            { first-match: if-elseif chain }
+            ifchain:=nil;
+            repeat
+              if is_wildcard_underscore then
+                begin
+                  consume(_ID);
+                  consume(_COLON);
+                  stmt:=statement;
+                  append_else(ifchain,stmt);
+                  if not(current_scanner.token in [_END]) then
+                    consume(_SEMICOLON);
+                  break;
+                end;
+              pat:=comp_expr([ef_accept_equal]);
+              do_typecheckpass(pat);
+              cond:=caddnode.create(equaln,subject.getcopy,pat);
+              consume(_COLON);
+              stmt:=statement;
+              stmt:=cifnode.create(cond,stmt,nil);
+              append_else(ifchain,stmt);
+              if not(current_scanner.token in [_ELSE,_OTHERWISE,_END]) then
+                consume(_SEMICOLON);
+            until current_scanner.token in [_ELSE,_OTHERWISE,_END];
+            if try_to_consume(_ELSE) or try_to_consume(_OTHERWISE) then
+              begin
+                stmt:=statements_til_end;
+                append_else(ifchain,stmt);
+              end
+            else
+              consume(_END);
+            subject.free;
+            result:=ifchain;
+          end;
       end;
 
 
