@@ -364,12 +364,13 @@ implementation
             exit;
           end;
 
-         { two anonymous tuple records with matching shape are equal by
-           structure (same field count, names and types in order) }
+         { two records where at least one is a tuple: structural compat
+           when shapes match (field count, names, types in order).
+           Positional tuples ignore names on either side. }
          if (def_from.typ=recorddef) and
             (def_to.typ=recorddef) and
-            (df_tuple in def_from.defoptions) and
-            (df_tuple in def_to.defoptions) and
+            ((df_tuple in def_from.defoptions) or
+             (df_tuple in def_to.defoptions)) and
             tuples_have_equal_shape(trecorddef(def_from),trecorddef(def_to)) then
           begin
             doconv:=tc_equal;
