@@ -3781,6 +3781,107 @@ implementation
                          Factor_Read_Set
          ---------------------------------------------}
 
+         { Peeks whether the tokens right after _LKLAMMER start a named
+           tuple literal (ID ':'). Uses scanner token recording; skipped
+           if an outer recording is already active. }
+         function is_named_tuple_literal_ahead:boolean;
+           var
+             peekbuf : tdynamicarray;
+           begin
+             result:=false;
+             if current_scanner.is_recording_tokens then
+               exit;
+             if current_scanner.token<>_ID then
+               exit;
+             peekbuf:=tdynamicarray.create(32);
+             current_scanner.startrecordtokens(peekbuf);
+             consume(_ID);
+             current_scanner.stoprecordtokens;
+             result:=current_scanner.token=_COLON;
+             current_scanner.startreplaytokens(peekbuf,false);
+           end;
+
+
+         { Parses a named tuple literal body after _LKLAMMER was consumed
+           and the first token is an identifier starting a 'name:' pair.
+           Builds a temp tuple record with user-chosen field names and
+           the parsed expression types. Consumes _RKLAMMER. }
+         function named_tuple_lit_as_tempref:tnode;
+           var
+             names : array of TIDString;
+             exprs : array of tnode;
+             count : longint;
+             i : longint;
+             recdef : trecorddef;
+             elemdef : tdef;
+             blk : tblocknode;
+             laststmt : tstatementnode;
+             tempnode : ttempcreatenode;
+             fieldsym : tsym;
+           begin
+             count:=0;
+             setlength(names,4);
+             setlength(exprs,4);
+             repeat
+               if count>=length(names) then
+                 begin
+                   setlength(names,length(names)*2);
+                   setlength(exprs,length(exprs)*2);
+                 end;
+               names[count]:=current_scanner.orgpattern;
+               consume(_ID);
+               consume(_COLON);
+               exprs[count]:=comp_expr([ef_accept_equal]);
+               inc(count);
+             until not try_to_consume(_COMMA);
+             consume(_RKLAMMER);
+
+             { promote common literal types }
+             for i:=0 to count-1 do
+               begin
+                 typecheckpass(exprs[i]);
+                 elemdef:=exprs[i].resultdef;
+                 if is_integer(elemdef) and
+                    (torddef(elemdef).ordtype in [s8bit,u8bit,s16bit,u16bit]) then
+                   elemdef:=s32inttype
+                 else if is_conststring_array(elemdef) then
+                   begin
+                     if m_default_unicodestring in current_settings.modeswitches then
+                       elemdef:=cunicodestringtype
+                     else if m_default_ansistring in current_settings.modeswitches then
+                       elemdef:=getansistringdef
+                     else
+                       elemdef:=cshortstringtype;
+                   end;
+                 if elemdef<>exprs[i].resultdef then
+                   begin
+                     exprs[i]:=ctypeconvnode.create_internal(exprs[i],elemdef);
+                     typecheckpass(exprs[i]);
+                   end;
+               end;
+
+             recdef:=make_tuple_recdef;
+             for i:=0 to count-1 do
+               add_tuple_field(recdef,names[i],exprs[i].resultdef);
+             trecordsymtable(recdef.symtable).addalignmentpadding;
+
+             blk:=internalstatements(laststmt);
+             tempnode:=ctempcreatenode.create(recdef,recdef.size,tt_persistent,false);
+             addstatement(laststmt,tempnode);
+             for i:=0 to count-1 do
+               begin
+                 fieldsym:=tsym(trecordsymtable(recdef.symtable).find(upper(names[i])));
+                 addstatement(laststmt,
+                   cassignmentnode.create(
+                     csubscriptnode.create(fieldsym,ctemprefnode.create(tempnode)),
+                     exprs[i]));
+               end;
+             addstatement(laststmt,ctempdeletenode.create_normal_temp(tempnode));
+             addstatement(laststmt,ctemprefnode.create(tempnode));
+             result:=blk;
+           end;
+
+
          { Given a first expression parsed right after _LKLAMMER and the
            comma still pending, parses remaining comma-separated expressions
            up to _RKLAMMER and returns a block that evaluates to a temp
@@ -4457,15 +4558,24 @@ implementation
              _LKLAMMER :
                begin
                  consume(_LKLAMMER);
-                 p1:=comp_expr([ef_accept_equal]);
+                 { named tuple literal ( name: expr, name: expr, ... )? }
                  if (m_tuples in current_settings.modeswitches) and
-                    (current_scanner.token=_COMMA) then
+                    is_named_tuple_literal_ahead then
                    begin
-                     { tuple literal expression: (e1, e2, ...) }
-                     p1:=tuple_lit_as_tempref(p1);
+                     p1:=named_tuple_lit_as_tempref;
                    end
                  else
-                   consume(_RKLAMMER);
+                   begin
+                     p1:=comp_expr([ef_accept_equal]);
+                     if (m_tuples in current_settings.modeswitches) and
+                        (current_scanner.token=_COMMA) then
+                       begin
+                         { positional tuple literal: (e1, e2, ...) }
+                         p1:=tuple_lit_as_tempref(p1);
+                       end
+                     else
+                       consume(_RKLAMMER);
+                   end;
                  { it's not a good solution
                    but (a+b)^ makes some problems  }
                  if current_scanner.token in postfixoperator_tokens then
