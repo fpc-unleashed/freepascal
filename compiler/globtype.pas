@@ -563,7 +563,8 @@ interface
          m_array_equality,       { enables equality operator in addition to ArrayOperators modeswitch }
          m_no_rtti,              { hides RTTI ASCII text }
          m_inline_var,           { allow inline variable declarations inside statement blocks }
-         m_multi_var_init        { allow initializing multiple variables in one declaration }
+         m_multi_var_init,       { allow initializing multiple variables in one declaration }
+         m_tuples                { allow anonymous tuple types as function return types and related literals }
        );
        tmodeswitches = set of tmodeswitch;
 
@@ -776,7 +777,8 @@ interface
          'ARRAYEQUALITY',
          'NORTTI',
          'INLINEVARS',
-         'MULTIVARINIT'
+         'MULTIVARINIT',
+         'TUPLES'
          );
 
 
