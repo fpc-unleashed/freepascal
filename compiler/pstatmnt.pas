@@ -409,7 +409,13 @@ implementation
 
     function match_statement(is_expr:boolean=false) : tnode;
       { Match statement with first-match (if-elseif) semantics.
-        match EXPR of pat: stmt; ... end; }
+        match EXPR of pat: stmt; ... end;
+        Supports `_` wildcard and `else` catch-all. }
+
+      function is_wildcard_underscore : boolean; inline;
+        begin
+          result:=(current_scanner.token=_ID) and (current_scanner.pattern='_');
+        end;
 
       procedure append_else(var ifchain:tnode;elseblock:tnode);
         var
@@ -437,6 +443,17 @@ implementation
         consume(_OF);
         ifchain:=nil;
         repeat
+          if is_wildcard_underscore then
+            begin
+              { `_` = unconditional catch-all }
+              consume(_ID);
+              consume(_COLON);
+              stmt:=statement;
+              append_else(ifchain,stmt);
+              if not(current_scanner.token in [_END]) then
+                consume(_SEMICOLON);
+              break;
+            end;
           pat:=comp_expr([ef_accept_equal]);
           do_typecheckpass(pat);
           cond:=caddnode.create(equaln,subject.getcopy,pat);
@@ -444,10 +461,16 @@ implementation
           stmt:=statement;
           stmt:=cifnode.create(cond,stmt,nil);
           append_else(ifchain,stmt);
-          if not(current_scanner.token in [_END]) then
+          if not(current_scanner.token in [_ELSE,_OTHERWISE,_END]) then
             consume(_SEMICOLON);
-        until current_scanner.token in [_END];
-        consume(_END);
+        until current_scanner.token in [_ELSE,_OTHERWISE,_END];
+        if try_to_consume(_ELSE) or try_to_consume(_OTHERWISE) then
+          begin
+            stmt:=statements_til_end;
+            append_else(ifchain,stmt);
+          end
+        else
+          consume(_END);
         subject.free;
         result:=ifchain;
       end;
