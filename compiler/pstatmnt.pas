@@ -407,6 +407,52 @@ implementation
       end;
 
 
+    function match_statement(is_expr:boolean=false) : tnode;
+      { Match statement with first-match (if-elseif) semantics.
+        match EXPR of pat: stmt; ... end; }
+
+      procedure append_else(var ifchain:tnode;elseblock:tnode);
+        var
+          tailnode : tnode;
+        begin
+          if ifchain=nil then
+            ifchain:=elseblock
+          else
+            begin
+              tailnode:=ifchain;
+              while assigned(tifnode(tailnode).t1) do
+                tailnode:=tifnode(tailnode).t1;
+              tifnode(tailnode).t1:=elseblock;
+            end;
+        end;
+
+      var
+        subject,cond,stmt,ifchain : tnode;
+        pat : tnode;
+      begin
+        consume(_MATCH);
+        subject:=comp_expr([ef_accept_equal]);
+        do_typecheckpass(subject);
+        set_varstate(subject,vs_read,[vsf_must_be_valid]);
+        consume(_OF);
+        ifchain:=nil;
+        repeat
+          pat:=comp_expr([ef_accept_equal]);
+          do_typecheckpass(pat);
+          cond:=caddnode.create(equaln,subject.getcopy,pat);
+          consume(_COLON);
+          stmt:=statement;
+          stmt:=cifnode.create(cond,stmt,nil);
+          append_else(ifchain,stmt);
+          if not(current_scanner.token in [_END]) then
+            consume(_SEMICOLON);
+        until current_scanner.token in [_END];
+        consume(_END);
+        subject.free;
+        result:=ifchain;
+      end;
+
+
     function repeat_statement : tnode;
 
       var
@@ -2966,6 +3012,8 @@ implementation
              code:=if_statement;
            _CASE :
              code:=case_statement;
+           _MATCH :
+             code:=match_statement;
            _REPEAT :
              code:=repeat_statement;
            _WHILE :
