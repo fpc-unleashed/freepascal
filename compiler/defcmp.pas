@@ -686,7 +686,8 @@ implementation
                    end;
                  arraydef :
                    begin
-                     if (m_mac in current_settings.modeswitches) and
+                     if ((m_mac in current_settings.modeswitches) or
+                         (m_stringordcast in current_settings.modeswitches)) and
                         is_integer(def_to) and
                         (fromtreetype=stringconstn) then
                        begin

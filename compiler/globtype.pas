@@ -565,7 +565,8 @@ interface
          m_inline_var,          { allow inline variable declarations inside statement blocks }
          m_multi_var_init,      { allow initializing multiple variables in one declaration }
          m_tuples,              { allow anonymous tuple types as function return types and related literals }
-         m_match                { match statement with first-match and fallthrough modes }
+         m_match,               { match statement with first-match and fallthrough modes }
+         m_stringordcast        { compile-time fold of string literal typecast to ordinal (DWORD('abcd')) }
        );
        tmodeswitches = set of tmodeswitch;
 
@@ -780,7 +781,8 @@ interface
          'INLINEVARS',
          'MULTIVARINIT',
          'TUPLES',
-         'MATCH'
+         'MATCH',
+         'STRINGORDCAST'
          );
 
 

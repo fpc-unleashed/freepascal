@@ -2203,6 +2203,11 @@ type_e_tuple_index_must_be_const=04136_E_Tuple index must be a compile-time cons
 % Tuple fields can have different types, so the result type of t[i]
 % cannot be determined when i is a variable. Use a constant index
 % (t[0], t[1]) or named access (t._1, t._2).
+type_e_stringcast_size_mismatch=04137_E_Cannot cast string of length $1 to ordinal type "$2" (size $3 bytes)
+% When casting a string literal to an ordinal type in unleashed mode, the
+% string length must match the size of the target type exactly: 1 char for
+% Byte/ShortInt, 2 chars for Word/SmallInt, 4 chars for DWord/LongInt,
+% 8 chars for QWord/Int64.
 %
 % \end{description}
 #

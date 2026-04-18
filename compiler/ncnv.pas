@@ -1709,8 +1709,10 @@ implementation
 
     function ttypeconvnode.typecheck_cstring_to_int : tnode;
       var
-        fcc : cardinal;
-        pb  : pbyte;
+        fcc   : cardinal;
+        pb    : pbyte;
+        value : int64;
+        i,len : longint;
       begin
          result:=nil;
          if left.nodetype<>stringconstn then
@@ -1723,6 +1725,39 @@ implementation
              pb:=pbyte(tstringconstnode(left).asconstpchar);
              fcc:=(pb[0] shl 24) or (pb[1] shl 16) or (pb[2] shl 8) or pb[3];
              result:=cordconstnode.create(fcc,u32inttype,false);
+           end
+         else if (m_stringordcast in current_settings.modeswitches) and
+                 is_integer(resultdef) and
+                 (tstringconstnode(left).cst_type=cst_conststring) and
+                 (tstringconstnode(left).len=resultdef.size) and
+                 (resultdef.size in [1,2,4,8]) then
+           begin
+             // pack string bytes in target-native endianness so the in-memory
+             // layout of the folded constant matches the source byte order on
+             // any target (signature matching like PDWORD(@buf)^=DWORD('RIFF'))
+             pb:=pbyte(tstringconstnode(left).asconstpchar);
+             len:=tstringconstnode(left).len;
+             value:=0;
+             if target_info.endian=endian_little then
+               for i:=0 to len-1 do
+                 value:=value or (int64(pb[i]) shl (i*8))
+             else
+               for i:=0 to len-1 do
+                 value:=value or (int64(pb[i]) shl ((len-1-i)*8));
+             result:=cordconstnode.create(value,resultdef,false);
+           end
+         else if (m_stringordcast in current_settings.modeswitches) and
+                 is_integer(resultdef) and
+                 (tstringconstnode(left).cst_type=cst_conststring) then
+           begin
+             // string length does not match target ordinal size - specific diagnostic
+             Message3(type_e_stringcast_size_mismatch,
+                      tostr(tstringconstnode(left).len),
+                      resultdef.typename,
+                      tostr(resultdef.size));
+             // placeholder result so the enclosing const expression evaluator does
+             // not emit a cascading "Illegal expression" for the same location
+             result:=cordconstnode.create(0,resultdef,false);
            end
          else
            CGMessage2(type_e_illegal_type_conversion,left.resultdef.typename,resultdef.typename);
