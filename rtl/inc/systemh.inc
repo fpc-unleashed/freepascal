@@ -130,6 +130,7 @@ Type
     on Real <-> Double, so use type here, see also tw7425.pp (FK) }
 {$ifndef FPUNONE}
   Real = type Double;
+  Float = Double;
 { Include generic version of float64 record }
 {$I genmathh.inc}
 {$endif}
