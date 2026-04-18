@@ -215,8 +215,10 @@ interface
 
           current_commentstyle : tcommentstyle; { needed to use read_comment from directives }
 
-          { string interpolation state }
+          { string interpolation state. interp_stack holds outer modes for
+            nested $'...' literals inside an interpolation expression. }
           interp_mode : (im_none, im_string, im_expr, im_returning_end);
+          interp_stack : array of byte;
 
           constructor Create(const fn:string; is_macro: boolean = false);
           destructor Destroy;override;
@@ -309,6 +311,8 @@ interface
           // terminating `}`. consumes the `}` and sets the current token
           // to _INTERP_EXPR_END so the parser can resume normally
           function read_interp_mask:ansistring;
+          { pop interp_mode from stack, or set to im_none if no outer level }
+          procedure exit_interp_level;
           function  readpreproc:ttoken;
           function  readpreprocint(var value:int64;const place:string):boolean;
           function  readpreprocset(conform_to:tsetdef;var value:tnormalset;const place:string):boolean;
@@ -6422,6 +6426,27 @@ type
       end;
 
 
+    procedure tscannerfile.exit_interp_level;
+      var
+        top : sizeint;
+      begin
+        top:=length(interp_stack)-1;
+        if top>=0 then
+          begin
+            case interp_stack[top] of
+              1: interp_mode:=im_string;
+              2: interp_mode:=im_expr;
+              3: interp_mode:=im_returning_end;
+            else
+              interp_mode:=im_none;
+            end;
+            setlength(interp_stack,top);
+          end
+        else
+          interp_mode:=im_none;
+      end;
+
+
     procedure tscannerfile.readtoken(allowrecordtoken:boolean);
       var
         low,high,mid : longint;
@@ -6460,7 +6485,7 @@ type
         if interp_mode=im_returning_end then
           begin
             token:=_INTERP_END;
-            interp_mode:=im_none;
+            exit_interp_level;
             goto exit_label;
           end;
         if interp_mode=im_string then
@@ -6481,7 +6506,7 @@ type
                     else
                       begin
                         token:=_INTERP_END;
-                        interp_mode:=im_none;
+                        exit_interp_level;
                       end;
                     goto exit_label;
                   end;
@@ -6522,7 +6547,7 @@ type
                     else
                       begin
                         Message(scan_f_string_exceeds_line);
-                        interp_mode:=im_none;
+                        exit_interp_level;
                         token:=_INTERP_END;
                         goto exit_label;
                       end;
@@ -6708,9 +6733,16 @@ type
              '$' :
                begin
                  if (m_interpolated_strings in current_settings.modeswitches) and
-                    (interp_mode=im_none) and
+                    (interp_mode in [im_none,im_expr]) and
                     ({$ifdef CHECK_INPUTPOINTER_LIMITS}get_inputpointer_char{$else}inputpointer^{$endif}='''') then
                    begin
+                     // nested interp inside an expression of the outer one:
+                     // stash the outer mode so we can pop back to it
+                     if interp_mode=im_expr then
+                       begin
+                         setlength(interp_stack,length(interp_stack)+1);
+                         interp_stack[length(interp_stack)-1]:=2; { im_expr }
+                       end;
                      readchar; { consume $, c is now ' }
                      readchar; { consume ', c is now first string char }
                      interp_mode:=im_string;
