@@ -2655,7 +2655,7 @@ uses
         { for generics in non-Delphi modes we insert a private type symbol
           that has the same base name as the currently parsed generic and
           that references this defs }
-        if not (m_delphi in current_settings.modeswitches) and
+        if not (m_implicit_generics in current_settings.modeswitches) and
             (
               (
                 parse_generic and

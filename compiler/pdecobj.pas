@@ -1333,7 +1333,7 @@ implementation
                         if object_member_blocktype=bt_general then
                           begin
                             if (current_scanner.idtoken=_GENERIC) and
-                                not (m_delphi in current_settings.modeswitches) and
+                                not (m_implicit_generics in current_settings.modeswitches) and
                                 (
                                   not fields_allowed or
                                   is_objectpascal_helper(current_structdef)
@@ -1365,7 +1365,7 @@ implementation
                                   Message(parser_e_field_not_allowed_here);
 
                                 vdoptions:=[vd_object];
-                                if not (m_delphi in current_settings.modeswitches) then
+                                if not (m_implicit_generics in current_settings.modeswitches) then
                                   include(vdoptions,vd_check_generic);
                                 if class_fields then
                                   include(vdoptions,vd_class);

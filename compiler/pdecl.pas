@@ -265,7 +265,7 @@ implementation
                      try_to_consume(_COMMA));
            orgname:=names[0];
            filepos:=positions[0];
-           isgeneric:=not (m_delphi in current_settings.modeswitches) and (namecount=1) and (current_scanner.idtoken=_GENERIC);
+           isgeneric:=not (m_implicit_generics in current_settings.modeswitches) and (namecount=1) and (current_scanner.idtoken=_GENERIC);
            case current_scanner.token of
 
              _EQ:
@@ -968,7 +968,7 @@ implementation
 
            { fpc generic declaration? }
            if first then
-             had_generic:=not(m_delphi in current_settings.modeswitches) and try_to_consume(_GENERIC);
+             had_generic:=not(m_implicit_generics in current_settings.modeswitches) and try_to_consume(_GENERIC);
            isgeneric:=had_generic;
 
            typename:=current_scanner.pattern;
@@ -976,7 +976,7 @@ implementation
            consume(_ID);
 
            { delphi generic declaration? }
-           if (m_delphi in current_settings.modeswitches) then
+           if (m_implicit_generics in current_settings.modeswitches) then
              isgeneric:=current_scanner.token=_LSHARPBRACKET;
 
            { Generic type declaration? }
@@ -1076,7 +1076,7 @@ implementation
                     end
                   else
                     { this is not allowed in non-Delphi modes }
-                    if not (m_delphi in current_settings.modeswitches) then
+                    if not (m_implicit_generics in current_settings.modeswitches) then
                       Message1(sym_e_duplicate_id,genorgtypename)
                     else
                       begin
@@ -1189,7 +1189,7 @@ implementation
                 without the generic suffix, so it can be found easily when
                 parsing method implementations }
               if isgeneric and assigned(sym) and
-                  not (m_delphi in current_settings.modeswitches) and
+                  not (m_implicit_generics in current_settings.modeswitches) and
                   (ttypesym(sym).typedef.typ=undefineddef) then
                 begin
                   { don't free the undefineddef as the defids rely on the count
@@ -1434,7 +1434,7 @@ implementation
                generictypelist := nil;
              end;
 
-           if not (m_delphi in current_settings.modeswitches) and
+           if not (m_implicit_generics in current_settings.modeswitches) and
                (current_scanner.token=_ID) and (current_scanner.idtoken=_GENERIC) then
              begin
                had_generic:=true;
@@ -1551,7 +1551,7 @@ implementation
          repeat
            orgname:=current_scanner.orgpattern;
            filepos:=current_tokenpos;
-           isgeneric:=not (m_delphi in current_settings.modeswitches) and (current_scanner.token=_ID) and (current_scanner.idtoken=_GENERIC);
+           isgeneric:=not (m_implicit_generics in current_settings.modeswitches) and (current_scanner.token=_ID) and (current_scanner.idtoken=_GENERIC);
            consume(_ID);
            case current_scanner.token of
              _EQ:

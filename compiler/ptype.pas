@@ -303,7 +303,7 @@ implementation
                      symtablestack:=oldsymtablestack;
                      if isspecialize or
                          (
-                           (m_delphi in current_settings.modeswitches) and
+                           (m_implicit_generics in current_settings.modeswitches) and
                            (current_scanner.token=_LSHARPBRACKET)
                          ) then
                        begin
@@ -378,7 +378,7 @@ implementation
          if checkcurrentrecdef and
             try_parse_structdef_nested_type(def,current_structdef,isforwarddef) then
            exit;
-         if not allowunitsym and not (m_delphi in current_settings.modeswitches) and (current_scanner.idtoken=_SPECIALIZE) then
+         if not allowunitsym and not (m_implicit_generics in current_settings.modeswitches) and (current_scanner.idtoken=_SPECIALIZE) then
            begin
              consume(_ID);
              is_specialize:=true;
@@ -463,7 +463,7 @@ implementation
              assigned(current_structdef) and
              (df_generic in current_structdef.defoptions) and
              (ttypesym(srsym).typedef.typ=undefineddef) and
-             not (m_delphi in current_settings.modeswitches) then
+             not (m_implicit_generics in current_settings.modeswitches) then
            begin
              def:=get_generic_in_hierarchy_by_name(srsym,current_structdef);
              if assigned(def) then
@@ -532,7 +532,7 @@ implementation
 
                _ID:
                  begin
-                   if not (m_delphi in current_settings.modeswitches) and try_to_consume(_SPECIALIZE) then
+                   if not (m_implicit_generics in current_settings.modeswitches) and try_to_consume(_SPECIALIZE) then
                      begin
                        if ([stoAllowSpecialization,stoAllowTypeDef] * options = []) then
                          begin
@@ -590,7 +590,7 @@ implementation
             end;
         until not again;
         if ([stoAllowSpecialization,stoAllowTypeDef] * options <> []) and
-           (m_delphi in current_settings.modeswitches) then
+           (m_implicit_generics in current_settings.modeswitches) then
           dospecialize:=current_scanner.token in [_LSHARPBRACKET,_LT];
         if dospecialize and
             (def.typ=forwarddef) then
@@ -685,7 +685,7 @@ implementation
                     (current_genericdef.typ in [recorddef,objectdef]) and
                     (Pos(upper(srsym.realname),tabstractrecorddef(current_genericdef).objname^)=1) then
                   begin
-                    if m_delphi in current_settings.modeswitches then
+                    if m_implicit_generics in current_settings.modeswitches then
                       begin
                         def:=handle_dummysym(srsym);
                       end
@@ -1066,7 +1066,7 @@ implementation
                         if member_blocktype=bt_general then
                           begin
                             if (current_scanner.idtoken=_GENERIC) and
-                                not (m_delphi in current_settings.modeswitches) and
+                                not (m_implicit_generics in current_settings.modeswitches) and
                                 not fields_allowed then
                               begin
                                 if hadgeneric then
@@ -1083,7 +1083,7 @@ implementation
                                 vdoptions:=[vd_record];
                                 if classfields then
                                   include(vdoptions,vd_class);
-                                if not (m_delphi in current_settings.modeswitches) then
+                                if not (m_implicit_generics in current_settings.modeswitches) then
                                   include(vdoptions,vd_check_generic);
                                 if threadvarfields then
                                   include(vdoptions,vd_threadvar);
@@ -1480,7 +1480,7 @@ implementation
                  begin
                    def:=ttypenode(pt1).resultdef;
                    { Delphi mode specialization? }
-                   if (m_delphi in current_settings.modeswitches) then
+                   if (m_implicit_generics in current_settings.modeswitches) then
                      dospecialize:=current_scanner.token=_LSHARPBRACKET
                    else
                      begin
@@ -1497,7 +1497,7 @@ implementation
                        assigned(current_structdef) and
                        (
                          (
-                           not (m_delphi in current_settings.modeswitches) and
+                           not (m_implicit_generics in current_settings.modeswitches) and
                            (ttypesym(ttypenode(pt1).typesym).typedef.typ=undefineddef) and
                            (df_generic in current_structdef.defoptions) and
                            (ttypesym(ttypenode(pt1).typesym).typedef.owner=current_structdef.owner) and

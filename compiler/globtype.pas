@@ -566,7 +566,8 @@ interface
          m_multi_var_init,      { allow initializing multiple variables in one declaration }
          m_tuples,              { allow anonymous tuple types as function return types and related literals }
          m_match,               { match statement with first-match and fallthrough modes }
-         m_stringordcast        { compile-time fold of string literal typecast to ordinal (DWORD('abcd')) }
+         m_stringordcast,       { compile-time fold of string literal typecast to ordinal (DWORD('abcd')) }
+         m_implicit_generics    { Delphi-style generic syntax: 'generic'/'specialize' keywords optional, <T> allowed }
        );
        tmodeswitches = set of tmodeswitch;
 
@@ -782,7 +783,8 @@ interface
          'MULTIVARINIT',
          'TUPLES',
          'MATCH',
-         'STRINGORDCAST'
+         'STRINGORDCAST',
+         'IMPLICITGENERICS'
          );
 
 

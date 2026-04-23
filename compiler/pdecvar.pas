@@ -1427,7 +1427,7 @@ implementation
                if (current_scanner.token = _ID) then
                  begin
                    isgeneric:=(vd_check_generic in options) and
-                                not (m_delphi in current_settings.modeswitches) and
+                                not (m_implicit_generics in current_settings.modeswitches) and
                                 (current_scanner.idtoken=_GENERIC);
                    case symtablestack.top.symtabletype of
                      localsymtable :
