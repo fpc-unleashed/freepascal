@@ -435,6 +435,24 @@ implementation
       function parse_branch_cond(has_subject:boolean;subject:tnode) : tnode;
         { Parse pattern(s) for a branch. Subject mode supports comma-separated
           patterns (OR'd) and tuple patterns with _ wildcards. }
+
+        { equality check, or range check if `..` follows }
+        function build_match_cond(subj,lo:tnode):tnode;
+          var
+            hi : tnode;
+          begin
+            if try_to_consume(_POINTPOINT) then
+              begin
+                hi:=comp_expr([ef_accept_equal]);
+                do_typecheckpass(hi);
+                result:=caddnode.create(andn,
+                  caddnode.create(gten,subj.getcopy,lo),
+                  caddnode.create(lten,subj.getcopy,hi));
+              end
+            else
+              result:=caddnode.create(equaln,subj.getcopy,lo);
+          end;
+
         var
           pat,cond : tnode;
           fields : array of tnode;
@@ -510,13 +528,13 @@ implementation
               do_typecheckpass(pat);
               if has_subject then
                 begin
-                  result:=caddnode.create(equaln,subject.getcopy,pat);
+                  result:=build_match_cond(subject,pat);
                   while try_to_consume(_COMMA) do
                     begin
                       pat:=comp_expr([ef_accept_equal]);
                       do_typecheckpass(pat);
                       result:=caddnode.create(orn,result,
-                        caddnode.create(equaln,subject.getcopy,pat));
+                        build_match_cond(subject,pat));
                     end;
                 end
               else
