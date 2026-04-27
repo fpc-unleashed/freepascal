@@ -8,11 +8,17 @@
   - [Unleashed Mode](#unleashed-mode)
   - [Statement Expressions](#statement-expressions)
   - [Inline Variables](#inline-variables)
+  - [Anonymous Tuples](#anonymous-tuples)
+  - [Match Statement](#match-statement)
+  - [Multi-Variable Initialization](#multi-variable-initialization)
+  - [Multiline Strings](#multiline-strings)
   - [Array Equality](#array-equality)
   - [No RTTI](#no-rtti)
   - [Indexed Labels](#indexed-labels)
   - [Lazy Label Declarations](#lazy-label-declarations)
   - [Compound Assignment for Pascal Operators](#compound-assignment-for-pascal-operators)
+  - [Extra Improvements](#extra-improvements)
+  - [Detailed Documentation](#detailed-documentation)
 - [Installation](#installation)
 - [Contributing](#contributing)
 
@@ -34,14 +40,18 @@ The following modeswitches are enabled automatically:
 | ---------------------------------- | ------------------------------------------------------------- |
 | `statementexpressions`             | Use `if`, `case`, and `try` as expressions                    |
 | `inlinevars`                       | Declare variables inline anywhere inside a `begin..end` block |
+| `tuples`                           | Anonymous tuple types, literals, and destructuring            |
+| `match`                            | Pattern matching with first-match semantics                   |
+| `multivarinit`                     | Initialize several variables of the same type with one value  |
 | `anonymousfunctions`               | Anonymous procedures and functions                            |
 | `functionreferences`               | Function pointers that capture context                        |
 | `advancedrecords`                  | Records with methods, properties, and operators               |
 | `arrayoperators` + `arrayequality` | Direct array comparisons with `=` and `<>`                    |
 | `ansistrings`                      | Use `AnsiString` as the default string type                   |
 | `underscoreisseparator`            | Allow underscores in numeric literals (`1_000_000`)           |
-| `duplicatenames`                   | Allow reusing identifiers in limited scopes                   |
+| `duplicatelocals`                  | Allow reusing identifiers in limited scopes                   |
 | `multilinestrings`                 | Allow multi-line string literals without manual concatenation |
+| `stringordcast`                    | Cast a string literal to an ordinal type (`dword('RIFF')`)    |
 
 > [!NOTE]
 > For the best code-completion experience, we recommend using **[Lazarus Unleashed](https://github.com/fpc-unleashed/lazarus)** - a fork of Lazarus with full support for unleashed mode. If you are using stock Lazarus, enable the mode via `-Munleashed` in the project's Custom Options instead of placing `{$mode unleashed}` directly in the source file, to avoid autocomplete issues and incorrect Code Insight behavior.
@@ -212,6 +222,165 @@ end.
 
 > [!NOTE]
 > Untyped numeric inline variables default to a 32-bit signed integer (`integer`).
+
+---
+
+### Anonymous Tuples
+
+**Activate:** available in Unleashed mode (modeswitch `tuples`).
+
+Lightweight anonymous record types written in parentheses, with literals, destructuring, comparison, and full record semantics (managed types, copy by value, passing by `var`/`const`). Tuples are stored as ordinary internal records, so anything records can do, tuples can do.
+
+#### Positional fields (auto-named `_1`, `_2`, ...)
+
+```pascal
+function GetPair: (integer, integer);
+begin
+  Result := (10, 20);     // positional literal
+end;
+
+var
+  p: (integer, string) := (42, 'hello');
+begin
+  writeln(p._1, ' ', p._2);  // 42 hello
+  writeln(p[0], ' ', p[1]);  // same, by constant index
+end.
+```
+
+#### Named fields
+
+```pascal
+function Coords: (x, y: integer);
+begin
+  Exit(x: 10, y: 20);     // shorthand inside Exit
+end;
+```
+
+#### Destructuring
+
+```pascal
+var
+  a, b: integer;
+begin
+  (a, b) := GetPair;       // unpack tuple into existing vars
+end.
+```
+
+See [unleashed/docs/tuples.md](unleashed/docs/tuples.md) for the full grammar (named/positional mixing, tuple arrays, comparison operators, IDE hints).
+
+---
+
+### Match Statement
+
+**Activate:** available in Unleashed mode (modeswitch `match`).
+
+Pattern matching with first-match semantics. Replaces `case..of` for non-ordinal subjects (tuples, strings, arbitrary expressions) and adds catch-all, fallthrough, condition-based branches, tuple wildcards, and an expression form.
+
+#### Subject form
+
+```pascal
+match s of
+  'hello': writeln('greeting');
+  'bye':   writeln('farewell');
+  _:       writeln('unknown');     // catch-all
+end;
+```
+
+#### Condition form (no `of`)
+
+```pascal
+match
+  x > 100: writeln('big');
+  x > 10:  writeln('medium');
+  x > 0:   writeln('small');
+  _:       writeln('non-positive');
+end;
+```
+
+#### Tuple patterns with wildcards
+
+```pascal
+var p: (integer, integer) := (0, 5);
+match p of
+  (0, 0): writeln('origin');
+  (0, _): writeln('on Y axis');     // matches
+  (_, 0): writeln('on X axis');
+  _:      writeln('other');
+end;
+```
+
+#### Expression form
+
+```pascal
+var label_: string := match x of
+  1: 'one';
+  2: 'two';
+  _: 'many';
+end;
+```
+
+See [unleashed/docs/match.md](unleashed/docs/match.md) for fallthrough mode (`match all`), `leave`, range patterns, and exhaustiveness rules.
+
+---
+
+### Multi-Variable Initialization
+
+**Activate:** available in Unleashed mode (modeswitch `multivarinit`).
+
+Initialize several variables of the same type with a single value in one declaration. Works in `var`, typed constants, and inline `var`. Each variable gets its own independent copy.
+
+```pascal
+var
+  a, b, c: integer = 42;             // global var
+  ok, done: boolean = false;
+
+const
+  MinX, MinY, MinZ: integer = 0;     // typed constants
+
+procedure Bar;
+begin
+  var p, q: integer := 99;           // inline var
+  var i, j   := 10;                  // inline var with inference
+end;
+```
+
+The initializer is evaluated once and copied into each variable; `a := 100` does not affect `b` or `c`. See [unleashed/docs/multi-var-init.md](unleashed/docs/multi-var-init.md) for the full evaluation table.
+
+---
+
+### Multiline Strings
+
+**Activate:** available in Unleashed mode (modeswitch `multilinestrings`).
+
+Two delimiter forms let a string literal span multiple source lines without manual `+` or `LineEnding`.
+
+#### Backtick form
+
+```pascal
+const
+  banner =
+`========================================
+=         FCF Fibonacci Demo           =
+========================================`;
+```
+
+A normal string literal extended to tolerate embedded newlines.
+
+#### Triple-quote form
+
+```pascal
+const
+  sql =
+    '''
+    select id, name
+    from users
+    where active = 1
+    ''';
+```
+
+A Delphi-11-style textblock literal. The opener (`'''` followed by a newline) and the closer (`'''` on its own line) must each sit alone; the indentation of the closing delimiter defines the column that gets stripped from every content line.
+
+The two forms differ in tokenization, indentation handling, and how they compose in expressions. See [unleashed/docs/multiline-strings.md](unleashed/docs/multiline-strings.md) for the details. (Stock FPC actually accepts these too but never documented them.)
 
 ---
 
@@ -515,6 +684,25 @@ end.
 ```
 
 Available: `div=`, `mod=`, `and=`, `or=`, `xor=`, `shl=` and `shr=` .
+
+---
+
+### Extra Improvements
+
+Smaller, targeted improvements that unlock Pascal patterns standard FPC modes reject. Each is gated on its own modeswitch (some are on by default in `unleashed`, others must be opted into):
+
+- **`stringordcast`** - cast a string literal to an ordinal type at compile time, e.g. `dword('RIFF')` or `word('MZ')`. Useful for signature checks. *On by default in unleashed.*
+- **`typehelpers`** - `type helper for T` on any named type, not just classes and records.
+- **`multihelpers`** - several helpers for the same type visible in one scope (instead of "last one wins").
+- **`implicitgenerics`** - Delphi-style implicit `generic` / `specialize` syntax (`TList<T>` without keywords). Stock FPC locks this to `{$mode delphi}`; the modeswitch makes it usable in any mode.
+
+Full descriptions and examples in [unleashed/docs/extra-improvements.md](unleashed/docs/extra-improvements.md).
+
+---
+
+### Detailed Documentation
+
+Each feature has a dedicated reference page in [unleashed/docs/](unleashed/docs/) with the full grammar, semantics, edge cases, and IDE notes. Start at the index: [unleashed/docs/README.md](unleashed/docs/README.md).
 
 ## Installation
 
