@@ -1322,7 +1322,7 @@ implementation
          consume(_FOR);
 
          { Check for inline variable declaration: for var I ... }
-         if (token = _VAR) and (m_inline_var in current_settings.modeswitches) then
+         if (current_scanner.token = _VAR) and (m_inline_var in current_settings.modeswitches) then
            begin
              consume(_VAR);
 
@@ -1390,7 +1390,7 @@ implementation
                      result := cerrornode.create;
                    end;
                end
-             else if token = _ASSIGNMENT then
+             else if current_scanner.token = _ASSIGNMENT then
                begin
                  { Type inference from 'from' expression:  for var I := expr to/downto expr }
                  consume(_ASSIGNMENT);
@@ -2636,7 +2636,7 @@ implementation
               else
                 result := cnothingnode.create;
             end
-          else if token = _ASSIGNMENT then
+          else if current_scanner.token = _ASSIGNMENT then
             begin
               { Type inference:  var x := expr or var x, y := expr }
               if (sc.count > 1) and
