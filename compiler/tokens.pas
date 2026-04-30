@@ -162,6 +162,7 @@ type
     _CDECL,
     _CLASS,
     _CONST,
+    _DEFER,
     _EQUAL,
     _FAR16,
     _FINAL,
@@ -225,6 +226,7 @@ type
     _VIRTUAL,
     _ABSOLUTE,
     _ABSTRACT,
+    _AUTOFREE,
     _BASELAST,
     _BASENONE,
     _BASESYSV,
@@ -512,6 +514,7 @@ var
       (str:'CDECL'         ;special:false;keyword:[m_none];op:NOTOKEN),
       (str:'CLASS'         ;special:false;keyword:[m_class];op:NOTOKEN),
       (str:'CONST'         ;special:false;keyword:alllanguagemodes;op:NOTOKEN),
+      (str:'DEFER'         ;special:false;keyword:[m_unleashed];op:NOTOKEN),
       (str:'EQUAL'         ;special:false;keyword:[m_none];op:NOTOKEN), { delphi operator name }
       (str:'FAR16'         ;special:false;keyword:[m_none];op:NOTOKEN),
       (str:'FINAL'         ;special:false;keyword:[m_none];op:NOTOKEN),
@@ -575,6 +578,7 @@ var
       (str:'VIRTUAL'       ;special:false;keyword:[m_none];op:NOTOKEN),
       (str:'ABSOLUTE'      ;special:false;keyword:[m_none];op:NOTOKEN),
       (str:'ABSTRACT'      ;special:false;keyword:[m_none];op:NOTOKEN),
+      (str:'AUTOFREE'      ;special:false;keyword:[m_unleashed];op:NOTOKEN),
       (str:'BASELAST'      ;special:false;keyword:[m_none];op:NOTOKEN),   { Syscall variation on Amiga-likes }
       (str:'BASENONE'      ;special:false;keyword:[m_none];op:NOTOKEN),   { Syscall variation on Amiga-likes }
       (str:'BASESYSV'      ;special:false;keyword:[m_none];op:NOTOKEN),   { Syscall variation on MorphOS }

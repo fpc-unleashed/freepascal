@@ -43,6 +43,16 @@ interface
        end;
        tnothingnodeclass = class of tnothingnode;
 
+       { FPC Unleashed: marker node for `defer STATEMENT;`
+         Created by parser, rewritten away in statement_block post-pass.
+         Should never reach typecheck/firstpass - internalerror if it does. }
+       tdefernode = class(tunarynode)
+          constructor create(l:tnode);virtual;
+          function pass_1 : tnode;override;
+          function pass_typecheck:tnode;override;
+       end;
+       tdefernodeclass = class of tdefernode;
+
        terrornode = class(tnode)
           constructor create;virtual;
           function pass_1 : tnode;override;
@@ -339,6 +349,7 @@ interface
 
     var
        cnothingnode : tnothingnodeclass = tnothingnode;
+       cdefernode : tdefernodeclass = tdefernode;
        cerrornode : terrornodeclass = terrornode;
        cspecializenode : tspecializenodeclass = tspecializenode;
        cfinalizetempsnode: tfinalizetempsnodeclass = tfinalizetempsnode;
@@ -471,6 +482,35 @@ implementation
       begin
         result:=nil;
         expectloc:=LOC_VOID;
+      end;
+
+{*****************************************************************************
+                             TDEFERNODE
+*****************************************************************************}
+
+    constructor tdefernode.create(l:tnode);
+      begin
+        inherited create(defern,l);
+      end;
+
+
+    function tdefernode.pass_typecheck:tnode;
+      begin
+        // No-op: tdefernode is a placeholder; statement_block rewrites
+        // it into try..finally before any further passes touch the tree.
+        // The deferred body still needs typecheck though.
+        if assigned(left) then
+          typecheckpass(left);
+        result:=nil;
+        resultdef:=voidtype;
+      end;
+
+
+    function tdefernode.pass_1 : tnode;
+      begin
+        // Should never reach pass_1: statement_block rewrites all defernodes.
+        internalerror(2026043001);
+        result:=nil;
       end;
 
 {$ifdef DEBUG_NODE_XML}

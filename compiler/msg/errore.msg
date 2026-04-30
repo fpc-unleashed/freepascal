@@ -498,7 +498,7 @@ scan_e_improperly_indented_multiline_string=02120_E_Incorrectly indented multi-l
 #
 # Parser
 #
-# 03377 is the last used one
+# 03380 is the last used one
 #
 % \section{Parser messages}
 % This section lists all parser messages. The parser takes care of the
@@ -1729,6 +1729,19 @@ parser_w_with_shadowed_field=03376_W_Field "$1" in WITH entry shadows an earlier
 % The later entry hides the earlier one, which is most likely unintended.
 %
 parser_e_tuple_needs_type=03377_E_Tuple fields need type annotation, e.g. (x, y, z: Integer)
+%
+parser_e_defer_inside_defer=03378_E_`defer` cannot be the deferred statement of another `defer`
+% A `defer` statement may not itself defer another `defer`. Use a regular
+% statement (or a `begin..end` block) as the deferred body.
+%
+parser_e_autofree_requires_class=03379_E_`autofree` requires a class type derived from TObject
+% The expression after `autofree` must produce a class instance whose type
+% inherits from TObject (so it has a `Free` method).
+%
+parser_e_autofree_lhs_must_be_local=03380_E_`autofree` target must be a local variable
+% The destination of an `autofree` assignment must be a local variable
+% (declared in the enclosing scope or an inline-var). Class fields, globals,
+% array elements and pointer dereferences are not allowed.
 %
 % \end{description}
 %

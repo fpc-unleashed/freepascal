@@ -64,6 +64,7 @@ implementation
 
 
     function statement : tnode;forward;
+    function defer_statement : tnode;forward;
 
     function branch_type(olddef, branchdef: tdef): tdef; inline;
       begin
@@ -3277,6 +3278,8 @@ implementation
              code:=try_statement;
            _RAISE :
              code:=raise_statement;
+           _DEFER :
+             code:=defer_statement;
            { semicolons,else until and end are ignored }
            _SEMICOLON,
            _ELSE,
@@ -3484,6 +3487,125 @@ implementation
       end;
 
 
+    type
+      pdeferinfo = ^tdeferinfo;
+      tdeferinfo = record
+        flagvar : tlocalvarsym;
+        body    : tnode;
+      end;
+
+      pdefercollect = ^tdefercollect;
+      tdefercollect = record
+        items   : tfplist;
+        counter : longint;
+      end;
+
+
+    function defer_statement : tnode;
+      var
+        body: tnode;
+      begin
+        consume(_DEFER);
+        if current_scanner.token=_DEFER then
+          begin
+            Message(parser_e_defer_inside_defer);
+            consume(_DEFER);
+          end;
+        body:=statement;
+        if (body=nil) or (body.nodetype=errorn) then
+          result:=cerrornode.create
+        else
+          result:=cdefernode.create(body);
+      end;
+
+
+    function defer_collect_callback(var n: tnode; arg: pointer): foreachnoderesult;
+      var
+        ctx     : pdefercollect;
+        flagvar : tlocalvarsym;
+        flagname: TIDString;
+        info    : pdeferinfo;
+        deferred: tnode;
+        asgn    : tnode;
+      begin
+        result:=fen_false;
+        // inner blocks have their own defer scope - skip
+        if n.nodetype=blockn then
+          exit(fen_norecurse_false);
+        if n.nodetype=defern then
+          begin
+            ctx:=pdefercollect(arg);
+            inc(ctx^.counter);
+            str(ctx^.counter,flagname);
+            flagname:='$defer_flag_'+flagname;
+            flagvar:=tlocalvarsym.create(flagname,vs_value,pasbool1type,[]);
+            symtablestack.top.insertsym(flagvar);
+            // detach deferred body before freeing the marker
+            deferred:=tunarynode(n).left;
+            tunarynode(n).left:=nil;
+            new(info);
+            info^.flagvar:=flagvar;
+            info^.body:=deferred;
+            ctx^.items.add(info);
+            // replace marker with `flagvar := true`, typechecked
+            asgn:=cassignmentnode.create(
+                    cloadnode.create(flagvar,flagvar.owner),
+                    cordconstnode.create(1,pasbool1type,false));
+            asgn.fileinfo:=n.fileinfo;
+            typecheckpass(asgn);
+            n.free;
+            n:=asgn;
+            exit(fen_norecurse_false);
+          end;
+      end;
+
+
+    procedure rewrite_defers_in_block(var first: tnode);
+      var
+        ctx          : tdefercollect;
+        i            : longint;
+        info         : pdeferinfo;
+        finally_block: tblocknode;
+        finally_stat : tstatementnode;
+        body_block   : tnode;
+        saved_filepos: tfileposinfo;
+      begin
+        ctx.items:=tfplist.create;
+        ctx.counter:=0;
+        try
+          foreachnodestatic(pm_preprocess,first,@defer_collect_callback,@ctx);
+          if ctx.items.count=0 then
+            exit;
+          saved_filepos:=first.fileinfo;
+          // build finally body in LIFO order
+          finally_block:=internalstatements(finally_stat);
+          for i:=ctx.items.count-1 downto 0 do
+            begin
+              info:=pdeferinfo(ctx.items[i]);
+              addstatement(finally_stat,
+                cifnode.create(
+                  cloadnode.create(info^.flagvar,info^.flagvar.owner),
+                  info^.body,
+                  nil));
+            end;
+          typecheckpass(tnode(finally_block));
+          // wrap original chain in try..finally, single-element statement chain
+          body_block:=cblocknode.create(first);
+          body_block.fileinfo:=saved_filepos;
+          typecheckpass(body_block);
+          first:=cstatementnode.create(
+                   ctryfinallynode.create_implicit(body_block,finally_block),
+                   nil);
+          first.fileinfo:=saved_filepos;
+          typecheckpass(first);
+        finally
+          for i:=0 to ctx.items.count-1 do
+            dispose(pdeferinfo(ctx.items[i]));
+          ctx.items.free;
+        end;
+      end;
+
+
     function statement_block(starttoken : ttoken) : tnode;
 
       var
@@ -3544,6 +3666,12 @@ implementation
            an initialization ! }
          if (starttoken<>_INITIALIZATION) or (current_scanner.token<>_FINALIZATION) then
            consume(_END);
+
+         { FPC Unleashed: rewrite defer markers into try..finally with bool flags.
+           Must run while the block-scope symtable is still on the stack so that
+           generated flag-vars land in the right scope. No-op if no defer in tree. }
+         if assigned(first) then
+           rewrite_defers_in_block(first);
 
          { Pop the block-scope symtable and keep it on the procdef so nested
            debug scopes can still follow the original parent chain later on. }
