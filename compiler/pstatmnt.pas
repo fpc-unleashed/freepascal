@@ -3655,7 +3655,7 @@ implementation
           body_block.fileinfo:=saved_filepos;
           typecheckpass(body_block);
           first:=cstatementnode.create(
-                   ctryfinallynode.create_implicit(body_block,finally_block),
+                   ctryfinallynode.create(body_block,finally_block),
                    nil);
           first.fileinfo:=saved_filepos;
           typecheckpass(first);
