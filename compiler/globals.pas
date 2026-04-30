@@ -69,7 +69,7 @@ interface
           m_property,m_default_inline,m_except,m_multiline_strings];
        unleashedmodeswitches = objfpcmodeswitches+[m_default_ansistring,m_underscoreisseparator,m_duplicate_names,
         m_advanced_records,m_array_operators,m_anonymous_functions,m_function_references,
-        m_statement_expressions,m_array_equality,m_inline_var,m_tuples,m_match,m_multiline_strings,
+        m_statement_expressions,m_array_equality,m_inline_var,m_tuples,m_match,m_autofree,m_multiline_strings,
         m_multi_var_init,m_stringordcast,m_unleashed];
        tpmodeswitches =
          [m_tp7,m_tp_procvar,m_duplicate_names];

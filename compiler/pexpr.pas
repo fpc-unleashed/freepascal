@@ -5711,7 +5711,7 @@ implementation
              begin
                 consume(_ASSIGNMENT);
                 { FPC Unleashed: classic-var autofree -- `x := autofree T.Create` }
-                autofree_active := (m_unleashed in current_settings.modeswitches) and
+                autofree_active := (m_autofree in current_settings.modeswitches) and
                                    (current_scanner.token = _AUTOFREE);
                 if autofree_active then
                   consume(_AUTOFREE);
