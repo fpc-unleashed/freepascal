@@ -3626,6 +3626,8 @@ implementation
         ctx          : tdefercollect;
         i            : longint;
         info         : pdeferinfo;
+        init_block   : tblocknode;
+        init_stat    : tstatementnode;
         finally_block: tblocknode;
         finally_stat : tstatementnode;
         body_block   : tnode;
@@ -3638,6 +3640,19 @@ implementation
           if ctx.items.count=0 then
             exit;
           saved_filepos:=first.fileinfo;
+          // prepend initialization of every flag to the original body
+          // (boolean locals would otherwise be uninitialized garbage)
+          init_block:=internalstatements(init_stat);
+          Include(init_block.blocknodeflags, bnf_defer_transparent);
+          for i:=0 to ctx.items.count-1 do
+            begin
+              info:=pdeferinfo(ctx.items[i]);
+              addstatement(init_stat,
+                cassignmentnode.create(
+                  cloadnode.create(info^.flagvar,info^.flagvar.owner),
+                  cordconstnode.create(0,pasbool1type,false)));
+            end;
+          typecheckpass(tnode(init_block));
           // build finally body in LIFO order
           finally_block:=internalstatements(finally_stat);
           for i:=ctx.items.count-1 downto 0 do
@@ -3650,8 +3665,10 @@ implementation
                   nil));
             end;
           typecheckpass(tnode(finally_block));
-          // wrap original chain in try..finally, single-element statement chain
-          body_block:=cblocknode.create(first);
+          // wrap original chain in try..finally, prepended with flag inits
+          body_block:=cblocknode.create(
+                        cstatementnode.create(init_block,
+                          cstatementnode.create(cblocknode.create(first), nil)));
           body_block.fileinfo:=saved_filepos;
           typecheckpass(body_block);
           first:=cstatementnode.create(
