@@ -2459,6 +2459,9 @@ implementation
         autofree_active : boolean;
         free_sym        : tsym;
         free_call       : tnode;
+        free_block      : tblocknode;
+        free_stat       : tstatementnode;
+        free_guarded    : tnode;
         chain_block     : tblocknode;
         chain_stat      : tstatementnode;
       begin
@@ -2738,14 +2741,28 @@ implementation
                                 end
                               else
                                 begin
+                                  { build defer body: if x<>nil then begin x.Free; x:=nil; end
+                                    Guards against double-free if user manually calls x.Free
+                                    earlier in the scope. }
                                   free_call := ccallnode.create(nil, tprocsym(free_sym), free_sym.owner,
                                                                 cloadnode.create(vs, vs.owner), [], nil);
+                                  free_block := internalstatements(free_stat);
+                                  addstatement(free_stat, free_call);
+                                  addstatement(free_stat, cassignmentnode.create(
+                                    cloadnode.create(vs, vs.owner),
+                                    cnilnode.create));
+                                  free_guarded := cifnode.create(
+                                    caddnode.create(unequaln,
+                                      cloadnode.create(vs, vs.owner),
+                                      cnilnode.create),
+                                    free_block,
+                                    nil);
                                   chain_block := internalstatements(chain_stat);
                                   Include(chain_block.blocknodeflags, bnf_defer_transparent);
                                   addstatement(chain_stat, cassignmentnode.create(
                                     cloadnode.create(vs, vs.owner),
                                     initexpr));
-                                  addstatement(chain_stat, cdefernode.create(free_call));
+                                  addstatement(chain_stat, cdefernode.create(free_guarded));
                                   result := chain_block;
                                 end;
                             end;
