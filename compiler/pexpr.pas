@@ -5629,6 +5629,57 @@ implementation
       end;
 
 
+    { FPC Unleashed: build classic-var autofree desugar:
+        x := autofree T.Create
+      becomes a transparent helper block:
+        x := T.Create;
+        defer if x<>nil then begin x.Free; x:=nil end;  }
+    function build_classic_autofree(lhs, rhs: tnode): tnode;
+      var
+        vsdef        : tdef;
+        free_sym     : tsym;
+        free_call    : tnode;
+        free_block   : tblocknode;
+        free_stat    : tstatementnode;
+        free_guarded : tnode;
+        chain_block  : tblocknode;
+        chain_stat   : tstatementnode;
+      begin
+        // require a simple variable load on the LHS
+        if lhs.nodetype <> loadn then
+          begin
+            Message(parser_e_autofree_lhs_must_be_local);
+            exit(cassignmentnode.create(lhs, rhs));
+          end;
+        vsdef := lhs.resultdef;
+        if not (assigned(vsdef) and is_class(vsdef) and
+                def_is_related(tobjectdef(vsdef), class_tobject)) then
+          begin
+            Message(parser_e_autofree_requires_class);
+            exit(cassignmentnode.create(lhs, rhs));
+          end;
+        free_sym := search_struct_member(tobjectdef(vsdef), 'FREE');
+        if not assigned(free_sym) or (free_sym.typ <> procsym) then
+          begin
+            Message(parser_e_autofree_requires_class);
+            exit(cassignmentnode.create(lhs, rhs));
+          end;
+        free_call := ccallnode.create(nil, tprocsym(free_sym), free_sym.owner,
+                                      lhs.getcopy, [], nil);
+        free_block := internalstatements(free_stat);
+        addstatement(free_stat, free_call);
+        addstatement(free_stat, cassignmentnode.create(lhs.getcopy, cnilnode.create));
+        free_guarded := cifnode.create(
+          caddnode.create(unequaln, lhs.getcopy, cnilnode.create),
+          free_block, nil);
+        chain_block := internalstatements(chain_stat);
+        Include(chain_block.blocknodeflags, bnf_defer_transparent);
+        addstatement(chain_stat, cassignmentnode.create(lhs, rhs));
+        addstatement(chain_stat, cdefernode.create(free_guarded));
+        result := chain_block;
+      end;
+
+
     function expr(dotypecheck : boolean) : tnode;
 
       var
@@ -5637,6 +5688,7 @@ implementation
          oldafterassignment,
          updatefpos          : boolean;
          oldflags : tnodeflags;
+         autofree_active : boolean;
       begin
          oldafterassignment:=afterassignment;
          p1:=sub_expr(opcompare,[ef_accept_equal],nil);
@@ -5658,6 +5710,11 @@ implementation
            _ASSIGNMENT :
              begin
                 consume(_ASSIGNMENT);
+                { FPC Unleashed: classic-var autofree -- `x := autofree T.Create` }
+                autofree_active := (m_unleashed in current_settings.modeswitches) and
+                                   (current_scanner.token = _AUTOFREE);
+                if autofree_active then
+                  consume(_AUTOFREE);
                 { tuple literal RHS? rewrite as per-field assignments }
                 if (m_tuples in current_settings.modeswitches) and
                    (current_scanner.token=_LKLAMMER) and
@@ -5683,7 +5740,13 @@ implementation
                       handle_funcref(getfuncrefdef,p2);
                     getprocvardef:=nil;
                     getfuncrefdef:=nil;
-                    p1:=cassignmentnode.create(p1,p2);
+                    if autofree_active then
+                      begin
+                        do_typecheckpass(p2);
+                        p1:=build_classic_autofree(p1,p2);
+                      end
+                    else
+                      p1:=cassignmentnode.create(p1,p2);
                   end;
              end;
            _PLUSASN :
