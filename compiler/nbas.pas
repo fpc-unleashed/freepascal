@@ -128,7 +128,11 @@ interface
        tstatementnodeclass = class of tstatementnode;
 
        TBlockNodeFlag = (
-         bnf_strippable { Block node can be removed via simplify etc. }
+         bnf_strippable, { Block node can be removed via simplify etc. }
+         { FPC Unleashed: helper block introduced by parser (e.g. autofree
+           desugar) - rewrite_defers should walk through it instead of
+           treating it as a separate scope. }
+         bnf_defer_transparent
        );
 
        TBlockNodeFlags = set of TBlockNodeFlag;

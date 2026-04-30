@@ -2449,6 +2449,12 @@ implementation
         fieldcount : longint;
         j : longint;
         destruct_var : tabstractnormalvarsym;
+        { autofree state }
+        autofree_active : boolean;
+        free_sym        : tsym;
+        free_call       : tnode;
+        chain_block     : tblocknode;
+        chain_stat      : tstatementnode;
       begin
         result := nil;
         consume(_VAR);
@@ -2644,6 +2650,16 @@ implementation
                  not(m_multi_var_init in current_settings.modeswitches) then
                 Message(parser_e_initialized_only_one_var);
               consume(_ASSIGNMENT);
+              { FPC Unleashed: optional `autofree` modifier on the init
+                expression. Sets up an automatic .Free at scope exit. }
+              autofree_active := false;
+              if current_scanner.token = _AUTOFREE then
+                begin
+                  consume(_AUTOFREE);
+                  autofree_active := (sc.count = 1);
+                  if not autofree_active then
+                    Message(parser_e_initialized_only_one_var);
+                end;
               vs := tabstractnormalvarsym(sc[0]);
               { Restore block_type before parsing the expression so that the
                 scanner does not misinterpret keywords in the RHS. }
@@ -2692,9 +2708,47 @@ implementation
                         cnodeutils.insertbssdata(tstaticvarsym(sc[i]));
                     end;
                   if sc.count = 1 then
-                    result := cassignmentnode.create(
-                      cloadnode.create(vs, vs.owner),
-                      initexpr)
+                    begin
+                      if autofree_active then
+                        begin
+                          { FPC Unleashed: autofree requires class type derived from TObject. }
+                          if not (is_class(hdef) and def_is_related(tobjectdef(hdef), class_tobject)) then
+                            begin
+                              Message(parser_e_autofree_requires_class);
+                              result := cassignmentnode.create(
+                                cloadnode.create(vs, vs.owner),
+                                initexpr);
+                            end
+                          else
+                            begin
+                              { build chain: x := initexpr; defer x.Free; }
+                              free_sym := search_struct_member(tobjectdef(hdef), 'FREE');
+                              if not assigned(free_sym) or (free_sym.typ <> procsym) then
+                                begin
+                                  Message(parser_e_autofree_requires_class);
+                                  result := cassignmentnode.create(
+                                    cloadnode.create(vs, vs.owner),
+                                    initexpr);
+                                end
+                              else
+                                begin
+                                  free_call := ccallnode.create(nil, tprocsym(free_sym), free_sym.owner,
+                                                                cloadnode.create(vs, vs.owner), [], nil);
+                                  chain_block := internalstatements(chain_stat);
+                                  Include(chain_block.blocknodeflags, bnf_defer_transparent);
+                                  addstatement(chain_stat, cassignmentnode.create(
+                                    cloadnode.create(vs, vs.owner),
+                                    initexpr));
+                                  addstatement(chain_stat, cdefernode.create(free_call));
+                                  result := chain_block;
+                                end;
+                            end;
+                        end
+                      else
+                        result := cassignmentnode.create(
+                          cloadnode.create(vs, vs.owner),
+                          initexpr);
+                    end
                   else
                     begin
                       result := internalstatements(statements);
@@ -3529,8 +3583,9 @@ implementation
         asgn    : tnode;
       begin
         result:=fen_false;
-        // inner blocks have their own defer scope - skip
-        if n.nodetype=blockn then
+        // inner blocks have their own defer scope - skip, unless flagged
+        // as a parser-generated helper (e.g. autofree desugar)
+        if (n.nodetype=blockn) and not (bnf_defer_transparent in tblocknode(n).blocknodeflags) then
           exit(fen_norecurse_false);
         if n.nodetype=defern then
           begin
