@@ -65,6 +65,7 @@ implementation
 
     function statement : tnode;forward;
     function defer_statement : tnode;forward;
+    procedure rewrite_defers_in_block(var first: tnode);forward;
 
     function branch_type(olddef, branchdef: tdef): tdef; inline;
       begin
@@ -1977,6 +1978,11 @@ implementation
                     break;
                   consume_emptystats;
                end;
+             { FPC Unleashed: try-body is its own defer scope; rewrite
+               nested `defer` statements before they leak into the
+               enclosing routine's scope. }
+             if assigned(first) then
+               rewrite_defers_in_block(first);
              p_try_block:=cblocknode.create(first);
            end;
 
