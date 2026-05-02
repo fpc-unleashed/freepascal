@@ -1495,6 +1495,37 @@ implementation
       end;
 
 
+    { FPC Unleashed: build the body for a scoped-with autofree cleanup:
+        if vs<>nil then begin vs.Free; vs:=nil end
+      Returned node is intended to be wrapped in a cdefernode. }
+    function build_lifetime_freeandnil(vs: tabstractnormalvarsym;
+                                       const fp: tfileposinfo): tnode;
+      var
+        free_sym       : tsym;
+        free_call      : tnode;
+        free_inner     : tblocknode;
+        free_inner_st  : tstatementnode;
+      begin
+        free_sym := search_struct_member(tobjectdef(vs.vardef), 'FREE');
+        if not assigned(free_sym) or (free_sym.typ <> procsym) then
+          begin
+            Message(parser_e_autofree_requires_class);
+            result := cnothingnode.create;
+            exit;
+          end;
+        free_call := ccallnode.create(nil, tprocsym(free_sym), free_sym.owner,
+                                      cloadnode.create(vs, vs.owner), [], nil);
+        free_inner := internalstatements(free_inner_st);
+        addstatement(free_inner_st, free_call);
+        addstatement(free_inner_st, cassignmentnode.create(
+          cloadnode.create(vs, vs.owner), cnilnode.create));
+        result := cifnode.create(
+          caddnode.create(unequaln, cloadnode.create(vs, vs.owner), cnilnode.create),
+          free_inner, nil);
+        result.fileinfo := fp;
+      end;
+
+
     function _with_statement(seensyms : TFPList;seenfields : TFPHashList;shadowcands : TFPObjectList) : tnode;
 
       var
@@ -1515,6 +1546,13 @@ implementation
          dupsym,fsym : tsym;
          localfields : TFPHashList;
          entrypos : tfileposinfo;
+         { FPC Unleashed: scoped-with state }
+         lifetime_var : tabstractnormalvarsym;
+         lifetime_autofree : boolean;
+         lifetime_init : tnode;
+         lifetime_handled : boolean;
+         lifetime_name : TIDString;
+         lifetime_filepos : tfileposinfo;
 
          procedure pushobjchild(withdef,obj:tobjectdef);
          var
@@ -1546,8 +1584,125 @@ implementation
 
       begin
          calltempnode:=nil;
-         p:=comp_expr([ef_accept_equal]);
-         do_typecheckpass(p);
+         { FPC Unleashed: scoped-with -- recognise inline-var and autofree
+           in the with-clause before falling back to the classic with-target
+           expression. }
+         lifetime_handled := false;
+         lifetime_var := nil;
+         lifetime_autofree := false;
+         lifetime_init := nil;
+         if (m_autofree in current_settings.modeswitches) and
+            (current_scanner.token in [_VAR,_AUTOFREE]) then
+           begin
+             lifetime_filepos := current_filepos;
+             if current_scanner.token = _VAR then
+               begin
+                 { Form C:  with var NAME := [autofree] EXPR do BODY  }
+                 consume(_VAR);
+                 if current_scanner.token <> _ID then
+                   begin
+                     consume(_ID);   { trigger expected-identifier error }
+                     result := cerrornode.create;
+                     exit;
+                   end;
+                 lifetime_name := current_scanner.orgpattern;
+                 consume(_ID);
+                 consume(_ASSIGNMENT);
+                 if current_scanner.token = _AUTOFREE then
+                   begin
+                     consume(_AUTOFREE);
+                     lifetime_autofree := true;
+                   end;
+                 lifetime_init := comp_expr([ef_accept_equal]);
+                 do_typecheckpass(lifetime_init);
+               end
+             else { _AUTOFREE }
+               begin
+                 { Form A:  with autofree EXPR do BODY  -- hidden helper var }
+                 consume(_AUTOFREE);
+                 lifetime_autofree := true;
+                 { unique-ish suffix in case multiple form-A entries appear in the same scope }
+                 system.str(int64(ptruint(symtablestack.top)) and $ffff,lifetime_name);
+                 lifetime_name := '$with_' + lifetime_name;
+                 lifetime_init := comp_expr([ef_accept_equal]);
+                 do_typecheckpass(lifetime_init);
+               end;
+             hdef := lifetime_init.resultdef;
+             if not assigned(hdef) or (hdef = generrordef) then
+               begin
+                 lifetime_init.free;
+                 result := cerrornode.create;
+                 exit;
+               end;
+             if lifetime_autofree and
+                not (is_class(hdef) and def_is_related(tobjectdef(hdef), class_tobject)) then
+               begin
+                 Message(parser_e_autofree_requires_class);
+                 lifetime_init.free;
+                 result := cerrornode.create;
+                 exit;
+               end;
+             { create the holder variable in the enclosing routine scope
+               (skip past any with-symtables already on the stack from
+               earlier multi-with entries). }
+             if assigned(current_procinfo) and
+                assigned(current_procinfo.procdef.localst) then
+               begin
+                 lifetime_var := clocalvarsym.create(lifetime_name, vs_value, hdef, []);
+                 lifetime_var.register_sym;
+                 current_procinfo.procdef.localst.insertsym(lifetime_var);
+               end
+             else
+               begin
+                 lifetime_var := cstaticvarsym.create(lifetime_name, vs_value, hdef, []);
+                 lifetime_var.register_sym;
+                 symtablestack.top.insertsym(lifetime_var);
+               end;
+             tabstractnormalvarsym(lifetime_var).varstate := vs_initialised;
+             if lifetime_var.typ = staticvarsym then
+               cnodeutils.insertbssdata(tstaticvarsym(lifetime_var));
+             { p := load(lifetime_var) -- this is what `with` binds to }
+             p := cloadnode.create(lifetime_var, lifetime_var.owner);
+             do_typecheckpass(p);
+             lifetime_handled := true;
+           end
+         else
+           begin
+             p:=comp_expr([ef_accept_equal]);
+             do_typecheckpass(p);
+             { FPC Unleashed: form B -- with NAME := [autofree] EXPR do
+               (existing variable). Detected by `:=` after a plain load. }
+             if (m_autofree in current_settings.modeswitches) and
+                (current_scanner.token = _ASSIGNMENT) and
+                (p.nodetype = loadn) and
+                assigned(tloadnode(p).symtableentry) and
+                (tloadnode(p).symtableentry.typ in [localvarsym,staticvarsym,paravarsym]) then
+               begin
+                 lifetime_filepos := current_filepos;
+                 consume(_ASSIGNMENT);
+                 if current_scanner.token = _AUTOFREE then
+                   begin
+                     consume(_AUTOFREE);
+                     lifetime_autofree := true;
+                   end;
+                 lifetime_init := comp_expr([ef_accept_equal]);
+                 do_typecheckpass(lifetime_init);
+                 hdef := lifetime_init.resultdef;
+                 if not assigned(hdef) or (hdef = generrordef) then
+                   begin
+                     lifetime_init.free;
+                     p.free;
+                     result := cerrornode.create;
+                     exit;
+                   end;
+                 if lifetime_autofree and
+                    not (is_class(hdef) and def_is_related(tobjectdef(hdef), class_tobject)) then
+                   Message(parser_e_autofree_requires_class);
+                 lifetime_var := tabstractnormalvarsym(tloadnode(p).symtableentry);
+                 lifetime_handled := true;
+                 { p stays as the load to the existing var }
+               end;
+           end;
          entrypos:=p.fileinfo;
 
          { unleashed: `with EnumType do` exposes the type's enum members
@@ -1600,6 +1755,16 @@ implementation
             newblock:=nil;
             valuenode:=nil;
             tempnode:=nil;
+
+            { FPC Unleashed: scoped-with -- always wrap in a block so we
+              can prepend `lifetime_var := init_expr;` before the with-body. }
+            if lifetime_handled then
+              begin
+                newblock := internalstatements(newstatement);
+                addstatement(newstatement, cassignmentnode.create(
+                  cloadnode.create(lifetime_var, lifetime_var.owner),
+                  lifetime_init));
+              end;
 
             hp:=skip_nodes_before_load(p);
             if (hp.nodetype=loadn) and
@@ -1788,6 +1953,34 @@ implementation
               symtablestack.pop(TSymtable(withsymtablelist[i]));
             withsymtablelist.free;
             withsymtablelist := nil;
+
+            { FPC Unleashed: scoped-with -- rewrite any defers the body
+              registered (e.g. `with X do defer Foo;` or stray defers in
+              a begin..end body that wasn't already a defer-scope) so they
+              fire at with-scope exit, not in the enclosing routine.
+              We need a blocknode to feed rewrite_defers_in_block its
+              statement chain; wrap a single statement first. }
+            if lifetime_handled and (m_autofree in current_settings.modeswitches) then
+              begin
+                if p.nodetype <> blockn then
+                  p := cblocknode.create(cstatementnode.create(p, nil));
+                hp := tblocknode(p).left;
+                rewrite_defers_in_block(hp);
+                tblocknode(p).left := hp;
+              end;
+
+            { FPC Unleashed: scoped-with autofree -- wrap the body in
+              try..finally with the auto-cleanup, so the holder's Free
+              fires regardless of how the body exits. }
+            if lifetime_handled and lifetime_autofree and
+               (m_autofree in current_settings.modeswitches) then
+              begin
+                p := ctryfinallynode.create(
+                       p,
+                       build_lifetime_freeandnil(lifetime_var, lifetime_filepos));
+                p.fileinfo := lifetime_filepos;
+                typecheckpass(p);
+              end;
 
             { Finalize complex withnode with destroy of temp }
             if assigned(newblock) then
