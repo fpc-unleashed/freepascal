@@ -26,6 +26,12 @@ Pattern matching with first-match semantics that replaces `case..of` for non-ord
 
 Enabled via `{$modeswitch match}`.
 
+## [Scoped Cleanup - defer, autofree, scoped with](autofree.md)
+
+`defer STATEMENT` registers an action to fire at scope exit (LIFO, runs on normal exit / exception / break / continue / `exit`). `autofree EXPR` is sugar that turns a freshly-allocated class instance into a scoped resource with automatic `Free`. The `with` statement gains inline-var bindings (`with var x := autofree T.Create do ...`) so the holder is named, scoped, and cleaned up in one line. Cleanup uses a nil-guarded pattern so manual `x.Free` earlier in the scope does not double-free.
+
+Enabled via `{$modeswitch autofree}`.
+
 ## [Multi-Variable Initialization](multi-var-init.md)
 
 Initialize several variables of the same type in one declaration, e.g. `a, b, c: integer = 42;`. Works in `var`, typed constants, and inline `var`. Each variable gets an independent copy of the value - assigning to one does not affect the others.

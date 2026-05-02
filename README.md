@@ -11,6 +11,7 @@
   - [Anonymous Tuples](#anonymous-tuples)
   - [Match Statement](#match-statement)
   - [Multi-Variable Initialization](#multi-variable-initialization)
+  - [Scoped Cleanup (defer, autofree, scoped with)](#scoped-cleanup)
   - [Multiline Strings](#multiline-strings)
   - [Array Equality](#array-equality)
   - [No RTTI](#no-rtti)
@@ -52,6 +53,7 @@ The following modeswitches are enabled automatically:
 | `duplicatelocals`                  | Allow reusing identifiers in limited scopes                   |
 | `multilinestrings`                 | Allow multi-line string literals without manual concatenation |
 | `stringordcast`                    | Cast a string literal to an ordinal type (`dword('RIFF')`)    |
+| `autofree`                         | `defer STATEMENT`, `autofree EXPR`, scoped `with var x := ...` |
 
 > [!NOTE]
 > For the best code-completion experience, we recommend using **[Lazarus Unleashed](https://github.com/fpc-unleashed/lazarus)** - a fork of Lazarus with full support for unleashed mode. If you are using stock Lazarus, enable the mode via `-Munleashed` in the project's Custom Options instead of placing `{$mode unleashed}` directly in the source file, to avoid autocomplete issues and incorrect Code Insight behavior.
@@ -345,6 +347,92 @@ end;
 ```
 
 The initializer is evaluated once and copied into each variable; `a := 100` does not affect `b` or `c`. See [unleashed/docs/multi-var-init.md](unleashed/docs/multi-var-init.md) for the full evaluation table.
+
+---
+
+### Scoped Cleanup
+
+**Activate:** available in Unleashed mode (modeswitch `autofree`).
+
+Three cooperating constructs for scope-based resource management without `try..finally` boilerplate.
+
+#### `defer STATEMENT`
+
+Register a statement to fire when the enclosing `begin..end` block exits (normal exit, `exit`, `break`, `continue`, exception). Multiple defers fire in LIFO order. Argument expressions are evaluated at exit, not at registration.
+
+```pascal
+procedure CopyFile(const src, dst: string);
+begin
+  var fin  := TFileStream.Create(src, fmOpenRead);
+  defer fin.Free;
+  var fout := TFileStream.Create(dst, fmCreate);
+  defer fout.Free;
+
+  fout.CopyFrom(fin, 0);
+end;
+// fout.Free runs first (LIFO), then fin.Free, even if CopyFrom raises
+```
+
+#### `autofree EXPR`
+
+Sugar that registers a nil-guarded `Free` defer for a class instance. Works on inline-var declarations and on assignments to existing locals. The cleanup uses `if x<>nil then begin x.Free; x:=nil end`, so manual `x.Free; x := nil;` earlier in the scope does not double-free.
+
+```pascal
+procedure foo;
+begin
+  var list := autofree TStringList.Create;
+  list.Add('hello');
+  list.Add('world');
+  WriteLn(list.Text);
+end;
+// list.Free called automatically here
+
+// also works on existing variables
+var
+  a, b: TFoo;
+begin
+  a := autofree TFoo.Create(1);
+  b := autofree TFoo.Create(2);
+  // ... use a, b ...
+end;
+// b.Free, then a.Free (LIFO)
+```
+
+The right-hand side must be a class derived from `TObject`. The LHS must be a plain local or inline variable.
+
+#### Scoped `with`
+
+The `with` statement accepts inline-var bindings, with optional `autofree`. Three forms:
+
+```pascal
+// inline-var with autofree (cleanup at end of with-scope)
+with var http := autofree TFPHTTPClient.Create(nil) do
+  s := http.Get('http://httpbin.org/ip');
+
+// bind to an existing local
+var http: TFPHTTPClient;
+with http := autofree TFPHTTPClient.Create(nil) do
+  s := http.Get('http://httpbin.org/ip');
+
+// hidden holder (no name; methods reachable through with-symtable)
+with autofree TFPHTTPClient.Create(nil) do
+  s := Get('http://httpbin.org/ip');
+```
+
+Multi-with works with any combination:
+
+```pascal
+with var a := autofree TFoo.Create,
+     var b := autofree TBar.Create do
+  Use(a, b);
+// b.Free, then a.Free
+```
+
+`defer` written inside a scoped-with body is scoped to that `with` (fires before the autofree cleanup), even when the body is a single statement without `begin..end`.
+
+The classic `with X do BODY` (no inline-var, no autofree) is unchanged.
+
+See [unleashed/docs/autofree.md](unleashed/docs/autofree.md) for the full grammar, lowering details, error catalogue, and edge cases.
 
 ---
 
