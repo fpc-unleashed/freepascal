@@ -929,8 +929,13 @@ implementation
              { only in tp and mac pascal mode, we care about the value of the loop counter on loop exit
 
                I am not sure though, if this is the right rule, at least in delphi the loop counter is undefined
-               on loop exit, we assume the same in all FPC modes }
-             if ([m_objfpc,m_fpc,m_delphi]*current_settings.modeswitches)<>[] then
+               on loop exit, we assume the same in all FPC modes.
+
+               Mode unleashed keeps the counter across the exit too, so this
+               flag (which lets the optimizer overshoot the final value) must
+               not be set. }
+             if (([m_objfpc,m_fpc,m_delphi]*current_settings.modeswitches)<>[]) and
+                not(m_unleashed in current_settings.modeswitches) then
                Include(tfornode(Result).loopflags,lnf_dont_mind_loopvar_on_exit);
           end;
 
@@ -1150,7 +1155,8 @@ implementation
                exclude(loopvs.varoptions,vo_is_loop_counter);
 
                result:=cfornode.create(hloopvar,hfrom,hto,hblock,backward);
-               if ([m_objfpc,m_fpc,m_delphi]*current_settings.modeswitches)<>[] then
+               if (([m_objfpc,m_fpc,m_delphi]*current_settings.modeswitches)<>[]) and
+                  not(m_unleashed in current_settings.modeswitches) then
                  Include(tfornode(Result).loopflags,lnf_dont_mind_loopvar_on_exit);
             end;
 
