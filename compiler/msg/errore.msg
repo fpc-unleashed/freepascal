@@ -498,7 +498,7 @@ scan_e_improperly_indented_multiline_string=02120_E_Incorrectly indented multi-l
 #
 # Parser
 #
-# 03380 is the last used one
+# 03381 is the last used one
 #
 % \section{Parser messages}
 % This section lists all parser messages. The parser takes care of the
@@ -1742,6 +1742,10 @@ parser_e_autofree_lhs_must_be_local=03380_E_`autofree` target must be a local va
 % The destination of an `autofree` assignment must be a local variable
 % (declared in the enclosing scope or an inline-var). Class fields, globals,
 % array elements and pointer dereferences are not allowed.
+%
+parser_w_with_shadowed_method=03381_W_Method "$1" in WITH entry shadows an earlier method with the same name
+% Two entries in the same \var{with} clause expose a method with the same name.
+% The later entry hides the earlier one and makes the call ambiguous to the reader.
 %
 % \end{description}
 %

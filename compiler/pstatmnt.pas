@@ -1462,18 +1462,20 @@ implementation
         fname : TSymStr;
         frealname : TSymStr;
         fpos : tfileposinfo;
-        constructor Create(const an,arn:TSymStr;const afp:tfileposinfo);
+        fismethod : boolean;
+        constructor Create(const an,arn:TSymStr;const afp:tfileposinfo;aismethod:boolean);
       end;
 
-    constructor twithshadowcand.Create(const an,arn:TSymStr;const afp:tfileposinfo);
+    constructor twithshadowcand.Create(const an,arn:TSymStr;const afp:tfileposinfo;aismethod:boolean);
       begin
         fname:=an;
         frealname:=arn;
         fpos:=afp;
+        fismethod:=aismethod;
       end;
 
-    { collect names of field symbols actually referenced inside a with-body,
-      used to suppress shadow warnings for unused fields }
+    { collect names of field/method symbols actually referenced inside a with-body,
+      used to suppress shadow warnings for unused entries }
     function with_shadow_collect_used(var n: tnode; arg: pointer): foreachnoderesult;
       var
         used : TFPHashList;
@@ -1493,6 +1495,12 @@ implementation
               sym:=tloadnode(n).symtableentry;
               if assigned(sym) and (sym.typ=fieldvarsym) and
                  (used.Find(sym.name)=nil) then
+                used.Add(sym.name,sym);
+            end;
+          calln:
+            begin
+              sym:=tcallnode(n).symtableprocentry;
+              if assigned(sym) and (used.Find(sym.name)=nil) then
                 used.Add(sym.name,sym);
             end;
           else
@@ -1910,9 +1918,10 @@ implementation
                 withsymtablelist.add(st);
               end;
 
-            { warn when a field from this entry shadows a field from an
-              earlier entry in the same WITH list (inheritance inside one
-              entry is collapsed via a local dedup set) }
+            { warn when a field/method from this entry shadows the same name
+              from an earlier entry in the same WITH list (inheritance inside
+              one entry is collapsed via a local dedup set; constructors and
+              destructors are skipped -- typically not called from with-body) }
             if m_unleashed in current_settings.modeswitches then
               begin
                 localfields:=TFPHashList.Create;
@@ -1925,8 +1934,17 @@ implementation
                       for j:=0 to st.SymList.Count-1 do
                         begin
                           fsym:=tsym(st.SymList[j]);
-                          if (fsym.typ=fieldvarsym) and
-                             (localfields.Find(fsym.name)=nil) then
+                          if (localfields.Find(fsym.name)<>nil) then
+                            continue;
+                          if fsym.typ=fieldvarsym then
+                            localfields.Add(fsym.name,fsym)
+                          else if (fsym.typ=procsym) and
+                                  (tprocsym(fsym).ProcdefList.Count>0) and
+                                  not (tprocdef(tprocsym(fsym).ProcdefList[0]).proctypeoption
+                                       in [potype_constructor,potype_destructor]) and
+                                  { skip TObject methods (Free, NewInstance, ...): present
+                                    in every class, do not represent meaningful shadowing }
+                                  (assigned(fsym.owner) and (fsym.owner.defowner<>class_tobject)) then
                             localfields.Add(fsym.name,fsym);
                         end;
                     end;
@@ -1934,7 +1952,7 @@ implementation
                     begin
                       fsym:=tsym(localfields.Items[j]);
                       if seenfields.Find(fsym.name)<>nil then
-                        shadowcands.Add(twithshadowcand.Create(fsym.name,fsym.realname,entrypos))
+                        shadowcands.Add(twithshadowcand.Create(fsym.name,fsym.realname,entrypos,fsym.typ=procsym))
                       else
                         seenfields.Add(fsym.name,fsym);
                     end;
@@ -2048,7 +2066,10 @@ implementation
                    begin
                      cand:=twithshadowcand(shadowcands[i]);
                      if usedfields.Find(cand.fname)<>nil then
-                       MessagePos1(cand.fpos,parser_w_with_shadowed_field,cand.frealname);
+                       if cand.fismethod then
+                         MessagePos1(cand.fpos,parser_w_with_shadowed_method,cand.frealname)
+                       else
+                         MessagePos1(cand.fpos,parser_w_with_shadowed_field,cand.frealname);
                    end;
                finally
                  usedfields.Free;
