@@ -50,6 +50,10 @@ Declare arrays of labels with numeric ranges (`label state[0..4]`) or string key
 
 Available whenever `{$goto on}` is active; no dedicated modeswitch.
 
+## [Tweaks](tweaks.md)
+
+Small semantic adjustments that make standard Pascal constructs behave the way most people expect them to. No dedicated modeswitch - these are unleashed-mode-only. Currently covers the preserved for-loop counter (`for i := 1 to N do ... break;` keeps the right value of `i` after the loop), with more entries to follow.
+
 ## [Extra Improvements](extra-improvements.md)
 
 Catch-all page for smaller, targeted improvements that unlock Pascal patterns standard FPC modes reject - e.g. string-to-ordinal typecast in constant expressions (`dword('RIFF')`), or Delphi-style implicit `generic` / `specialize` syntax made available in any mode via `{$modeswitch implicitgenerics}`. Some entries are gated on their own modeswitch (and enabled by default in `unleashed`), others are `unleashed`-only with no separate switch; each entry on the page states which.

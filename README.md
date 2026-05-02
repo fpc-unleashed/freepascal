@@ -12,6 +12,7 @@
   - [Match Statement](#match-statement)
   - [Multi-Variable Initialization](#multi-variable-initialization)
   - [Scoped Cleanup (defer, autofree, scoped with)](#scoped-cleanup)
+  - [Tweaks](#tweaks)
   - [Multiline Strings](#multiline-strings)
   - [Array Equality](#array-equality)
   - [No RTTI](#no-rtti)
@@ -433,6 +434,34 @@ with var a := autofree TFoo.Create,
 The classic `with X do BODY` (no inline-var, no autofree) is unchanged.
 
 See [unleashed/docs/autofree.md](unleashed/docs/autofree.md) for the full grammar, lowering details, error catalogue, and edge cases.
+
+---
+
+### Tweaks
+
+**Activate:** unleashed-mode-only (no separate modeswitch).
+
+Small semantic adjustments to make existing Pascal constructs behave the way most people expect them to.
+
+#### Preserved for-loop counter
+
+In standard Pascal the for-loop counter is *undefined* after the loop exits - the optimizer is free to leave any value behind, and Delphi/FPC docs explicitly warn not to rely on it. That bites every time you write `for i := 1 to N do if X then break;` and then try to use `i`.
+
+In Unleashed mode the counter is guaranteed to keep its last assigned value:
+
+```pascal
+for i := 1 to 100 do
+  if X[i] = target then
+    break;
+{ i now holds the index of the match (or 100 if nothing matched) }
+
+for i := 1 to 10 do ;
+{ i = 10 (the last in-range value), not 11 (overshoot) }
+```
+
+This matches the intuitive behavior of C, Python, JavaScript and Go. Cost is one extra assignment on the natural exit path; nothing on `break`/`continue`/`exit`.
+
+See [unleashed/docs/tweaks.md](unleashed/docs/tweaks.md) for the catalogue and the exact rules each tweak applies.
 
 ---
 
