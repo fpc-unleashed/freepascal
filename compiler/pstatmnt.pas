@@ -787,12 +787,13 @@ implementation
           var
              hp,
              hblock,
-             hto,hfrom : tnode;
+             hto,hfrom,hstep : tnode;
              backward : boolean;
              loopvarsym : tabstractvarsym;
           begin
              { Check loop variable }
              loopvarsym:=nil;
+             hstep:=nil;
 
              { variable must be an ordinal, int64 is not allowed for 32bit targets }
              if (
@@ -896,6 +897,23 @@ implementation
                end;
 
              hto:=comp_expr([ef_accept_equal]);
+             { context-sensitive `step`: only after the to/downto expression
+               and before `do`. Anywhere else `step` stays an ordinary
+               identifier - `comp_expr` would have consumed it as part of hto }
+             if (m_for_step in current_settings.modeswitches) and (current_scanner.token=_ID) and (current_scanner.pattern='STEP') then
+               begin
+                 consume(_ID);
+                 hstep:=comp_expr([ef_accept_equal]);
+                 typecheckpass(hstep);
+                 if not is_ordinal(hstep.resultdef) then
+                   begin
+                     Message(parser_e_for_step_not_ordinal);
+                     hstep.free;
+                     hstep:=nil;
+                   end
+                 else if (hstep.nodetype=ordconstn) and (tordconstnode(hstep).value<=0) then
+                   Message(parser_e_for_step_must_be_positive);
+               end;
              consume(_DO);
 
              { Check if the constants fit in the range }
@@ -925,6 +943,7 @@ implementation
                exclude(loopvarsym.varoptions,vo_is_loop_counter);
 
              result:=cfornode.create(hloopvar,hfrom,hto,hblock,backward);
+             tfornode(result).loopstep:=hstep;
 
              { only in tp and mac pascal mode, we care about the value of the loop counter on loop exit
 
@@ -956,6 +975,8 @@ implementation
 
               expr:=comp_expr([ef_accept_equal]);
 
+              if (m_for_step in current_settings.modeswitches) and (current_scanner.token=_ID) and (current_scanner.pattern='STEP') then
+                Message(parser_e_step_not_allowed_in_for_in);
               consume(_DO);
 
               set_varstate(hloopvar,vs_written,[]);
@@ -1064,6 +1085,8 @@ implementation
                   exit;
                 end;
 
+              if (m_for_step in current_settings.modeswitches) and (current_scanner.token=_ID) and (current_scanner.pattern='STEP') then
+                Message(parser_e_step_not_allowed_in_for_in);
               consume(_DO);
 
               set_varstate(hloopvar, vs_written, []);
@@ -1083,9 +1106,10 @@ implementation
           function for_loop_create_inferred(loopvs: tabstractnormalvarsym; hloopvar: tnode): tnode;
             var
                hblock,
-               hto,hfrom : tnode;
+               hto,hfrom,hstep : tnode;
                backward : boolean;
             begin
+               hstep:=nil;
                hfrom:=comp_expr([ef_accept_equal]);
                typecheckpass(hfrom);
 
@@ -1139,6 +1163,20 @@ implementation
                  end;
 
                hto:=comp_expr([ef_accept_equal]);
+               if (m_for_step in current_settings.modeswitches) and (current_scanner.token=_ID) and (current_scanner.pattern='STEP') then
+                 begin
+                   consume(_ID);
+                   hstep:=comp_expr([ef_accept_equal]);
+                   typecheckpass(hstep);
+                   if not is_ordinal(hstep.resultdef) then
+                     begin
+                       Message(parser_e_for_step_not_ordinal);
+                       hstep.free;
+                       hstep:=nil;
+                     end
+                   else if (hstep.nodetype=ordconstn) and (tordconstnode(hstep).value<=0) then
+                     Message(parser_e_for_step_must_be_positive);
+                 end;
                consume(_DO);
 
                check_range(hfrom,hloopvar.resultdef);
@@ -1155,6 +1193,7 @@ implementation
                exclude(loopvs.varoptions,vo_is_loop_counter);
 
                result:=cfornode.create(hloopvar,hfrom,hto,hblock,backward);
+               tfornode(result).loopstep:=hstep;
                if (([m_objfpc,m_fpc,m_delphi]*current_settings.modeswitches)<>[]) and
                   not(m_unleashed in current_settings.modeswitches) then
                  Include(tfornode(Result).loopflags,lnf_dont_mind_loopvar_on_exit);
@@ -1237,6 +1276,8 @@ implementation
                   exit(cerrornode.create);
                 end;
 
+              if (m_for_step in current_settings.modeswitches) and (current_scanner.token=_ID) and (current_scanner.pattern='STEP') then
+                Message(parser_e_step_not_allowed_in_for_in);
               consume(_DO);
 
               { block scope for destructured variables }

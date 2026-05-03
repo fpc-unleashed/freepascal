@@ -498,7 +498,7 @@ scan_e_improperly_indented_multiline_string=02120_E_Incorrectly indented multi-l
 #
 # Parser
 #
-# 03381 is the last used one
+# 03384 is the last used one
 #
 % \section{Parser messages}
 % This section lists all parser messages. The parser takes care of the
@@ -1746,6 +1746,17 @@ parser_e_autofree_lhs_must_be_local=03380_E_`autofree` target must be a local va
 parser_w_with_shadowed_method=03381_W_Method "$1" in WITH entry shadows an earlier method with the same name
 % Two entries in the same \var{with} clause expose a method with the same name.
 % The later entry hides the earlier one and makes the call ambiguous to the reader.
+%
+parser_e_for_step_must_be_positive=03382_E_Step value must be a positive integer
+% The step expression in a for loop must be a positive integer value.
+% Use \var{downto} for descending loops, the step is always positive.
+parser_e_for_step_not_ordinal=03383_E_Step expression must be of ordinal type
+% The step expression in a for loop must be an ordinal type
+% (integer, char, enum, boolean). Real, string and pointer types
+% are not allowed.
+parser_e_step_not_allowed_in_for_in=03384_E_Step is not allowed in for-in loops
+% The \var{step} keyword can only be used with classic
+% \var{for ... to/downto ...} loops, not with \var{for ... in ...}.
 %
 % \end{description}
 %
