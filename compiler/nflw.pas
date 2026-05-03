@@ -112,9 +112,15 @@ interface
           entrylabel,
           { this is a dummy node used by the dfa to store life information for the loop iteration }
           loopiteration : tnode;
+          { step expression for for-step loops; nil means default step of 1.
+            Not serialized in PPU: a for-loop with step is converted to a
+            while-loop in pass_1 before any cross-unit consumption }
+          loopstep : tnode;
           loopvar_notid:cardinal;
           constructor create(l,r,_t1,_t2 : tnode;back : boolean);virtual;reintroduce;
           destructor destroy;override;
+          function dogetcopy : tnode;override;
+          function docompare(p:tnode):boolean;override;
           function pass_typecheck:tnode;override;
           function pass_1 : tnode;override;
           function makewhileloop : tnode;
@@ -1909,12 +1915,42 @@ implementation
       begin
          loopiteration.free;
          loopiteration := nil;
+         loopstep.free;
+         loopstep := nil;
          inherited destroy;
+      end;
+
+    function tfornode.dogetcopy : tnode;
+      var
+         p : tfornode;
+      begin
+         p:=tfornode(inherited dogetcopy);
+         if assigned(loopstep) then
+           p.loopstep:=loopstep.dogetcopy
+         else
+           p.loopstep:=nil;
+         result:=p;
+      end;
+
+    function tfornode.docompare(p:tnode):boolean;
+      begin
+         docompare:=inherited docompare(p) and
+           (
+             ((loopstep=nil) and (tfornode(p).loopstep=nil)) or
+             (assigned(loopstep) and assigned(tfornode(p).loopstep) and loopstep.isequal(tfornode(p).loopstep))
+           );
       end;
 
     function tfornode.simplify(forinline : boolean) : tnode;
       begin
         result:=nil;
+        { fold step=1 to nil so that the regular for-loop optimizations apply.
+          Negative/zero constants are reported earlier in the parser }
+        if assigned(loopstep) and (loopstep.nodetype=ordconstn) and (tordconstnode(loopstep).value=1) then
+          begin
+            loopstep.free;
+            loopstep:=nil;
+          end;
         { Can we spare the first comparison? }
         if (t1.nodetype=ordconstn) and
            (right.nodetype=ordconstn) and
@@ -1958,6 +1994,8 @@ implementation
          typecheckpass(left);
          typecheckpass(right);
          typecheckpass(t1);
+         if assigned(loopstep) then
+           typecheckpass(loopstep);
 
          set_varstate(left,vs_written,[]);
 
@@ -1973,6 +2011,12 @@ implementation
 
          check_ranges(t1.fileinfo,t1,rangedef);
          inserttypeconv(t1,rangedef);
+
+         { force step into the loopvar's range type so the i+step in
+           makewhileloop has matching operands; use _internal so chr/enum
+           numeric step values are accepted without an explicit cast }
+         if assigned(loopstep) then
+           inserttypeconv_internal(loopstep,rangedef);
 
          if assigned(t2) then
            typecheckpass(t2);
@@ -2009,6 +2053,8 @@ implementation
         firstpass(left);
         firstpass(right);
         firstpass(t1);
+        if assigned(loopstep) then
+          firstpass(loopstep);
 
         if assigned(t2) then
           firstpass(t2);
@@ -2019,7 +2065,7 @@ implementation
       var
         ifblock,loopblock : tblocknode;
         ifstatements,statements,loopstatements : tstatementnode;
-        fromtemp,totemp : ttempcreatenode;
+        fromtemp,totemp,steptemp : ttempcreatenode;
         do_loopvar_at_end : Boolean;
         { if the lower and/or upper bound are variable, we need a surrounding if }
         needsifblock : Boolean;
@@ -2032,6 +2078,8 @@ implementation
         usefromtemp : boolean;
         storefilepos: tfileposinfo;
         countermin, countermax: Tconstexprint;
+        firsttemp : ttempcreatenode;
+        firstcheck,breakcheck : tnode;
 
       procedure iterate_counter(var s : tstatementnode;fw : boolean);
         var
@@ -2061,8 +2109,92 @@ implementation
         result:=nil;
         totemp:=nil;
         fromtemp:=nil;
+        steptemp:=nil;
         storefilepos:=current_filepos;
         current_filepos:=fileinfo;
+
+        { for-step path: when loopstep is set (and not folded to nil for step=1
+          by simplify), generate a dedicated while loop. Increment runs at the
+          START of each iteration (skipped on the first pass via a flag), then
+          a range check, then the body. This keeps `continue` working the same
+          as in a regular for loop: it jumps to the while condition (always
+          true), the next pass runs the increment, and only then the body:
+
+            steptemp := step;  totemp := to;  i := from;  first := true;
+            while true do begin
+              if first then first := false
+              else i := i + step;
+              if i > to then break;     -- < to for backward
+              body;                     -- continue here lands on the next pass
+            end;
+
+          Cost: one bool temp plus one branch per iteration; in return, all
+          control-flow constructs (break/continue/exit/raise) behave naturally. }
+        if assigned(loopstep) then
+          begin
+            result:=internalstatements(statements);
+            loopblock:=internalstatements(loopstatements);
+
+            steptemp:=ctempcreatenode.create(loopstep.resultdef,loopstep.resultdef.size,tt_persistent,true);
+            addstatement(statements,steptemp);
+            addstatement(statements,cassignmentnode.create_internal(ctemprefnode.create(steptemp),loopstep.getcopy));
+
+            totemp:=ctempcreatenode.create(t1.resultdef,t1.resultdef.size,tt_persistent,true);
+            addstatement(statements,totemp);
+            addstatement(statements,cassignmentnode.create_internal(ctemprefnode.create(totemp),t1.getcopy));
+
+            firsttemp:=ctempcreatenode.create(pasbool1type,pasbool1type.size,tt_persistent,true);
+            addstatement(statements,firsttemp);
+            addstatement(statements,cassignmentnode.create_internal(ctemprefnode.create(firsttemp),
+              cordconstnode.create(1,pasbool1type,false)));
+
+            addstatement(statements,cassignmentnode.create_internal(left.getcopy,right.getcopy));
+
+            { if first then first := false else i := i +/- step }
+            leftcopy:=left.getcopy;
+            node_reset_flags(leftcopy,[nf_modify,nf_write],[tnf_pass1_done]);
+            if lnf_backward in loopflags then
+              firstcheck:=cifnode.create(ctemprefnode.create(firsttemp),
+                cassignmentnode.create_internal(ctemprefnode.create(firsttemp),
+                  cordconstnode.create(0,pasbool1type,false)),
+                cassignmentnode.create_internal(left.getcopy,
+                  caddnode.create_internal(subn,leftcopy,ctemprefnode.create(steptemp))))
+            else
+              firstcheck:=cifnode.create(ctemprefnode.create(firsttemp),
+                cassignmentnode.create_internal(ctemprefnode.create(firsttemp),
+                  cordconstnode.create(0,pasbool1type,false)),
+                cassignmentnode.create_internal(left.getcopy,
+                  caddnode.create_internal(addn,leftcopy,ctemprefnode.create(steptemp))));
+            addstatement(loopstatements,firstcheck);
+
+            { if i > to (forward) or i < to (backward) then break }
+            leftcopy:=left.getcopy;
+            node_reset_flags(leftcopy,[nf_modify,nf_write],[tnf_pass1_done]);
+            if lnf_backward in loopflags then
+              breakcheck:=cifnode.create(
+                caddnode.create_internal(ltn,leftcopy,ctemprefnode.create(totemp)),
+                cbreaknode.create,nil)
+            else
+              breakcheck:=cifnode.create(
+                caddnode.create_internal(gtn,leftcopy,ctemprefnode.create(totemp)),
+                cbreaknode.create,nil);
+            addstatement(loopstatements,breakcheck);
+
+            addstatement(loopstatements,t2);
+            t2:=nil;
+
+            { while true do loopblock }
+            addstatement(statements,cwhilerepeatnode.create(
+              cordconstnode.create(1,pasbool1type,false),
+              loopblock,true,false));
+
+            addstatement(statements,ctempdeletenode.create(firsttemp));
+            addstatement(statements,ctempdeletenode.create(totemp));
+            addstatement(statements,ctempdeletenode.create(steptemp));
+
+            current_filepos:=storefilepos;
+            exit;
+          end;
 
         case left.resultdef.typ of
           enumdef:
