@@ -2802,10 +2802,13 @@ implementation
           until not try_to_consume(_COMMA);
 
           { --- now parse the type or initialiser --------------------------------- }
-          if try_to_consume(_COLON) then
+          if current_scanner.token = _COLON then
             begin
               { Explicit type:  var x [, y, ...] : Type [:= expr] }
+              { set block_type before consuming `:` so a following `^T...` is
+                tokenised as pointer type, not as a control-character literal }
               block_type := bt_var_type;
+              consume(_COLON);
               read_anon_type(hdef, false, nil);
               block_type := bt_var;
               for i := 0 to sc.count - 1 do
