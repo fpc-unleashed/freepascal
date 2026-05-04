@@ -135,6 +135,47 @@ var
 
 Without the switch in non-Delphi modes you still write the explicit form (`generic TList<T>` / `specialize TList<integer>`); the switch only adds the implicit form on top, it does not remove anything.
 
+## Compound assignment on properties
+
+Stock FPC rejects `prop += x` (and all other compound forms `-=`, `*=`, `/=`, `and=`, `or=`, `xor=`, `mod=`, `div=`, `shl=`, `shr=`) on a class or record property with `Error: Variable identifier expected`. The reasoning in the parser comment is that the read accessor and the write accessor can target different storage, so the rewrite into `prop := prop + x` was disallowed even though it is exactly what the user has to type by hand.
+
+In `unleashed` mode the compound forms work directly:
+
+```pas
+{$mode unleashed}
+{$coperators on}
+
+type
+  TFoo = class
+  private
+    FName: string;
+    FCount: integer;
+    function GetName: string;
+    procedure SetName(const v: string);
+  public
+    property Name: string read GetName write SetName;
+    property Count: integer read FCount write FCount;
+  end;
+
+var
+  f: TFoo;
+begin
+  f.Name := 'foo';
+  f.Name += 'bar';     // -> f.Name := f.Name + 'bar'
+  f.Count += 5;        // direct field access on both sides
+  f.Count *= 2;
+end;
+```
+
+The expansion is the same node tree the user would build manually: one getter call on the read side, the binary operator, one setter call on the write side. Side effects in the accessors fire exactly as in the manual rewrite, no more and no fewer.
+
+Available only in `unleashed` mode, no dedicated modeswitch. The C-style operators (`+=`, `-=`, `*=`, `/=`) still require `{$coperators on}` or `-Sc` as in any FPC mode; the word-based operators (`and=`, `or=`, ..., `shl=`, `shr=`) work without it.
+
+### Limitations
+
+- Indexed properties (`property X index N: ...`) and parametrized properties (`property Items[i: integer]: ...`) are not supported. Use the explicit rewrite for those.
+- Property must have both `read` and `write` accessors.
+
 ## Modeswitch
 
 | Modeswitch          | Default in `unleashed` | Purpose                                                 |

@@ -1425,6 +1425,120 @@ implementation
       end;
 
 
+    { maps a compound assignment token to the equivalent binary operator node type }
+    function compound_assign_op(t: ttoken): tnodetype;
+      begin
+        case t of
+          _PLUSASN  : result:=addn;
+          _MINUSASN : result:=subn;
+          _STARASN  : result:=muln;
+          _SLASHASN : result:=slashn;
+          _ANDASN   : result:=andn;
+          _ORASN    : result:=orn;
+          _XORASN   : result:=xorn;
+          _MODASN   : result:=modn;
+          _DIVASN   : result:=divn;
+          _SHLASN   : result:=shln;
+          _SHRASN   : result:=shrn;
+          else        result:=errorn;
+        end;
+      end;
+
+
+    { unleashed-mode expansion of `prop OP= rhs` into `prop := prop OP rhs`,
+      issuing the getter and setter calls explicitly so the rewrite is the
+      same node tree as if the user had typed it out }
+    procedure handle_property_compound_assign(propsym: tpropertysym; st: TSymtable; var p1: tnode);
+      var
+        pal_r, pal_w : tpropaccesslist;
+        instance_for_write : tnode;
+        rhs, combined : tnode;
+        op : tnodetype;
+        op_token : ttoken;
+        sym : tsym;
+        callflags : tcallnodeflags;
+        membercall : boolean;
+      begin
+        propsym.getpropaccesslist(palt_read,pal_r);
+        propsym.getpropaccesslist(palt_write,pal_w);
+        op_token:=current_scanner.token;
+        op:=compound_assign_op(op_token);
+        // C-style compound operators still require {$coperators on}
+        if (op_token in [_PLUSASN,_MINUSASN,_STARASN,_SLASHASN]) and
+           not(cs_support_c_operators in current_settings.moduleswitches) then
+          Message(parser_e_coperators_off);
+        { duplicate the instance reference for the setter; the read access
+          will consume the original p1 }
+        instance_for_write:=p1.getcopy;
+        sym:=pal_r.firstsym^.sym;
+        case sym.typ of
+          fieldvarsym :
+            begin
+              if not handle_staticfield_access(sym,p1) then
+                propaccesslist_to_node(p1,st,pal_r);
+              include(p1.flags,nf_isproperty);
+            end;
+          procsym :
+            begin
+              callflags:=[];
+              membercall:=maybe_load_methodpointer(st,p1);
+              if membercall then
+                include(callflags,cnf_member_call);
+              p1:=ccallnode.create(nil,tprocsym(sym),st,p1,callflags,nil);
+              addsymref(sym);
+              include(p1.flags,nf_isproperty);
+            end;
+          else
+            begin
+              p1.free;
+              p1:=cerrornode.create;
+              instance_for_write.free;
+              Message(parser_e_no_procedure_to_access_property);
+              exit;
+            end;
+        end;
+        consume(op_token);
+        rhs:=comp_expr([ef_accept_equal]);
+        case op of
+          divn,modn :
+            combined:=cmoddivnode.create(op,p1,rhs);
+          shln,shrn :
+            combined:=cshlshrnode.create(op,p1,rhs);
+          else
+            combined:=caddnode.create(op,p1,rhs);
+        end;
+        sym:=pal_w.firstsym^.sym;
+        case sym.typ of
+          procsym :
+            begin
+              callflags:=[];
+              membercall:=maybe_load_methodpointer(st,instance_for_write);
+              if membercall then
+                include(callflags,cnf_member_call);
+              instance_for_write:=ccallnode.create(nil,tprocsym(sym),st,instance_for_write,callflags,nil);
+              addsymref(sym);
+              tcallnode(instance_for_write).left:=ccallparanode.create(combined,tcallnode(instance_for_write).left);
+              include(instance_for_write.flags,nf_isproperty);
+              p1:=instance_for_write;
+            end;
+          fieldvarsym :
+            begin
+              if not handle_staticfield_access(sym,instance_for_write) then
+                propaccesslist_to_node(instance_for_write,st,pal_w);
+              include(instance_for_write.flags,nf_isproperty);
+              p1:=cassignmentnode.create(instance_for_write,combined);
+            end;
+          else
+            begin
+              combined.free;
+              instance_for_write.free;
+              p1:=cerrornode.create;
+              Message(parser_e_no_procedure_to_access_property);
+            end;
+        end;
+      end;
+
+
     { the following procedure handles the access to a property symbol }
     procedure handle_propertysym(propsym : tpropertysym;st : TSymtable;var p1 : tnode);
       var
@@ -1451,6 +1565,19 @@ implementation
            begin
              p2:=cordconstnode.create(propsym.index,propsym.indexdef,true);
              paras:=ccallparanode.create(p2,paras);
+           end;
+         { compound assignment on a plain read+write property in unleashed mode }
+         if (m_unleashed in current_settings.modeswitches) and
+            (current_scanner.token in [_PLUSASN,_MINUSASN,_STARASN,_SLASHASN,
+                                       _ANDASN,_ORASN,_XORASN,_MODASN,_DIVASN,
+                                       _SHLASN,_SHRASN]) and
+            not(ppo_hasparameters in propsym.propoptions) and
+            not(ppo_indexed in propsym.propoptions) and
+            propsym.getpropaccesslist(palt_write,propaccesslist) and
+            propsym.getpropaccesslist(palt_read,propaccesslist) then
+           begin
+             handle_property_compound_assign(propsym,st,p1);
+             exit;
            end;
          { we need only a write property if a := follows }
          { if not(afterassignment) and not(in_args) then }
