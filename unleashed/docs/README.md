@@ -38,6 +38,12 @@ Initialize several variables of the same type in one declaration, e.g. `a, b, c:
 
 Enabled via `{$modeswitch multivarinit}`.
 
+## [For-Step](forstep.md)
+
+`step N` clause in `for` loops to advance the counter by an arbitrary positive amount on each iteration. Works with `to` and `downto`, with inline `var`, and with all control-flow constructs (`break`, `continue`, `exit`, `raise`). The step expression is evaluated once before the loop starts; constant `step 1` folds back to a regular for-loop. `step` is a context-sensitive keyword - only recognized between the `to` / `downto` expression and `do`, so existing code with a `step` variable / function / field keeps compiling.
+
+Enabled via `{$modeswitch forstep}`.
+
 ## [Compound Assignment Operators](compound-assignment.md)
 
 Word-based modify-and-assign operators that the standard set is missing: `div=`, `mod=`, `and=`, `or=`, `xor=`, `shl=`, `shr=`.
