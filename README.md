@@ -461,6 +461,17 @@ for i := 1 to 10 do ;
 
 This matches the intuitive behavior of C, Python, JavaScript and Go. Cost is one extra assignment on the natural exit path; nothing on `break`/`continue`/`exit`.
 
+#### `is not` and `not in` operators
+
+Delphi-style shorthand for negated runtime type checks and set membership tests:
+
+```pascal
+if Obj is not TFoo then ...           // same as: if not (Obj is TFoo)
+if x not in [Apple, Orange] then ...  // same as: if not (x in [Apple, Orange])
+```
+
+Compiles to the same node tree as the parenthesised form, so semantics and runtime cost are unchanged. Available in unleashed mode only.
+
 See [unleashed/docs/tweaks.md](unleashed/docs/tweaks.md) for the catalogue and the exact rules each tweak applies.
 
 ---

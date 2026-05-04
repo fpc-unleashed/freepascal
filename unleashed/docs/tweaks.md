@@ -76,6 +76,30 @@ end;
 
 Or split the routine out into a unit compiled in `objfpc`/`delphi`.
 
+## `is not` and `not in` operators
+
+Standard Pascal forces an extra pair of parentheses for negated runtime type checks and set membership tests:
+
+```pascal
+if not (Obj is TFoo) then ...
+if not (x in [Apple, Orange]) then ...
+```
+
+Unleashed mode adds the Delphi-style shorthand forms:
+
+```pascal
+if Obj is not TFoo then ...
+if x not in [Apple, Orange] then ...
+```
+
+Each compiles to exactly the same node tree as the parenthesised form, so semantics, error messages, and runtime cost are unchanged.
+
+### What unleashed actually changes
+
+Just the parser. When the comparison-level expression sees `is` followed by `not`, it consumes both and wraps the resulting `is`-node in a `not`-node. The `not in` form is allowed to appear at the comparison level (where `not` is normally a unary prefix only) and parses the right-hand side as the operand of `in`.
+
+Outside unleashed mode the parser rejects both: `obj is not T` is read as `obj is (not T)` and triggers an operator error, and `x not in S` produces a syntax error at `not`.
+
 ## Future tweaks
 
 This page is the catalogue for small unleashed-only semantic adjustments. As more of them land, they get appended here with the same shape: what the standard does, what unleashed changes, and how to opt back into the standard when you really need it.

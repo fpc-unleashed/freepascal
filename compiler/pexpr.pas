@@ -5262,6 +5262,7 @@ implementation
         genlist : tfpobjectlist;
         dummyagain : boolean;
         dummyspezctxt : tspecializationcontext;
+        is_not_op : boolean;
       begin
         SubExprStart:
         if pred_level=highest_precedence then
@@ -5275,12 +5276,27 @@ implementation
           p1:=sub_expr(succ(pred_level),flags+[ef_accept_equal],factornode);
         repeat
           if (current_scanner.token in [NOTOKEN..last_operator]) and
-             (current_scanner.token in operator_levels[pred_level]) and
+             ((current_scanner.token in operator_levels[pred_level]) or
+              ((m_unleashed in current_settings.modeswitches) and
+               (pred_level=opcompare) and
+               (current_scanner.token=_OP_NOT))) and
              ((current_scanner.token<>_EQ) or (ef_accept_equal in flags)) then
            begin
              oldt:=current_scanner.token;
              filepos:=current_tokenpos;
              consume(current_scanner.token);
+             { delphi-style `is not T` and `not in S` (mode unleashed) }
+             is_not_op:=false;
+             if m_unleashed in current_settings.modeswitches then
+               begin
+                 if (oldt=_OP_IS) and (current_scanner.token=_OP_NOT) then
+                   begin
+                     consume(_OP_NOT);
+                     is_not_op:=true;
+                   end
+                 else if oldt=_OP_NOT then
+                   consume(_OP_IN);
+               end;
              if pred_level=highest_precedence then
                p2:=factor(false,[])
              else
@@ -5431,7 +5447,11 @@ implementation
                      _OP_AS:
                        p1:=casnode.create(p1,p2);
                      _OP_IS:
-                       p1:=cisnode.create(p1,p2);
+                       begin
+                         p1:=cisnode.create(p1,p2);
+                         if is_not_op then
+                           p1:=cnotnode.create(p1);
+                       end;
                      else
                        internalerror(2019050528);
                    end;
@@ -5455,7 +5475,7 @@ implementation
                _OP_DIV :
                  p1:=cmoddivnode.create(divn,p1,p2);
                _OP_NOT :
-                 p1:=cnotnode.create(p1);
+                 p1:=cnotnode.create(cinnode.create(p1,p2));
                _OP_MOD :
                  begin
                    p1:=cmoddivnode.create(modn,p1,p2);
