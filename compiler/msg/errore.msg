@@ -2236,6 +2236,17 @@ type_e_stringcast_size_mismatch=04137_E_Cannot cast string of length $1 to ordin
 % string length must match the size of the target type exactly: 1 char for
 % Byte/ShortInt, 2 chars for Word/SmallInt, 4 chars for DWord/LongInt,
 % 8 chars for QWord/Int64.
+type_e_property_no_writer=04138_E_Property "$1" has no write accessor
+% Compound assignment ($+=$, $-=$, ...) and \var{inc}/\var{dec} require a
+% property with a write accessor. Add a setter or use the field directly.
+type_e_property_modify_indexed=04139_E_Compound assignment and inc/dec are not supported on indexed or parametrized property "$1"
+% Compound assignment and \var{inc}/\var{dec} are not implemented for
+% properties declared with \var{index N} or with \var{[..]} parameters.
+% Use the explicit form: \var{prop := prop + value}.
+type_e_inc_dec_property_type=04140_E_inc/dec property "$1" must be ordinal, enum, pointer, or currency, not "$2"
+% \var{inc}/\var{dec} on a property accept the same types as on a regular
+% variable. For string properties use compound assignment (\var{prop += '...'})
+% instead.
 %
 % \end{description}
 #

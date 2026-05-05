@@ -85,6 +85,7 @@ implementation
 
     function sub_expr(pred_level:Toperator_precedence;flags:texprflags;factornode:tnode):tnode;forward;
     function exit_tuple_body(out block:tnode;out single_expr:tnode):boolean;forward;
+    function try_inc_dec_property_rewrite(getter_call:tcallnode;delta:tnode;is_dec:boolean):tnode;forward;
 
     var
        { true, if the inherited call is anonymous }
@@ -820,12 +821,24 @@ implementation
               in_args:=true;
               p1:=comp_expr([ef_accept_equal]);
               if try_to_consume(_COMMA) then
-                p2:=ccallparanode.create(comp_expr([ef_accept_equal]),nil)
+                p2:=comp_expr([ef_accept_equal])
               else
                 p2:=nil;
-              p2:=ccallparanode.create(p1,p2);
-              statement_syssym:=geninlinenode(l,false,p2);
               consume(_RKLAMMER);
+              statement_syssym:=nil;
+              { unleashed: rewrite inc/dec on a procsym-getter property as a
+                setter call carrying getter +/- delta }
+              if (m_unleashed in current_settings.modeswitches) and
+                 (nf_isproperty in p1.flags) and
+                 (p1.nodetype=calln) then
+                statement_syssym:=try_inc_dec_property_rewrite(tcallnode(p1),p2,l=in_dec_x);
+              if not assigned(statement_syssym) then
+                begin
+                  if assigned(p2) then
+                    p2:=ccallparanode.create(p2,nil);
+                  p2:=ccallparanode.create(p1,p2);
+                  statement_syssym:=geninlinenode(l,false,p2);
+                end;
             end;
 
           in_slice_x:
@@ -1539,6 +1552,102 @@ implementation
       end;
 
 
+    { unleashed-mode rewrite of `inc(prop, n)` / `dec(prop, n)` into a setter
+      call carrying `getter + n` (or `getter - n`). Returns nil if the input
+      isn't a procsym-getter call to a non-indexed read+write property; the
+      caller falls back to the standard inline path in that case }
+    function try_inc_dec_property_rewrite(getter_call: tcallnode; delta: tnode; is_dec: boolean): tnode;
+      var
+        propsym : tpropertysym;
+        owner_st : TSymtable;
+        sym : tsym;
+        pal_r, pal_w : tpropaccesslist;
+        i : longint;
+        instance, combined : tnode;
+        op : tnodetype;
+        setter_proc : tprocsym;
+        callflags : tcallnodeflags;
+        membercall : boolean;
+        setter_node : tnode;
+      begin
+        result:=nil;
+        propsym:=nil;
+        if not assigned(getter_call.symtableprocentry) then
+          exit;
+        owner_st:=getter_call.symtableprocentry.owner;
+        if not assigned(owner_st) then
+          exit;
+        for i:=0 to owner_st.symlist.count-1 do
+          begin
+            sym:=tsym(owner_st.symlist[i]);
+            if sym.typ<>propertysym then
+              continue;
+            if tpropertysym(sym).getpropaccesslist(palt_read,pal_r) and
+               assigned(pal_r.firstsym) and
+               (pal_r.firstsym^.sym=getter_call.symtableprocentry) then
+              begin
+                propsym:=tpropertysym(sym);
+                break;
+              end;
+          end;
+        if not assigned(propsym) then
+          exit;
+        if (ppo_hasparameters in propsym.propoptions) or
+           (ppo_indexed in propsym.propoptions) then
+          begin
+            Message1(type_e_property_modify_indexed,propsym.realname);
+            getter_call.free;
+            if assigned(delta) then
+              delta.free;
+            result:=cerrornode.create;
+            exit;
+          end;
+        { mirror the type set stock inc/dec accept on regular variables }
+        if not((propsym.propdef.typ in [enumdef,pointerdef]) or
+               is_ordinal(propsym.propdef) or
+               is_currency(propsym.propdef)) then
+          begin
+            Message2(type_e_inc_dec_property_type,propsym.realname,propsym.propdef.typename);
+            getter_call.free;
+            if assigned(delta) then
+              delta.free;
+            result:=cerrornode.create;
+            exit;
+          end;
+        if not propsym.getpropaccesslist(palt_write,pal_w) then
+          begin
+            Message1(type_e_property_no_writer,propsym.realname);
+            getter_call.free;
+            if assigned(delta) then
+              delta.free;
+            result:=cerrornode.create;
+            exit;
+          end;
+        if pal_w.firstsym^.sym.typ<>procsym then
+          exit;
+        setter_proc:=tprocsym(pal_w.firstsym^.sym);
+        if not assigned(getter_call.methodpointer) then
+          exit;
+        instance:=getter_call.methodpointer.getcopy;
+        if is_dec then
+          op:=subn
+        else
+          op:=addn;
+        if not assigned(delta) then
+          delta:=cordconstnode.create(1,sinttype,true);
+        combined:=caddnode.create(op,getter_call,delta);
+        callflags:=[];
+        membercall:=maybe_load_methodpointer(getter_call.symtableproc,instance);
+        if membercall then
+          include(callflags,cnf_member_call);
+        setter_node:=ccallnode.create(nil,setter_proc,getter_call.symtableproc,instance,callflags,nil);
+        addsymref(setter_proc);
+        tcallnode(setter_node).left:=ccallparanode.create(combined,tcallnode(setter_node).left);
+        include(setter_node.flags,nf_isproperty);
+        result:=setter_node;
+      end;
+
+
     { the following procedure handles the access to a property symbol }
     procedure handle_propertysym(propsym : tpropertysym;st : TSymtable;var p1 : tnode);
       var
@@ -1570,12 +1679,42 @@ implementation
          if (m_unleashed in current_settings.modeswitches) and
             (current_scanner.token in [_PLUSASN,_MINUSASN,_STARASN,_SLASHASN,
                                        _ANDASN,_ORASN,_XORASN,_MODASN,_DIVASN,
-                                       _SHLASN,_SHRASN]) and
-            not(ppo_hasparameters in propsym.propoptions) and
-            not(ppo_indexed in propsym.propoptions) and
-            propsym.getpropaccesslist(palt_write,propaccesslist) and
-            propsym.getpropaccesslist(palt_read,propaccesslist) then
+                                       _SHLASN,_SHRASN]) then
            begin
+             if (ppo_hasparameters in propsym.propoptions) or
+                (ppo_indexed in propsym.propoptions) then
+               begin
+                 Message1(type_e_property_modify_indexed,propsym.realname);
+                 consume(current_scanner.token);
+                 comp_expr([ef_accept_equal]).free;
+                 if assigned(paras) then
+                   paras.free;
+                 p1.free;
+                 p1:=cerrornode.create;
+                 exit;
+               end;
+             if not propsym.getpropaccesslist(palt_write,propaccesslist) then
+               begin
+                 Message1(type_e_property_no_writer,propsym.realname);
+                 consume(current_scanner.token);
+                 comp_expr([ef_accept_equal]).free;
+                 if assigned(paras) then
+                   paras.free;
+                 p1.free;
+                 p1:=cerrornode.create;
+                 exit;
+               end;
+             if not propsym.getpropaccesslist(palt_read,propaccesslist) then
+               begin
+                 Message(parser_e_no_procedure_to_access_property);
+                 consume(current_scanner.token);
+                 comp_expr([ef_accept_equal]).free;
+                 if assigned(paras) then
+                   paras.free;
+                 p1.free;
+                 p1:=cerrornode.create;
+                 exit;
+               end;
              handle_property_compound_assign(propsym,st,p1);
              exit;
            end;

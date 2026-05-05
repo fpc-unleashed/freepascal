@@ -173,8 +173,49 @@ Available only in `unleashed` mode, no dedicated modeswitch. The C-style operato
 
 ### Limitations
 
-- Indexed properties (`property X index N: ...`) and parametrized properties (`property Items[i: integer]: ...`) are not supported. Use the explicit rewrite for those.
-- Property must have both `read` and `write` accessors.
+Each rejection comes with its own error message instead of the generic `Variable identifier expected`:
+
+- Indexed properties (`property X index N: ...`) and parametrized properties (`property Items[i: integer]: ...`) report `Compound assignment and inc/dec are not supported on indexed or parametrized property "X"`. Use the explicit rewrite.
+- A property without a write accessor reports `Property "X" has no write accessor`.
+
+## `inc` / `dec` on properties
+
+Same restriction in stock FPC: `inc(prop)` and `dec(prop, n)` need a `var` argument and a property cannot be passed by `var` (the getter/setter pair would be skipped). Stock reports `Error: Can't take the address of constant expressions`.
+
+In `unleashed` mode `inc` / `dec` rewrite to a setter call carrying `getter +/- delta`:
+
+```pas
+{$mode unleashed}
+
+type
+  TCounter = class
+  private
+    FN: integer;
+    function GetN: integer;
+    procedure SetN(v: integer);
+  public
+    property N: integer read GetN write SetN;
+  end;
+
+var c: TCounter;
+begin
+  inc(c.N);        // -> c.N := c.N + 1
+  inc(c.N, 5);     // -> c.N := c.N + 5
+  dec(c.N);        // -> c.N := c.N - 1
+  dec(c.N, 10);    // -> c.N := c.N - 10
+end;
+```
+
+The same accessors fire as for the explicit rewrite or the compound form `c.N += 1`. Pick whichever reads better for the surrounding code.
+
+### Limitations
+
+Same dedicated messages as for compound assignment, plus a type check:
+
+- The getter must be a method (`read GetN`). A field-backed read accessor (`read FN`) is not rewritten and continues to give the stock error - use the field directly or the compound form `prop += n`.
+- Indexed and parametrized properties report `Compound assignment and inc/dec are not supported on indexed or parametrized property "X"`.
+- Read-only properties report `Property "X" has no write accessor`.
+- Property type must be ordinal, enum, pointer, or currency. Anything else reports `inc/dec property "X" must be ordinal, enum, pointer, or currency, not "T"`. For string properties use compound assignment (`prop += '...'`) instead.
 
 ## Modeswitch
 
