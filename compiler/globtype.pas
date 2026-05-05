@@ -568,7 +568,8 @@ interface
          m_match,               { match statement with first-match and fallthrough modes }
          m_autofree,            { defer STATEMENT and var x := autofree T.Create -- scoped cleanup }
          m_stringordcast,       { compile-time fold of string literal typecast to ordinal (DWORD('abcd')) }
-         m_implicit_generics    { Delphi-style generic syntax: 'generic'/'specialize' keywords optional, <T> allowed }
+         m_implicit_generics,   { Delphi-style generic syntax: 'generic'/'specialize' keywords optional, <T> allowed }
+         m_for_step             { allow `step N` clause in for-loops: for i := 1 to 10 step 2 do ... }
        );
        tmodeswitches = set of tmodeswitch;
 
@@ -786,7 +787,8 @@ interface
          'MATCH',
          'AUTOFREE',
          'STRINGORDCAST',
-         'IMPLICITGENERICS'
+         'IMPLICITGENERICS',
+         'FORSTEP'
          );
 
 

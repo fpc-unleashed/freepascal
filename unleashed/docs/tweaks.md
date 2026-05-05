@@ -61,6 +61,8 @@ for i := 1 to 10 step 4 do ;
 { i = 9 (the last value the body would have seen), not 13 }
 ```
 
+See [forstep.md](forstep.md) for the full description of the `step` clause.
+
 ### Want the standard "undefined on exit" semantics back?
 
 Use the mode for the affected routine:

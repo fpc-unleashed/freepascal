@@ -12,6 +12,7 @@
   - [Match Statement](#match-statement)
   - [Multi-Variable Initialization](#multi-variable-initialization)
   - [Scoped Cleanup (defer, autofree, scoped with)](#scoped-cleanup)
+  - [For-Step](#for-step)
   - [Tweaks](#tweaks)
   - [Multiline Strings](#multiline-strings)
   - [Array Equality](#array-equality)
@@ -45,6 +46,7 @@ The following modeswitches are enabled automatically:
 | `tuples`                           | Anonymous tuple types, literals, and destructuring            |
 | `match`                            | Pattern matching with first-match semantics                   |
 | `multivarinit`                     | Initialize several variables of the same type with one value  |
+| `forstep`                          | `step N` clause in `for` loops to advance by N each iteration |
 | `anonymousfunctions`               | Anonymous procedures and functions                            |
 | `functionreferences`               | Function pointers that capture context                        |
 | `advancedrecords`                  | Records with methods, properties, and operators               |
@@ -434,6 +436,36 @@ with var a := autofree TFoo.Create,
 The classic `with X do BODY` (no inline-var, no autofree) is unchanged.
 
 See [unleashed/docs/autofree.md](unleashed/docs/autofree.md) for the full grammar, lowering details, error catalogue, and edge cases.
+
+---
+
+### For-Step
+
+**Activate:** available in Unleashed mode (modeswitch `forstep`).
+
+Advance the loop counter by an arbitrary positive amount on each iteration with the `step` clause. Works with both `to` and `downto`, and with inline `var`.
+
+`step` is a **context-sensitive keyword** - it is only recognized between the `to`/`downto` expression and `do`. Anywhere else (variable name, function name, record field) `step` stays an ordinary identifier, so existing code with a `step` symbol keeps compiling. Even mixed: `for i := 0 to step step 1 do` parses correctly - the upper bound is the `step` variable, the keyword `step` introduces the increment.
+
+```pascal
+for i := 1 to 10 step 2 do
+  write(i, ' ');                  // 1 3 5 7 9
+
+for i := 20 downto 1 step 3 do
+  write(i, ' ');                  // 20 17 14 11 8 5 2
+
+for var k := 5 to 50 step 5 do
+  write(k, ' ');                  // 5 10 15 ... 50
+```
+
+The step expression must be of an ordinal type and must be a positive integer. Use `downto` for descending loops; the step itself is always positive. The expression is evaluated **once** before the loop starts, so calls with side effects fire only one time:
+
+```pascal
+for i := 0 to 12 step ComputeStep() do  // ComputeStep called exactly once
+  ...
+```
+
+Constant `step 1` folds back to a regular for-loop, so all the usual optimizations apply. `break`, `continue`, `exit` and `raise` work the same as in a regular for loop. `step` is rejected in `for-in` loops.
 
 ---
 
