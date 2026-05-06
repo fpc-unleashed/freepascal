@@ -3097,24 +3097,29 @@ const pemagic : array[0..3] of byte = (
       end;
 
     function osversiontomajorminor(os: string; var major: word; var minor: word): boolean;
-    begin
-      result := true;
-      case os of
-        '95':    begin major := 4;  minor := 0;  end;
-        '98':    begin major := 4;  minor := 10; end;
-        'ME':    begin major := 4;  minor := 90; end;
-        '2000':  begin major := 5;  minor := 0;  end;
-        'XP':    begin major := 5;  minor := 1;  end;
-        '2003':  begin major := 5;  minor := 2;  end;
-        'Vista': begin major := 6;  minor := 0;  end;
-        '7':     begin major := 6;  minor := 1;  end;
-        '8':     begin major := 6;  minor := 2;  end;
-        '8.1':   begin major := 6;  minor := 3;  end;
-        '10':    begin major := 10; minor := 0;  end;
-      else
-        result := false;
+      var
+        s: string;
+      begin
+        s := lower(os);
+        if (length(s) >= 3) and (copy(s, 1, 3) = 'win') then s := copy(s, 4);
+        result := true;
+        case s of
+          '95':    begin major := 4;  minor := 0;  end;
+          '98':    begin major := 4;  minor := 10; end;
+          'me':    begin major := 4;  minor := 90; end;
+          '2000':  begin major := 5;  minor := 0;  end;
+          'xp':    begin major := 5;  minor := 1;  end;
+          '2003':  begin major := 5;  minor := 2;  end;
+          'vista': begin major := 6;  minor := 0;  end;
+          '7':     begin major := 6;  minor := 1;  end;
+          '8':     begin major := 6;  minor := 2;  end;
+          '8.1':   begin major := 6;  minor := 3;  end;
+          // win10 and win11 both report as 10.0 in PE optional header
+          '10', '11': begin major := 10; minor := 0; end;
+        else
+          result := parse_version_string(os, major, minor);
+        end;
       end;
-    end;
 
     function TCoffexeoutput.writedata:boolean;
       var
@@ -3128,6 +3133,8 @@ const pemagic : array[0..3] of byte = (
         idataExeSec : TExeSection;
         hassymbols,
         writeDbgStrings : boolean;
+        lver_major_w,
+        lver_minor_w : word;
 
         procedure UpdateDataDir(const secname:string;idx:longint);
         var
@@ -3291,6 +3298,13 @@ const pemagic : array[0..3] of byte = (
             peoptheader.magic:=COFF_OPT_MAGIC;
             peoptheader.MajorLinkerVersion:=ord(version_nr)-ord('0');
             peoptheader.MinorLinkerVersion:=(ord(release_nr)-ord('0'))*10 + (ord(patch_nr)-ord('0'));
+            if binary_linker_version_override<>'' then begin
+              { peoptheader.MajorLinkerVersion is a byte but parse_version_string takes word }
+              if parse_version_string(binary_linker_version_override, lver_major_w, lver_minor_w) then begin
+                peoptheader.MajorLinkerVersion:=lver_major_w;
+                peoptheader.MinorLinkerVersion:=lver_minor_w;
+              end;
+            end;
             peoptheader.tsize:=TextExeSec.Size;
             peoptheader.dsize:=DataExeSec.Size;
             if assigned(BSSExeSec) then
@@ -3303,6 +3317,8 @@ const pemagic : array[0..3] of byte = (
             peoptheader.ImageBase:=ImageBase;
             peoptheader.SectionAlignment:=SectionMemAlign;
             peoptheader.FileAlignment:=SectionDataAlign;
+            if (binary_os_version_override='') or not osversiontomajorminor(binary_os_version_override,
+                peoptheader.MajorOperatingSystemVersion, peoptheader.MinorOperatingSystemVersion) then
             if SetPEOSVersionSetExplicitely then
               begin
                 peoptheader.MajorOperatingSystemVersion:=peosversionmajor;

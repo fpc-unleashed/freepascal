@@ -139,6 +139,10 @@ interface
       if you want a case-insensitive match }
     function glob_matches(const s, pattern: ansistring): boolean;
 
+    { parses `Major[.Minor]` (e.g. `14.39` or `10`) into two words. trailing
+      garbage and missing minor are accepted as 0; returns false on no match }
+    function parse_version_string(const s: string; out major, minor: word): boolean;
+
     { releases the string p and assigns nil to p  }
     { if p=nil then freemem isn't called          }
     procedure stringdispose(var p : pshortstring);{$ifdef USEINLINE}inline;{$endif}
@@ -1286,6 +1290,31 @@ implementation
         end;
         while (j <= length(pattern)) and (pattern[j] = '*') do inc(j);
         result := j > length(pattern);
+      end;
+
+
+    function parse_version_string(const s: string; out major, minor: word): boolean;
+      var
+        dot, code: integer;
+        v: longint;
+      begin
+        major := 0;
+        minor := 0;
+        if s = '' then exit(false);
+        dot := pos('.', s);
+        if dot = 0 then begin
+          val(s, v, code);
+          if code <> 0 then exit(false);
+          major := v;
+          exit(true);
+        end;
+        val(copy(s, 1, dot-1), v, code);
+        if code <> 0 then exit(false);
+        major := v;
+        val(copy(s, dot+1), v, code);
+        if code <> 0 then exit(false);
+        minor := v;
+        result := true;
       end;
 
 

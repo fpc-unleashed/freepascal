@@ -1588,6 +1588,19 @@ begin
     rtti_expose_add_cli(copy(opt, length('--rttiexpose=')+1));
     exit;
   end;
+  if opt.StartsWith('--fpcsignature=') then begin
+    binary_signature_override := copy(opt, length('--fpcsignature=')+1);
+    binary_signature_override_set := true;
+    exit;
+  end;
+  if opt.StartsWith('--linkerversion=') then begin
+    binary_linker_version_override := copy(opt, length('--linkerversion=')+1);
+    exit;
+  end;
+  if opt.StartsWith('--osversion=') then begin
+    binary_os_version_override := copy(opt, length('--osversion=')+1);
+    exit;
+  end;
 
   { only parse define,undef,target,verbosity,link etc options the firsttime
     -Us must now also be first-passed to avoid rejection of -Sf options

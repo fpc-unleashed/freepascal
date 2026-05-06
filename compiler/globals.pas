@@ -389,6 +389,15 @@ Const
        packagelist : TFPHashList;
        autoloadunits      : string;
 
+       { binary metadata overrides set via CLI. for linker/os an empty string
+         means "use upstream default". for fpcsignature an empty string is a
+         legal value (drop the .fpc.version section entirely), so a separate
+         flag tracks whether --fpcsignature= was passed at all }
+       binary_signature_override,           // overrides .fpc.version ident string
+       binary_linker_version_override,      // PE optional header MajorLinkerVersion.Minor
+       binary_os_version_override : ansistring;  // PE optional header MajorOperatingSystemVersion.Minor
+       binary_signature_override_set : boolean;  // true when --fpcsignature=<anything> was passed
+
        { linking }
        usewindowapi  : boolean;
        description   : string;

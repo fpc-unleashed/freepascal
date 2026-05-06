@@ -1663,25 +1663,34 @@ implementation
       sym: tasmsymbol;
       def: tdef;
     begin
-      { Insert Ident of the compiler in the .fpc.version section }
-      tcb:=ctai_typedconstbuilder.create([tcalo_no_dead_strip]);
-      s:='FPC Unleashed '+full_version_string+' ['+date_string+'] for '+target_cpu_string+' - '+target_info.shortname;
+      { Insert Ident of the compiler in the .fpc.version section.
+        --fpcsignature=<str> overrides the default ident, --fpcsignature= (empty)
+        skips emitting the section entirely so the produced binary carries no
+        FPC-version marker at all }
+      if binary_signature_override_set then
+        s:=binary_signature_override
+      else
+        s:='FPC Unleashed '+full_version_string+' ['+date_string+'] for '+target_cpu_string+' - '+target_info.shortname;
+      if s<>'' then
+        begin
+          tcb:=ctai_typedconstbuilder.create([tcalo_no_dead_strip]);
 {$ifdef m68k}
-      { Ensure that the size of s is multiple of 2 to avoid problems
-        like on m68k-amiga which has a .balignw just after,
-        causes an assembler error }
-      while (length(s) mod 2) <> 0 do
-        s:=s+' ';
+          { Ensure that the size of s is multiple of 2 to avoid problems
+            like on m68k-amiga which has a .balignw just after,
+            causes an assembler error }
+          while (length(s) mod 2) <> 0 do
+            s:=s+' ';
 {$endif m68k}
-      def:=carraydef.getreusable(cansichartype,length(s));
-      tcb.maybe_begin_aggregate(def);
-      tcb.emit_tai(Tai_string.Create(s),def);
-      tcb.maybe_end_aggregate(def);
-      sym:=current_asmdata.DefineAsmSymbol('__fpc_ident',AB_LOCAL,AT_DATA,def);
-      current_asmdata.asmlists[al_globals].concatlist(
-        tcb.get_final_asmlist(sym,def,sec_fpc,'version',const_align(32))
-      );
-      tcb.free;
+          def:=carraydef.getreusable(cansichartype,length(s));
+          tcb.maybe_begin_aggregate(def);
+          tcb.emit_tai(Tai_string.Create(s),def);
+          tcb.maybe_end_aggregate(def);
+          sym:=current_asmdata.DefineAsmSymbol('__fpc_ident',AB_LOCAL,AT_DATA,def);
+          current_asmdata.asmlists[al_globals].concatlist(
+            tcb.get_final_asmlist(sym,def,sec_fpc,'version',const_align(32))
+          );
+          tcb.free;
+        end;
 
       if (tf_emit_stklen in target_info.flags) or
           not(tf_no_generic_stackcheck in target_info.flags) then
