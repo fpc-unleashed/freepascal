@@ -15,6 +15,7 @@
   - [Anonymous Tuples](#anonymous-tuples)
   - [Match Statement](#match-statement)
   - [Multi-Variable Initialization](#multi-variable-initialization)
+  - [Flexible Array Members](#flexible-array-members)
   - [Scoped Cleanup (defer, autofree, scoped with)](#scoped-cleanup)
   - [For-Step](#for-step)
   - [Tweaks](#tweaks)
@@ -61,6 +62,7 @@ The following modeswitches are enabled automatically:
 | `multilinestrings`                 | Allow multi-line string literals without manual concatenation |
 | `stringordcast`                    | Cast a string literal to an ordinal type (`dword('RIFF')`)    |
 | `autofree`                         | `defer STATEMENT`, `autofree EXPR`, scoped `with var x := ...` |
+| `flexiblearrays`                   | C99-style flexible array member as last record field (`array[] of T`) |
 
 > [!NOTE]
 > For the best code-completion experience, we recommend using **[Lazarus Unleashed](https://github.com/fpc-unleashed/lazarus)** - a fork of Lazarus with full support for unleashed mode. If you are using stock Lazarus, enable the mode via `-Munleashed` in the project's Custom Options instead of placing `{$mode unleashed}` directly in the source file, to avoid autocomplete issues and incorrect Code Insight behavior.
@@ -354,6 +356,42 @@ end;
 ```
 
 The initializer is evaluated once and copied into each variable; `a := 100` does not affect `b` or `c`. See [unleashed/docs/multi-var-init.md](unleashed/docs/multi-var-init.md) for the full evaluation table.
+
+---
+
+### Flexible Array Members
+
+**Activate:** available in Unleashed mode (modeswitch `flexiblearrays`).
+
+C99-style records with a variable-length tail. The last field is declared with empty brackets and no upper bound; the record header has a fixed size, the tail extends as far as the allocation says, and `sizeof(rec)` reports only the fixed part.
+
+```pascal
+type
+  PMessage = ^TMessage;
+  TMessage = packed record
+    code:   integer;
+    length: integer;
+    data:   array[] of byte;     // flexible array member
+  end;
+
+var
+  msg: PMessage;
+begin
+  GetMem(msg, sizeof(TMessage) + 1024);   // header + 1024-byte tail in one block
+  msg^.code   := 42;
+  msg^.length := 1024;
+  msg^.data[1023] := $FF;                 // no range check fires under {$R+}
+  FreeMem(msg);
+end;
+```
+
+The compiler does not track the run-time length, so indexing skips both compile-time and runtime range checks even with `{$rangechecks on}` active. There is no separate buffer, no pointer chase, no managed lifetime.
+
+The pattern is what Win32 headers usually express today as `array[0..0] of T` or `ANYSIZE_ARRAY`, with the well-known problems (range check fires, `sizeof` is one element too large, padding is implicit). FAM gives the inline layout, honest `sizeof`, and a working `{$R+}` in one feature. Common targets: `TOKEN_GROUPS`, `BITMAPINFO`, `LOGPALETTE`, network frames, file headers with inline payload.
+
+Restrictions enforced at parse time: FAM must be the last field of a plain record with at least one preceding field; no FAMs in classes, objects, variant parts, or as `class var` / `threadvar`; FAM-records cannot be embedded in another type, used as array elements, declared on the stack, passed by value, or returned by value. Use `PFamRec` (a pointer) wherever a FAM-record would otherwise live by value.
+
+See [unleashed/docs/flexible-arrays.md](unleashed/docs/flexible-arrays.md) for the full rule list, memory layout diagram, comparison with `array of T`, and PPU notes.
 
 ---
 
