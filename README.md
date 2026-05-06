@@ -825,6 +825,8 @@ CLI patterns and per-unit directive patterns are merged (union); the directive c
 > [!NOTE]
 > The `{$modeswitch striprtti}` directive works on a per-unit basis. You can enable it only in the units where you want to hide type names, while leaving it disabled in others - for example, in units that contain forms or require RTTI to function correctly.
 
+See [unleashed/docs/strip-rtti.md](unleashed/docs/strip-rtti.md) for the full list of stripped fields, edge cases (forwards, generics, aliases), interaction with PPU, and implementation notes.
+
 ---
 
 ### Indexed Labels
@@ -921,6 +923,8 @@ The OS-name table is case-insensitive and accepts an optional `Win` prefix (`Win
 > - **NE / OMF / WASM / NLM / AmigaOS hunk / Atari TOS** - either no such field or hardcoded for compatibility.
 >
 > Passing the flags on a non-PE target compiles cleanly but the values are silently ignored. `--fpcsignature` works on every target.
+
+See [unleashed/docs/binary-metadata.md](unleashed/docs/binary-metadata.md) for full per-flag rationale, the OS-name table, and cross-platform notes.
 
 ---
 
