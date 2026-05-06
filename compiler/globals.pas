@@ -378,6 +378,9 @@ Const
 
        { list of default namespaces }
        namespacelist : TCmdStrList;
+       // lowercased glob patterns from `--rttiexpose=` CLI flags;
+       // per-unit patterns from `{$rttiexpose}` directive live on tmodule
+       cli_rtti_expose_patterns : TCmdStrList;
        // During scanning/parsing, a module may not yet be available.
        // Scanner checks first current_namespacelist, then local_namespacelist
        premodule_namespacelist,                    // always set: used as long as current_namespacelist is not correctly set.
@@ -773,6 +776,10 @@ Const
 
   var
     AllowedFilenameTransFormations : tfilenametransformations = AllTransformations;
+
+  { adds whitespace/comma-separated glob patterns to the global
+    rttiexpose whitelist (lowercased, trimmed, empties skipped) }
+  procedure rtti_expose_add_cli(const s: ansistring);
 
 implementation
 
@@ -1734,6 +1741,8 @@ implementation
        packagesearchpath := nil;
        namespacelist.Free;
        namespacelist := nil;
+       cli_rtti_expose_patterns.Free;
+       cli_rtti_expose_patterns := nil;
        premodule_namespacelist.Free;
        premodule_namespacelist := nil;
        current_namespacelist:=Nil;
@@ -1778,6 +1787,7 @@ implementation
         frameworksearchpath:=TSearchPathList.Create;
         packagesearchpath:=TSearchPathList.Create;
         namespacelist:=TCmdStrList.Create;
+        cli_rtti_expose_patterns:=TCmdStrList.Create;
         premodule_namespacelist:=TCmdStrList.Create;
         current_namespacelist:=Nil;
         { Def file }
@@ -1825,6 +1835,19 @@ implementation
         features:=[low(Tfeature)..high(Tfeature)];
 
         callinitprocs;
+     end;
+
+   procedure rtti_expose_add_cli(const s: ansistring);
+     var
+       parts: TStringArray;
+       i: integer;
+       p: ansistring;
+     begin
+       parts := s.Split([' ', ','], TStringSplitOptions.ExcludeEmpty);
+       for i := 0 to high(parts) do begin
+         p := lower(trim(ansistring(parts[i])));
+         if p <> '' then cli_rtti_expose_patterns.Concat(p);
+       end;
      end;
 
 initialization

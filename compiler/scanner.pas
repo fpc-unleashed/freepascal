@@ -2934,6 +2934,12 @@ type
          end;
       end;
 
+    procedure dir_rttiexpose;
+      begin
+        current_scanner.skipspace;
+        rtti_expose_add_module(ansistring(current_scanner.readcomment));
+      end;
+
 {*****************************************************************************
                             Preprocessor writing
 *****************************************************************************}
@@ -7050,6 +7056,7 @@ exit_label:
         AddDirective('I',directive_all, @dir_include);
         AddDirective('DEFINE',directive_all, @dir_define);
         AddDirective('UNDEF',directive_all, @dir_undef);
+        AddDirective('RTTIEXPOSE',directive_all, @dir_rttiexpose);
 
         AddConditional('IF',directive_all, @dir_if);
         AddConditional('IFDEF',directive_all, @dir_ifdef);

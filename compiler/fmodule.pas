@@ -220,6 +220,9 @@ interface
         localnamespacelist,
         resourcefiles,
         linkorderedsymbols : TCmdStrList;
+        // lowercased glob patterns from `{$rttiexpose}` directive in this unit;
+        // merged with cli_rtti_expose_patterns when matching
+        rtti_expose_patterns : TCmdStrList;
         linkunitofiles,
         linkunitstaticlibs,
         linkunitsharedlibs,
@@ -369,6 +372,13 @@ interface
     procedure addloadedunit(hp:tmodule);
     function find_module_from_symtable(st:tsymtable):tmodule;
 
+    { adds whitespace/comma-separated glob patterns to the per-unit
+      rttiexpose whitelist of current_module (lowercased, trimmed) }
+    procedure rtti_expose_add_module(const s: ansistring);
+    { true if typename matches any pattern from the CLI whitelist or the
+      current_module's per-unit whitelist }
+    function rtti_should_expose(const typename: shortstring): boolean;
+
 
 implementation
 
@@ -391,6 +401,48 @@ implementation
       begin
         result:=get_module(st.moduleid);
       end;
+
+
+    procedure rtti_expose_add_module(const s: ansistring);
+      var
+        parts: TStringArray;
+        i: integer;
+        p: ansistring;
+      begin
+        if current_module = nil then exit;
+        if current_module.rtti_expose_patterns = nil then
+          current_module.rtti_expose_patterns := TCmdStrList.Create;
+        parts := s.Split([' ', ','], TStringSplitOptions.ExcludeEmpty);
+        for i := 0 to high(parts) do begin
+          p := lower(trim(ansistring(parts[i])));
+          if p <> '' then current_module.rtti_expose_patterns.Concat(p);
+        end;
+      end;
+
+
+    function rtti_should_expose(const typename: shortstring): boolean;
+      function match_in(list: TCmdStrList; const lname: ansistring): boolean;
+        var
+          item: TCmdStrListItem;
+        begin
+          result := false;
+          if list = nil then exit;
+          item := TCmdStrListItem(list.First);
+          while assigned(item) do begin
+            if glob_matches(lname, item.Str) then exit(true);
+            item := TCmdStrListItem(item.Next);
+          end;
+        end;
+      var
+        lower_name: ansistring;
+      begin
+        if typename = '' then exit(false);
+        lower_name := lower(ansistring(typename));
+        if match_in(cli_rtti_expose_patterns, lower_name) then exit(true);
+        if assigned(current_module) and match_in(current_module.rtti_expose_patterns, lower_name) then exit(true);
+        result := false;
+      end;
+
 
     procedure set_current_module(p:tmodule);
 
@@ -750,6 +802,8 @@ implementation
           freeandnil(dllscannerinputlist);
         if assigned(localnamespacelist) then
           freeandnil(localnamespacelist);
+        if assigned(rtti_expose_patterns) then
+          freeandnil(rtti_expose_patterns);
         if assigned(scanner) then
           begin
             { also update current_scanner if it was pointing

@@ -1584,6 +1584,11 @@ begin
   if opt='' then
    exit;
 
+  if opt.StartsWith('--rttiexpose=') then begin
+    rtti_expose_add_cli(copy(opt, length('--rttiexpose=')+1));
+    exit;
+  end;
+
   { only parse define,undef,target,verbosity,link etc options the firsttime
     -Us must now also be first-passed to avoid rejection of -Sf options
     earlier in command line }
