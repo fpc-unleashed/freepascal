@@ -914,6 +914,14 @@ fpc --osversion=XP --linkerversion=14.0 my_program.pas
 
 The OS-name table is case-insensitive and accepts an optional `Win` prefix (`Win11`, `WinXP` work just like `11`, `XP`).
 
+> [!IMPORTANT]
+> `--linkerversion` and `--osversion` are **Windows PE only** (targets `win32`, `win64`, `wince`). Other binary formats do not carry these fields:
+> - **ELF** (Linux, BSD, Solaris, Haiku, Android) - no linker version or OS version in the header.
+> - **Mach-O** (macOS, iOS) - has `LC_BUILD_VERSION` / `LC_VERSION_MIN_*` but FPC delegates linking to the system `ld`, which fills these from the SDK.
+> - **NE / OMF / WASM / NLM / AmigaOS hunk / Atari TOS** - either no such field or hardcoded for compatibility.
+>
+> Passing the flags on a non-PE target compiles cleanly but the values are silently ignored. `--fpcsignature` works on every target.
+
 ---
 
 ### Extra Improvements
