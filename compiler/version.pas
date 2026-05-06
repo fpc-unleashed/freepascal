@@ -40,9 +40,6 @@ interface
        { date string }
        date_string = {$I %DATE%};
 
-       { last upstream trunk sync date }
-       trunk_sync_date = '2026/03/19';
-
        { source cpu string }
 {$ifdef cpui386}
         source_cpu_string = 'i386';

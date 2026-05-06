@@ -3289,13 +3289,8 @@ const pemagic : array[0..3] of byte = (
           begin
             fillchar(peoptheader,sizeof(peoptheader),0);
             peoptheader.magic:=COFF_OPT_MAGIC;
-            if unleashedsettings.linkerversion.isset then begin
-              peoptheader.MajorLinkerVersion:=str_opt_get_int(unleashedsettings.linkerversion.value, 0);
-              peoptheader.MinorLinkerVersion:=str_opt_get_int(unleashedsettings.linkerversion.value, 1);
-            end else begin
-              peoptheader.MajorLinkerVersion:=ord(version_nr)-ord('0');
-              peoptheader.MinorLinkerVersion:=(ord(release_nr)-ord('0'))*10 + (ord(patch_nr)-ord('0'));
-            end;
+            peoptheader.MajorLinkerVersion:=ord(version_nr)-ord('0');
+            peoptheader.MinorLinkerVersion:=(ord(release_nr)-ord('0'))*10 + (ord(patch_nr)-ord('0'));
             peoptheader.tsize:=TextExeSec.Size;
             peoptheader.dsize:=DataExeSec.Size;
             if assigned(BSSExeSec) then
@@ -3308,11 +3303,6 @@ const pemagic : array[0..3] of byte = (
             peoptheader.ImageBase:=ImageBase;
             peoptheader.SectionAlignment:=SectionMemAlign;
             peoptheader.FileAlignment:=SectionDataAlign;
-            if not unleashedsettings.osversion.isset or not osversiontomajorminor(
-              unleashedsettings.osversion.value,
-              peoptheader.MajorOperatingSystemVersion,
-              peoptheader.MinorOperatingSystemVersion
-            ) then
             if SetPEOSVersionSetExplicitely then
               begin
                 peoptheader.MajorOperatingSystemVersion:=peosversionmajor;

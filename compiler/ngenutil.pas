@@ -1665,8 +1665,7 @@ implementation
     begin
       { Insert Ident of the compiler in the .fpc.version section }
       tcb:=ctai_typedconstbuilder.create([tcalo_no_dead_strip]);
-      if unleashedsettings.fpcsignature.isset then s := unleashedsettings.fpcsignature.value else
-      s:='FPC Unleashed ['+date_string+'] (trunk '+trunk_sync_date+') for '+target_cpu_string+' '+target_info.shortname;
+      s:='FPC Unleashed '+full_version_string+' ['+date_string+'] for '+target_cpu_string+' - '+target_info.shortname;
 {$ifdef m68k}
       { Ensure that the size of s is multiple of 2 to avoid problems
         like on m68k-amiga which has a .balignw just after,
