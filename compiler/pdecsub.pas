@@ -555,6 +555,22 @@ implementation
              not(varspez in [vs_out,vs_var]) then
             CGMessage(cg_e_file_must_call_by_reference);
 
+          { a record with a flexible array member can only be passed by
+            reference (var/const/constref/out); a bare FAM type or a value
+            parameter of a FAM-record type would require copying an object
+            of unknown size }
+          if is_flexible_array(hdef) then
+            begin
+              Message(parser_e_fam_outside_record);
+              hdef:=generrordef;
+            end
+          else if record_has_flexible_array_field(hdef) and
+                  (varspez=vs_value) then
+            begin
+              Message1(parser_e_fam_record_on_stack,hdef.typename);
+              hdef:=generrordef;
+            end;
+
           { Dispinterfaces are restricted to using only automatable types }
           if (pd.typ=procdef) and is_dispinterface(tprocdef(pd).struct) and
              not is_automatable(hdef) then
@@ -1501,6 +1517,15 @@ implementation
             if pd.is_generic or pd.is_specialization then
               symtablestack.push(pd.parast);
             pd.returndef:=result_type([stoAllowSpecialization]);
+
+            { cannot return a record with a flexible array member by value;
+              the size of the result is not statically known }
+            if is_flexible_array(pd.returndef) or
+               record_has_flexible_array_field(pd.returndef) then
+              begin
+                Message1(parser_e_fam_record_on_stack,pd.returndef.typename);
+                pd.returndef:=generrordef;
+              end;
 
             // Issue #24863, enabled only for the main progra commented out for now because it breaks building of RTL and needs extensive
 // testing and/or RTL patching.

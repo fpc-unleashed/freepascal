@@ -569,7 +569,8 @@ interface
          m_autofree,            { defer STATEMENT and var x := autofree T.Create -- scoped cleanup }
          m_stringordcast,       { compile-time fold of string literal typecast to ordinal (DWORD('abcd')) }
          m_implicit_generics,   { Delphi-style generic syntax: 'generic'/'specialize' keywords optional, <T> allowed }
-         m_for_step             { allow `step N` clause in for-loops: for i := 1 to 10 step 2 do ... }
+         m_for_step,            { allow `step N` clause in for-loops: for i := 1 to 10 step 2 do ... }
+         m_flexible_arrays      { allow `array[] of T` as last field of a record (C99-style FAM) }
        );
        tmodeswitches = set of tmodeswitch;
 
@@ -788,7 +789,8 @@ interface
          'AUTOFREE',
          'STRINGORDCAST',
          'IMPLICITGENERICS',
-         'FORSTEP'
+         'FORSTEP',
+         'FLEXIBLEARRAYS'
          );
 
 

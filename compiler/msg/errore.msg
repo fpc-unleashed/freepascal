@@ -1746,6 +1746,39 @@ parser_e_autofree_lhs_must_be_local=03380_E_`autofree` target must be a local va
 parser_w_with_shadowed_method=03381_W_Method "$1" in WITH entry shadows an earlier method with the same name
 % Two entries in the same \var{with} clause expose a method with the same name.
 % The later entry hides the earlier one and makes the call ambiguous to the reader.
+parser_e_fam_outside_record=03385_E_Flexible array members are only allowed as the last field of a record
+% \var{array[] of T} (a flexible array member, FAM) can only be declared as
+% the last field of a regular record. It is not allowed for stand-alone variables,
+% parameters, function results, or anywhere else.
+parser_e_fam_must_be_last_field=03386_E_A flexible array member must be the last field of the record
+% A record may contain at most one flexible array member, and it must be declared
+% as the last field. No fields can be declared after it.
+parser_e_fam_record_needs_other_field=03387_E_A record with a flexible array member must have at least one other field
+% C99-style flexible array members require the record to have at least one
+% preceding field, otherwise the offset of the FAM would be undefined.
+parser_e_fam_record_nested=03388_E_Record with flexible array member "$1" cannot be embedded in another type
+% A record containing a flexible array member cannot be used as the type of a
+% field in another record, object, or class. Use a pointer to the FAM record instead.
+parser_e_fam_record_in_array=03389_E_Record with flexible array member "$1" cannot be the element type of an array
+% Arrays of records with flexible array members are not allowed because the
+% size of each element is not statically known.
+parser_e_fam_record_on_stack=03390_E_Variable of type "$1" with flexible array member must be allocated dynamically (use a pointer)
+% Records with flexible array members cannot be declared as plain variables,
+% parameters, or function results because their size is not statically known.
+% Allocate them via GetMem and access through a pointer.
+parser_e_fam_count_unknown=03391_E_Count field "$1" is not a field of this record
+% The identifier in a `count` clause of a flexible array member must name a
+% field declared in the same record.
+parser_e_fam_count_not_ordinal=03392_E_Count field "$1" must be of an ordinal type
+% The field referenced by a `count` clause must have an ordinal type so the
+% debugger can read it as an integer length.
+parser_e_fam_count_after=03393_E_Count field "$1" must be declared before the flexible array member
+% The field referenced by a `count` clause must be declared earlier in the
+% record than the flexible array member itself.
+parser_e_fam_no_for_in=03394_E_for-in cannot iterate a flexible array member
+% A flexible array member has no statically known length, so a for-in loop
+% has no termination condition. Iterate explicitly over the count field
+% kept in the record header.
 %
 parser_e_for_step_must_be_positive=03382_E_Step value must be a positive integer
 % The step expression in a for loop must be a positive integer value.
@@ -1761,6 +1794,8 @@ parser_e_step_not_allowed_in_for_in=03384_E_Step is not allowed in for-in loops
 % \end{description}
 %
 # Type Checking
+#
+# 03394 is the last used parser one
 #
 # 04136 is the last used one
 #

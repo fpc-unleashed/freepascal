@@ -600,6 +600,10 @@ interface
           rangedefderef : tderef;
           arrayoptions  : tarraydefoptions;
           symtable      : TSymtable;
+          { for `array[] of T count Field`: sibling field whose value is
+            the element count at runtime; nil if no `count` clause }
+          flexcountfield      : tsym;
+          flexcountfieldderef : tderef;
        protected
           _elementdef      : tdef;
           _elementdefderef : tderef;
@@ -4439,6 +4443,8 @@ implementation
          _elementdef:=nil;
          _elementdefderef.reset;
          arrayoptions:=[];
+         flexcountfield:=nil;
+         flexcountfieldderef.reset;
          symtable:=tarraysymtable.create(self);
       end;
 
@@ -4551,6 +4557,10 @@ implementation
          lowrange:=ppufile.getasizeint;
          highrange:=ppufile.getasizeint;
          ppufile.getset(tppuset2(arrayoptions));
+         flexcountfield:=nil;
+         flexcountfieldderef.reset;
+         if ado_IsFlexibleArray in arrayoptions then
+           ppufile.getderef(flexcountfieldderef);
          ppuload_platform(ppufile);
          symtable:=tarraysymtable.create(self);
          tarraysymtable(symtable).ppuload(ppufile)
@@ -4562,6 +4572,7 @@ implementation
         result:=carraydef.create(lowrange,highrange,rangedef);
         tarraydef(result).arrayoptions:=arrayoptions;
         tarraydef(result)._elementdef:=_elementdef;
+        tarraydef(result).flexcountfield:=flexcountfield;
       end;
 
 
@@ -4571,6 +4582,8 @@ implementation
         tarraysymtable(symtable).buildderef;
         _elementdefderef.build(_elementdef);
         rangedefderef.build(rangedef);
+        if assigned(flexcountfield) then
+          flexcountfieldderef.build(flexcountfield);
       end;
 
 
@@ -4580,6 +4593,8 @@ implementation
         tarraysymtable(symtable).deref(false);
         _elementdef:=tdef(_elementdefderef.resolve);
         rangedef:=tdef(rangedefderef.resolve);
+        if ado_IsFlexibleArray in arrayoptions then
+          flexcountfield:=tsym(flexcountfieldderef.resolve);
       end;
 
 
@@ -4591,6 +4606,8 @@ implementation
          ppufile.putasizeint(lowrange);
          ppufile.putasizeint(highrange);
          ppufile.putset(tppuset2(arrayoptions));
+         if ado_IsFlexibleArray in arrayoptions then
+           ppufile.putderef(flexcountfieldderef);
          writeentry(ppufile,ibarraydef);
          tarraysymtable(symtable).ppuwrite(ppufile);
       end;

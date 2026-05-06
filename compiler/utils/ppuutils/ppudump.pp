@@ -2508,7 +2508,8 @@ const
          'm_autofree',            { defer STATEMENT and var x := autofree T.Create -- scoped cleanup }
          'm_stringordcast',       { compile-time fold of string literal typecast to ordinal (DWORD('abcd')) }
          'm_implicit_generics',   { Delphi-style generic syntax: 'generic'/'specialize' keywords optional, <T> allowed }
-         'm_for_step'             { allow `step N` clause in for-loops }
+         'm_for_step',            { allow `step N` clause in for-loops }
+         'm_flexible_arrays'      { allow `array[] of T` as last field of a record (C99-style FAM) }
        );
        { optimizer }
        optimizerswitchname : array[toptimizerswitch] of string[50] =
@@ -3475,7 +3476,8 @@ const
    { ado_IsBitPacked        } 'BitPacked',
    { ado_IsVector           } 'Vector',
    { ado_IsGeneric          } 'Generic',
-   { ado_OpenArray          } 'OpenArray'
+   { ado_OpenArray          } 'OpenArray',
+   { ado_IsFlexibleArray    } 'FlexibleArray'
   );
 var
   symoptions: tarraydefoptions;

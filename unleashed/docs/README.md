@@ -44,6 +44,12 @@ Enabled via `{$modeswitch multivarinit}`.
 
 Enabled via `{$modeswitch forstep}`.
 
+## [Flexible Array Members](flexible-arrays.md)
+
+C99-style records with a variable-length tail: `data: array[] of T` as the last field. The fixed header has the size `sizeof` reports; the tail extends as far as the allocation says it does, and indexing skips range checks because the FAM has no upper bound. Allocation is a single `GetMem(rec, sizeof(rec)+payload)`, no separate buffer or pointer chase. Useful for Win32 structures with trailing arrays (`TOKEN_GROUPS`, `BITMAPINFO`, ...), network frames, file headers, and inline payloads.
+
+Enabled via `{$modeswitch flexiblearrays}`.
+
 ## [Compound Assignment Operators](compound-assignment.md)
 
 Word-based modify-and-assign operators that the standard set is missing: `div=`, `mod=`, `and=`, `or=`, `xor=`, `shl=`, `shr=`.
