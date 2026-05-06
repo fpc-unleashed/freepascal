@@ -1,6 +1,10 @@
 # FPC Unleashed
 
-**FPC Unleashed** is a community-driven fork of **Free Pascal**, focused on pushing the language forward with modern, expressive, and practical features that have not (yet) been accepted into the official compiler.
+**FPC Unleashed** is a community-driven fork of **Free Pascal** built for developers who want modern language features today, not after an official release that will likely never include them. The features added here were rejected, ignored, or shelved as "too experimental" by upstream - this fork is your only option for them.
+
+<p align="center">
+  <img width="128" alt="unleashed sign" src="unleashed/img/unleashed_sign_128.png" />
+</p>
 
 ## Table of Contents
 
