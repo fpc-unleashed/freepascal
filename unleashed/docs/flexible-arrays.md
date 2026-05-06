@@ -109,6 +109,42 @@ A FAM is not a dynamic array. They share no run-time machinery:
 
 If you want a managed, resizable array that lives elsewhere in memory, use `array of T`. If you want a fixed-shape tail that sits inline behind the record header in one block, use a FAM.
 
+## Debugger view
+
+A FAM has no statically known length, so without help the debugger sees an empty array. The compiler emits a DWARF expression for the upper bound that reads the count at runtime from a sibling ordinal field of the same record. fpdebug and gdb evaluate that expression on every variable refresh and pretty-print the FAM with the right element count.
+
+By default, the compiler picks the **last ordinal field declared before the FAM** as the count source. For the typical "header + count + payload" layout this needs no annotation:
+
+```pas
+type
+  PTokenPrivileges = ^TTokenPrivileges;
+  TTokenPrivileges = packed record
+    PrivilegeCount: DWORD;
+    Privileges:     array[] of LUID_AND_ATTRIBUTES;
+  end;
+```
+
+In the Local Variables / Watches panel, `tp^.Privileges` shows up with `PrivilegeCount` elements expanded.
+
+If the count is not the last ordinal field before the FAM, bind it explicitly with the optional `count` clause:
+
+```pas
+type
+  TBatch = packed record
+    Count:    DWORD;
+    Reserved: DWORD;
+    Items:    array[] of TItem count Count;
+  end;
+```
+
+The clause names a sibling field of the record. It must be a `fieldvarsym`, declared earlier in the record than the FAM, with an ordinal type whose size is 1, 2, 4, or 8 bytes. Three diagnostics fire on misuse:
+
+- `Count field "X" is not a field of this record`
+- `Count field "X" must be of an ordinal type`
+- `Count field "X" must be declared before the flexible array member`
+
+This is purely a debug-info detail. There is no runtime cost, no change to the record layout, and no effect on `sizeof` or indexing. Range checks remain disabled for FAM accesses regardless of whether a count is bound. DWARF emission only; CodeView and Stabs are unaffected. Both `-gw2` and `-gw3` honour it.
+
 ## Compatibility with PPU streams
 
 The FAM flag (`ado_IsFlexibleArray`) is part of `arrayoptions`, which is already streamed in PPU files. A FAM-record declared in one unit and used from another behaves identically to one declared in the same unit, including the `sizeof` value and the disabled range check.
@@ -116,6 +152,6 @@ The FAM flag (`ado_IsFlexibleArray`) is part of `arrayoptions`, which is already
 ## Limitations
 
 - A FAM-record cannot be passed by value, returned by value, or live on the stack. The compiler does not auto-promote to pointer; you have to write `PFamRec`.
-- `Length()` returns 0 for a FAM, not the run-time payload count. Track the count yourself in a fixed field of the record (the typical pattern).
+- `Length()` returns 0 for a FAM, not the run-time payload count. Track the count yourself in a fixed field of the record (the typical pattern). The same field is what the debugger uses to pretty-print the FAM, see **Debugger view** above.
 - The compiler does not zero-initialize the FAM tail. Use `FillChar` if you need that.
 - No `for elem in fam do ...` enumeration; without a known length the loop has no termination condition.
