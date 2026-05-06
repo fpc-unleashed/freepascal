@@ -1776,6 +1776,23 @@ implementation
            { open array? }
            if try_to_consume(_LECKKLAMMER) then
              begin
+                { flexible array member: `array[] of T` shares the
+                  high < low shape with a dynamic-array def but carries a
+                  separate flag so the FAM-only restrictions can fire }
+                if (m_flexible_arrays in current_settings.modeswitches) and
+                   (current_scanner.token=_RECKKLAMMER) then
+                  begin
+                    consume(_RECKKLAMMER);
+                    if is_packed then
+                      Message(parser_e_packed_dynamic_open_array);
+                    arrdef.lowrange:=0;
+                    arrdef.highrange:=-1;
+                    arrdef.rangedef:=sizesinttype;
+                    include(arrdef.arrayoptions,ado_IsFlexibleArray);
+                    def:=arrdef;
+                  end
+                else
+                  begin
                 { defaults }
                 indexdef:=generrordef;
                 isgeneric:=false;
@@ -1883,6 +1900,7 @@ implementation
                     break;
                 until false;
                 consume(_RECKKLAMMER);
+                  end;
              end
            else
              begin
@@ -1896,6 +1914,18 @@ implementation
              end;
            consume(_OF);
            read_anon_type(tt2,true,nil);
+           { per-element size would be undefined for an array of FAM-record,
+             and a bare flexible array cannot be an element either }
+           if is_flexible_array(tt2) then
+             begin
+               Message(parser_e_fam_outside_record);
+               tt2:=generrordef;
+             end
+           else if record_has_flexible_array_field(tt2) then
+             begin
+               Message1(parser_e_fam_record_in_array,tt2.typename);
+               tt2:=generrordef;
+             end;
            { set element type of the last array definition }
            if assigned(arrdef) then
              begin

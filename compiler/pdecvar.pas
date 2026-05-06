@@ -1496,6 +1496,20 @@ implementation
 
              read_anon_type(hdef,false,nil);
              maybe_guarantee_record_typesym(hdef,symtablestack.top);
+             { stand-alone variables of FAM-record type have no statically
+               known size, must be allocated via GetMem and accessed through
+               a pointer; bare flexible array member declarations outside
+               a record are also rejected }
+             if is_flexible_array(hdef) then
+               begin
+                 Messagepos(typepos,parser_e_fam_outside_record);
+                 hdef:=generrordef;
+               end
+             else if record_has_flexible_array_field(hdef) then
+               begin
+                 Messagepos1(typepos,parser_e_fam_record_on_stack,hdef.typename);
+                 hdef:=generrordef;
+               end;
              for i:=0 to sc.count-1 do
                begin
                  vs:=tabstractvarsym(sc[i]);
@@ -1749,6 +1763,12 @@ implementation
          semicoloneaten,
          removeclassoption: boolean;
          dummyattrelementcount : integer;
+         { tracks whether the record already has a flexible array member;
+           once set, no further fields are allowed }
+         record_fam_seen : boolean;
+         priorfields, k : longint;
+         scidx : longint;
+         is_in_sc : boolean;
 {$if defined(powerpc) or defined(powerpc64)}
          tempdef: tdef;
          is_first_type: boolean;
@@ -1770,6 +1790,7 @@ implementation
          removeclassoption:=false;
          had_generic:=false;
          attr_element_count:=0;
+         record_fam_seen:=false;
          while (current_scanner.token=_ID) and
             not(((vd_object in options) or
                  ((vd_record in options) and (m_advanced_records in current_settings.modeswitches))) and
@@ -1777,6 +1798,12 @@ implementation
                  ((m_final_fields in current_settings.modeswitches) and
                   (current_scanner.idtoken=_FINAL)))) do
            begin
+             { a flexible array member must be the last field of the record }
+             if record_fam_seen then
+               begin
+                 Message(parser_e_fam_must_be_last_field);
+                 break;
+               end;
              visibility:=symtablestack.top.currentvisibility;
              semicoloneaten:=false;
              sc.clear;
@@ -1845,6 +1872,55 @@ implementation
              if is_wasm_reference_type(hdef) then
                messagepos(typepos,sym_e_wasm_ref_types_cannot_be_used_in_records);
 {$endif wasm}
+             { flexible array member: only one identifier per declaration,
+               only as an instance field of a plain record, not in a variant
+               part, not as a class/static or threadvar field }
+             if is_flexible_array(hdef) then
+               begin
+                 if not (vd_record in options) or
+                    (vd_class in options) or
+                    (vd_threadvar in options) or
+                    (variantrecordlevel>0) then
+                   begin
+                     Messagepos(typepos,parser_e_fam_outside_record);
+                     hdef:=generrordef;
+                   end
+                 else if sc.count<>1 then
+                   begin
+                     Messagepos(typepos,parser_e_fam_must_be_last_field);
+                     hdef:=generrordef;
+                   end
+                 else
+                   begin
+                     priorfields:=0;
+                     for k:=0 to recst.SymList.count-1 do
+                       begin
+                         if TSymEntry(recst.SymList[k]).typ<>fieldvarsym then
+                           continue;
+                         is_in_sc:=false;
+                         for scidx:=0 to sc.count-1 do
+                           if sc[scidx]=recst.SymList[k] then
+                             begin
+                               is_in_sc:=true;
+                               break;
+                             end;
+                         if not is_in_sc then
+                           inc(priorfields);
+                       end;
+                     if priorfields=0 then
+                       begin
+                         Messagepos(typepos,parser_e_fam_record_needs_other_field);
+                         hdef:=generrordef;
+                       end
+                     else
+                       record_fam_seen:=true;
+                   end;
+               end
+             else if record_has_flexible_array_field(hdef) then
+               begin
+                 Messagepos1(typepos,parser_e_fam_record_nested,hdef.typename);
+                 hdef:=generrordef;
+               end;
              block_type:=bt_var;
              { allow only static fields reference to struct where they are declared }
              if not (vd_class in options) then
