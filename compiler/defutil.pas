@@ -172,6 +172,12 @@ interface
     {# Returns true, if p points to a normal array, bitpacked arrays are included }
     function is_normal_array(p : tdef) : boolean;
 
+    {# Returns true if p is a C99-style flexible array member (`array[] of T`) }
+    function is_flexible_array(p : tdef) : boolean;
+
+    {# Returns true if p is a record whose last field is a flexible array member }
+    function record_has_flexible_array_field(p : tdef) : boolean;
+
     {# Returns true if p is a bitpacked array }
     function is_packed_array(p: tdef) : boolean;
 
@@ -430,6 +436,7 @@ implementation
 
     uses
        verbose,cutils,
+       symbase,
        symtable, // search_system_type
        symsym,
        cpuinfo;
@@ -915,7 +922,7 @@ implementation
       begin
          result:=(p.typ=arraydef) and
                  (
-                  ((tarraydef(p).arrayoptions * [ado_IsVariant,ado_IsArrayOfConst,ado_IsConstructor,ado_IsDynamicArray])<>[]) or
+                  ((tarraydef(p).arrayoptions * [ado_IsVariant,ado_IsArrayOfConst,ado_IsConstructor,ado_IsDynamicArray,ado_IsFlexibleArray])<>[]) or
                   is_open_array(p)
                  );
       end;
@@ -924,8 +931,38 @@ implementation
     function is_normal_array(p : tdef) : boolean;
       begin
          result:=(p.typ=arraydef) and
-                 ((tarraydef(p).arrayoptions * [ado_IsVariant,ado_IsArrayOfConst,ado_IsConstructor,ado_IsDynamicArray])=[]) and
+                 ((tarraydef(p).arrayoptions * [ado_IsVariant,ado_IsArrayOfConst,ado_IsConstructor,ado_IsDynamicArray,ado_IsFlexibleArray])=[]) and
                  not(is_open_array(p));
+      end;
+
+    function is_flexible_array(p : tdef) : boolean;
+      begin
+         result:=(p.typ=arraydef) and (ado_IsFlexibleArray in tarraydef(p).arrayoptions);
+      end;
+
+    function record_has_flexible_array_field(p : tdef) : boolean;
+      var
+         i : longint;
+         st : TSymtable;
+         lastfield : tfieldvarsym;
+         sym : TSymEntry;
+      begin
+         result:=false;
+         if (p=nil) or (p.typ<>recorddef) then
+           exit;
+         st:=tabstractrecorddef(p).symtable;
+         if not assigned(st) then
+           exit;
+         lastfield:=nil;
+         for i:=0 to st.SymList.count-1 do
+           begin
+             sym:=TSymEntry(st.SymList[i]);
+             if tsym(sym).typ=fieldvarsym then
+               lastfield:=tfieldvarsym(sym);
+           end;
+         if not assigned(lastfield) then
+           exit;
+         result:=is_flexible_array(lastfield.vardef);
       end;
 
     { true if p is an ansi string def }

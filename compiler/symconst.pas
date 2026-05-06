@@ -602,8 +602,9 @@ type
     ado_IsBitPacked,        // bitpacked array
     ado_IsVector,           // Vector
     ado_IsGeneric,          // the index of the array is generic (meaning that the size is not yet known)
-    ado_OpenArray           // open array, replaces the old hack with high being -1 for an open array:
+    ado_OpenArray,          // open array, replaces the old hack with high being -1 for an open array:
                             // this is still true, but this flag is set as well
+    ado_IsFlexibleArray     // C99-style flexible array member: `array[] of T` as the last field of a record
   );
   tarraydefoptions=set of tarraydefoption;
 
