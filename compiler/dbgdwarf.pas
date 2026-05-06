@@ -1588,7 +1588,50 @@ implementation
         elesize : PInt;
         elestrideattr : tdwarf_attribute;
         labsym: tasmlabel;
+        flexcount : tfieldvarsym;
+        owner_recordsym : tsym;
+        owner_recorddef : trecorddef;
+        i : longint;
+        fam_offset, count_offset, delta : asizeint;
+        count_size : asizeint;
+        delta_sleb_len, block_len : longint;
       begin
+        flexcount:=nil;
+        if is_flexible_array(def) and assigned(def.flexcountfield) and
+           (def.flexcountfield.typ=fieldvarsym) then
+          begin
+            { resolve the FAM's own offset within its enclosing record;
+              the FAM's owner is its tarraysymtable, but the field that
+              holds the FAM lives in the parent record's symtable }
+            flexcount:=tfieldvarsym(def.flexcountfield);
+            owner_recorddef:=nil;
+            if (flexcount.owner is tabstractrecordsymtable) and
+               assigned(tabstractrecordsymtable(flexcount.owner).defowner) and
+               (tabstractrecordsymtable(flexcount.owner).defowner is trecorddef) then
+              owner_recorddef:=trecorddef(tabstractrecordsymtable(flexcount.owner).defowner);
+            fam_offset:=-1;
+            if assigned(owner_recorddef) then
+              for i:=0 to owner_recorddef.symtable.SymList.count-1 do
+                begin
+                  owner_recordsym:=tsym(owner_recorddef.symtable.SymList[i]);
+                  if (owner_recordsym.typ=fieldvarsym) and
+                     (tfieldvarsym(owner_recordsym).vardef=def) then
+                    begin
+                      fam_offset:=tfieldvarsym(owner_recordsym).fieldoffset;
+                      break;
+                    end;
+                end;
+            count_size:=flexcount.vardef.size;
+            { deref_size accepts only 1/2/4/8; bail on anything wider }
+            if (fam_offset<0) or not (count_size in [1,2,4,8]) then
+              flexcount:=nil
+            else
+              begin
+                count_offset:=flexcount.fieldoffset;
+                delta:=count_offset-fam_offset;
+              end;
+          end;
+
         if is_dynamic_array(def) then
           begin
             { It's a pointer to the actual array }
@@ -1610,7 +1653,42 @@ implementation
             elesize:=def.elepackedbitsize;
           end;
 
-        if is_special_array(def) then
+        if assigned(flexcount) then
+          begin
+            { FAM with `count Field` clause: emit upper_bound as a DWARF
+              expression that reads the sibling count field at runtime,
+              so the debugger shows the array with the right element
+              count instead of an empty/unbounded view }
+            if assigned(def.typesym) then
+              append_entry(DW_TAG_array_type,true,[
+                DW_AT_name,DW_FORM_string,symname(def.typesym, false)+#0,
+                elestrideattr,DW_FORM_udata,elesize
+                ])
+            else
+              append_entry(DW_TAG_array_type,true,[
+                elestrideattr,DW_FORM_udata,elesize
+                ]);
+            append_labelentry_ref(DW_AT_type,def_dwarf_lab(def.elementdef));
+            finish_entry;
+
+            delta_sleb_len:=Lengthsleb128(delta);
+            { push_object_address(1) + consts(1+sleb) + plus(1) +
+              deref_size(2) + lit1(1) + minus(1) }
+            block_len:=7+delta_sleb_len;
+            append_entry(DW_TAG_subrange_type,false,[
+              DW_AT_lower_bound,DW_FORM_udata,0,
+              DW_AT_upper_bound,DW_FORM_block1,block_len
+              ]);
+            current_asmdata.asmlists[al_dwarf_info].concat(tai_const.create_8bit(ord(DW_OP_push_object_address)));
+            current_asmdata.asmlists[al_dwarf_info].concat(tai_const.create_8bit(ord(DW_OP_consts)));
+            current_asmdata.asmlists[al_dwarf_info].concat(tai_const.create_sleb128bit(delta));
+            current_asmdata.asmlists[al_dwarf_info].concat(tai_const.create_8bit(ord(DW_OP_plus)));
+            current_asmdata.asmlists[al_dwarf_info].concat(tai_const.create_8bit(ord(DW_OP_deref_size)));
+            current_asmdata.asmlists[al_dwarf_info].concat(tai_const.create_8bit(count_size));
+            current_asmdata.asmlists[al_dwarf_info].concat(tai_const.create_8bit(ord(DW_OP_lit1)));
+            current_asmdata.asmlists[al_dwarf_info].concat(tai_const.create_8bit(ord(DW_OP_minus)));
+          end
+        else if is_special_array(def) then
           begin
             { no known size, no known upper bound }
             if assigned(def.typesym) then
