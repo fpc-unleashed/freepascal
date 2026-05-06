@@ -974,6 +974,17 @@ implementation
                 loopvarsym:=nil;
 
               expr:=comp_expr([ef_accept_equal]);
+              do_typecheckpass(expr);
+              if assigned(expr.resultdef) and is_flexible_array(expr.resultdef) then
+                begin
+                  MessagePos(expr.fileinfo,parser_e_fam_no_for_in);
+                  expr.free;
+                  hloopvar.free;
+                  if assigned(loopvarsym) then
+                    exclude(loopvarsym.varoptions,vo_is_loop_counter);
+                  result:=cerrornode.create;
+                  exit;
+                end;
 
               if (m_for_step in current_settings.modeswitches) and (current_scanner.token=_ID) and (current_scanner.pattern='STEP') then
                 Message(parser_e_step_not_allowed_in_for_in);
@@ -1065,6 +1076,16 @@ implementation
 
               expr := comp_expr([ef_accept_equal]);
               do_typecheckpass(expr);
+
+              if assigned(expr.resultdef) and is_flexible_array(expr.resultdef) then
+                begin
+                  MessagePos(expr.fileinfo, parser_e_fam_no_for_in);
+                  expr.free;
+                  hloopvar.free;
+                  exclude(loopvs.varoptions, vo_is_loop_counter);
+                  result := cerrornode.create;
+                  exit;
+                end;
 
               { Infer element type from collection }
               elemdef := get_for_in_element_type(expr);

@@ -1775,6 +1775,10 @@ parser_e_fam_count_not_ordinal=03392_E_Count field "$1" must be of an ordinal ty
 parser_e_fam_count_after=03393_E_Count field "$1" must be declared before the flexible array member
 % The field referenced by a `count` clause must be declared earlier in the
 % record than the flexible array member itself.
+parser_e_fam_no_for_in=03394_E_for-in cannot iterate a flexible array member
+% A flexible array member has no statically known length, so a for-in loop
+% has no termination condition. Iterate explicitly over the count field
+% kept in the record header.
 %
 parser_e_for_step_must_be_positive=03382_E_Step value must be a positive integer
 % The step expression in a for loop must be a positive integer value.
@@ -1791,7 +1795,7 @@ parser_e_step_not_allowed_in_for_in=03384_E_Step is not allowed in for-in loops
 %
 # Type Checking
 #
-# 03393 is the last used parser one
+# 03394 is the last used parser one
 #
 # 04136 is the last used one
 #
