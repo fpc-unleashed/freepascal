@@ -1913,7 +1913,45 @@ implementation
                          hdef:=generrordef;
                        end
                      else
-                       record_fam_seen:=true;
+                       begin
+                         record_fam_seen:=true;
+                         { auto-infer count: pick the last ordinal sibling
+                           field declared before the FAM; lets the debugger
+                           pretty-print the array without a `count` clause
+                           in the source. An explicit `count IDENT` below
+                           overrides this default }
+                         for k:=0 to recst.SymList.count-1 do
+                           begin
+                             srsym:=tsym(recst.SymList[k]);
+                             if (srsym.typ=fieldvarsym) and (srsym<>tsym(sc[0])) and
+                                is_ordinal(tfieldvarsym(srsym).vardef) and
+                                (tfieldvarsym(srsym).vardef.size in [1,2,4,8]) then
+                               tarraydef(hdef).flexcountfield:=srsym;
+                           end;
+                       end;
+                   end;
+                 { context-sensitive `count IDENT` clause: binds the
+                   FAM to a sibling integer field that holds the runtime
+                   element count; consumed in any case so the rest of
+                   the field declaration parses cleanly even on error }
+                 if (current_scanner.token=_ID) and (current_scanner.pattern='COUNT') then
+                   begin
+                     consume(_ID);
+                     if current_scanner.token<>_ID then
+                       consume(_ID)
+                     else
+                       begin
+                         srsym:=tsym(recst.Find(current_scanner.pattern));
+                         if (srsym=nil) or (srsym.typ<>fieldvarsym) then
+                           Messagepos1(current_filepos,parser_e_fam_count_unknown,current_scanner.orgpattern)
+                         else if (sc.count=1) and (srsym=tsym(sc[0])) then
+                           Messagepos1(current_filepos,parser_e_fam_count_after,current_scanner.orgpattern)
+                         else if not is_ordinal(tfieldvarsym(srsym).vardef) then
+                           Messagepos1(current_filepos,parser_e_fam_count_not_ordinal,current_scanner.orgpattern)
+                         else if is_flexible_array(hdef) then
+                           tarraydef(hdef).flexcountfield:=srsym;
+                         consume(_ID);
+                       end;
                    end;
                end
              else if record_has_flexible_array_field(hdef) then

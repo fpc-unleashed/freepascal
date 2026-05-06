@@ -1766,6 +1766,15 @@ parser_e_fam_record_on_stack=03390_E_Variable of type "$1" with flexible array m
 % Records with flexible array members cannot be declared as plain variables,
 % parameters, or function results because their size is not statically known.
 % Allocate them via GetMem and access through a pointer.
+parser_e_fam_count_unknown=03391_E_Count field "$1" is not a field of this record
+% The identifier in a `count` clause of a flexible array member must name a
+% field declared in the same record.
+parser_e_fam_count_not_ordinal=03392_E_Count field "$1" must be of an ordinal type
+% The field referenced by a `count` clause must have an ordinal type so the
+% debugger can read it as an integer length.
+parser_e_fam_count_after=03393_E_Count field "$1" must be declared before the flexible array member
+% The field referenced by a `count` clause must be declared earlier in the
+% record than the flexible array member itself.
 %
 parser_e_for_step_must_be_positive=03382_E_Step value must be a positive integer
 % The step expression in a for loop must be a positive integer value.
@@ -1782,7 +1791,7 @@ parser_e_step_not_allowed_in_for_in=03384_E_Step is not allowed in for-in loops
 %
 # Type Checking
 #
-# 03390 is the last used parser one
+# 03393 is the last used parser one
 #
 # 04136 is the last used one
 #
