@@ -1673,7 +1673,8 @@ implementation
              lifetime_filepos := current_filepos;
              if current_scanner.token = _VAR then
                begin
-                 { Form C:  with var NAME := [autofree] EXPR do BODY  }
+                 { Form C:  with var NAME := [autofree] EXPR do BODY
+                   Form D:  with var NAME : TYPE do BODY     (no init) }
                  consume(_VAR);
                  if current_scanner.token <> _ID then
                    begin
@@ -1683,14 +1684,26 @@ implementation
                    end;
                  lifetime_name := current_scanner.orgpattern;
                  consume(_ID);
-                 consume(_ASSIGNMENT);
-                 if current_scanner.token = _AUTOFREE then
+                 if current_scanner.token = _COLON then
                    begin
-                     consume(_AUTOFREE);
-                     lifetime_autofree := true;
+                     { Form D: typed declaration, no initializer }
+                     block_type := bt_var_type;
+                     consume(_COLON);
+                     read_anon_type(hdef, false, nil);
+                     block_type := bt_var;
+                     lifetime_init := nil;
+                   end
+                 else
+                   begin
+                     consume(_ASSIGNMENT);
+                     if current_scanner.token = _AUTOFREE then
+                       begin
+                         consume(_AUTOFREE);
+                         lifetime_autofree := true;
+                       end;
+                     lifetime_init := comp_expr([ef_accept_equal]);
+                     do_typecheckpass(lifetime_init);
                    end;
-                 lifetime_init := comp_expr([ef_accept_equal]);
-                 do_typecheckpass(lifetime_init);
                end
              else { _AUTOFREE }
                begin
@@ -1703,10 +1716,11 @@ implementation
                  lifetime_init := comp_expr([ef_accept_equal]);
                  do_typecheckpass(lifetime_init);
                end;
-             hdef := lifetime_init.resultdef;
+             if assigned(lifetime_init) then
+               hdef := lifetime_init.resultdef;
              if not assigned(hdef) or (hdef = generrordef) then
                begin
-                 lifetime_init.free;
+                 if assigned(lifetime_init) then lifetime_init.free;
                  result := cerrornode.create;
                  exit;
                end;
@@ -1714,7 +1728,7 @@ implementation
                 not (is_class(hdef) and def_is_related(tobjectdef(hdef), class_tobject)) then
                begin
                  Message(parser_e_autofree_requires_class);
-                 lifetime_init.free;
+                 if assigned(lifetime_init) then lifetime_init.free;
                  result := cerrornode.create;
                  exit;
                end;
@@ -1734,7 +1748,11 @@ implementation
                  lifetime_var.register_sym;
                  symtablestack.top.insertsym(lifetime_var);
                end;
-             tabstractnormalvarsym(lifetime_var).varstate := vs_initialised;
+             { Form C/A get an init expression so the var is effectively
+               initialized; Form D leaves it at vs_declared so first read
+               without write still triggers the usual uninitialized warning. }
+             if assigned(lifetime_init) then
+               tabstractnormalvarsym(lifetime_var).varstate := vs_initialised;
              if lifetime_var.typ = staticvarsym then
                cnodeutils.insertbssdata(tstaticvarsym(lifetime_var));
              { p := load(lifetime_var) -- this is what `with` binds to }
@@ -1833,13 +1851,15 @@ implementation
             tempnode:=nil;
 
             { FPC Unleashed: scoped-with -- always wrap in a block so we
-              can prepend `lifetime_var := init_expr;` before the with-body. }
+              can prepend `lifetime_var := init_expr;` before the with-body.
+              Form D (typed declaration, no init) skips the assignment. }
             if lifetime_handled then
               begin
                 newblock := internalstatements(newstatement);
-                addstatement(newstatement, cassignmentnode.create(
-                  cloadnode.create(lifetime_var, lifetime_var.owner),
-                  lifetime_init));
+                if assigned(lifetime_init) then
+                  addstatement(newstatement, cassignmentnode.create(
+                    cloadnode.create(lifetime_var, lifetime_var.owner),
+                    lifetime_init));
               end;
 
             hp:=skip_nodes_before_load(p);

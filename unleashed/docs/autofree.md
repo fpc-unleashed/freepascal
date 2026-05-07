@@ -172,7 +172,7 @@ var b := autofree TMaybeFails.Create(true);   // raises
 
 ## Scoped `with`
 
-The `with` statement gets three new clause forms under `AUTOFREE`. They all bind a class instance to a name (or a hidden holder) that the `with` body sees in scope, with optional auto-cleanup.
+The `with` statement gets four new clause forms under `AUTOFREE`. Three of them bind a class instance to a name (or a hidden holder) that the `with` body sees in scope, with optional auto-cleanup; the fourth declares an inline local of any type without an initializer.
 
 ### Form C: inline-var with optional autofree
 
@@ -191,6 +191,35 @@ begin
   s := http.Get('http://httpbin.org/ip');
 end;
 ```
+
+### Form D: inline-var declaration, no initializer
+
+```pas
+with var p: record x, y: integer; end do
+begin
+  p.x := 10;
+  p.y := 20;
+  writeln(x, ' ', y);   // with-symtable lookup
+end;
+```
+
+Declares a local of the given type, scoped to the with-body. No initializer is provided - the variable is left at its default state (managed types init'd, ordinals zero, records uninitialized) and `vs_declared`, so a read before write triggers the regular uninitialized-variable warning.
+
+Useful for stack-allocating an anonymous-record or short-lived local without polluting the enclosing routine's var section:
+
+```pas
+type TPoint = record a: integer; b: dword; end;
+
+with var t: TPoint do
+begin
+  t.a := 10;
+  t.b := 20;
+  Process(t);
+end;
+// t goes out of scope here
+```
+
+`autofree` is not allowed in this form (no initializer means no class instance to free).
 
 ### Form B: bind to an existing local
 
