@@ -28,7 +28,7 @@ The for-loop counter keeps its last assigned value across the exit:
 | `break` somewhere in the body                    | the value at break time     |
 | `continue` to the natural end                    | last in-range value         |
 | Single-iteration range (`for i := 5 to 5 do ;`)  | `5`                         |
-| Empty range (`for i := 10 to 1 do ;`)            | `10` (the from value, body never runs) |
+| Empty range (`for i := 10 to 1 do ;`)            | unchanged (body never runs, counter never assigned) |
 | `downto` natural exit (`for i := 10 downto 1`)   | `1`                         |
 | `downto` with break                              | the value at break time     |
 
