@@ -167,6 +167,7 @@ implementation
       aasmtai,aasmcnst,
       symbase,symtable,defutil,
       nadd,ncal,ncnv,ncon,nflw,ninl,nld,nmem,nutils,
+      ncgrtti,
       ppu,
       pass_1,
       export;
@@ -1298,7 +1299,7 @@ implementation
             begin
               { Create string constant and emit pointer to it }
               unitinits.start_internal_data_builder(current_asmdata.asmlists[al_globals],sec_rodata,'',unitnametcb,unitnamelbl);
-              unitnamedef:=unitnametcb.emit_shortstring_const(entry^.module.realmodulename^);
+              unitnamedef:=unitnametcb.emit_shortstring_const(rtti_string(entry^.module.realmodulename^));
               unitinits.finish_internal_data_builder(unitnametcb,unitnamelbl,unitnamedef,sizeof(pint));
               unitinits.queue_init(charpointertype);
               unitinits.queue_emit_asmsym(unitnamelbl,unitnamedef);
