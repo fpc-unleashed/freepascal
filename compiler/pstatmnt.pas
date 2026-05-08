@@ -1629,6 +1629,7 @@ implementation
          lifetime_handled : boolean;
          lifetime_name : TIDString;
          lifetime_filepos : tfileposinfo;
+         lifetime_tcsym : tstaticvarsym;
 
          procedure pushobjchild(withdef,obj:tobjectdef);
          var
@@ -1667,6 +1668,8 @@ implementation
          lifetime_var := nil;
          lifetime_autofree := false;
          lifetime_init := nil;
+         lifetime_tcsym := nil;
+         hdef := nil;
          if (m_autofree in current_settings.modeswitches) and
             (current_scanner.token in [_VAR,_AUTOFREE]) then
            begin
@@ -1686,12 +1689,36 @@ implementation
                  consume(_ID);
                  if current_scanner.token = _COLON then
                    begin
-                     { Form D: typed declaration, no initializer }
+                     { Form D: typed declaration with optional initializer }
                      block_type := bt_var_type;
                      consume(_COLON);
                      read_anon_type(hdef, false, nil);
                      block_type := bt_var;
                      lifetime_init := nil;
+                     if try_to_consume(_ASSIGNMENT) then
+                       begin
+                         { Aggregate literal init for record/array: reuse
+                           typed-constant parser via a hidden static sym,
+                           then copy it into the with-var. The plain
+                           expression parser cannot handle (a, b, c) form. }
+                         if (current_scanner.token = _LKLAMMER) and
+                            ((hdef.typ = arraydef) or (hdef.typ = recorddef)) then
+                           begin
+                             lifetime_tcsym := cstaticvarsym.create(
+                               '$with_tc_' + lifetime_name, vs_const, hdef, []);
+                             include(lifetime_tcsym.symoptions, sp_internal);
+                             symtablestack.top.insertsym(lifetime_tcsym);
+                             read_typed_const(current_asmdata.asmlists[al_typedconsts],
+                                              lifetime_tcsym, false, false);
+                             lifetime_init := cloadnode.create(lifetime_tcsym, lifetime_tcsym.owner);
+                             do_typecheckpass(lifetime_init);
+                           end
+                         else
+                           begin
+                             lifetime_init := comp_expr([ef_accept_equal]);
+                             do_typecheckpass(lifetime_init);
+                           end;
+                       end;
                    end
                  else
                    begin
@@ -1716,7 +1743,10 @@ implementation
                  lifetime_init := comp_expr([ef_accept_equal]);
                  do_typecheckpass(lifetime_init);
                end;
-             if assigned(lifetime_init) then
+             { Form D already set hdef from the type annotation; only
+               infer hdef from init.resultdef when there was no explicit
+               type (Forms A and C). }
+             if assigned(lifetime_init) and not assigned(hdef) then
                hdef := lifetime_init.resultdef;
              if not assigned(hdef) or (hdef = generrordef) then
                begin
