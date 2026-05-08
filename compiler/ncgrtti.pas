@@ -330,7 +330,7 @@ implementation
                     else
                       tcb.emit_procdef_const(def.invoke_helper);
                     maybe_add_comment(tcb,#9'name');
-                    tcb.emit_pooled_shortstring_const_ref(sym.realname);
+                    tcb.emit_pooled_shortstring_const_ref(rtti_string(sym.realname,nil,tdef(st.defowner)));
 
                     if extended_rtti then
                       begin
