@@ -21,22 +21,32 @@ Strip RTTI does not remove the RTTI structures themselves (they are still walked
 
 When `striprtti` is active, the following shortstrings are nulled:
 
-| Source | What it is | Stripped |
+| Source | What it is | Whitelist via `expose` |
 |---|---|---|
-| RTTI header (`write_header`) | Type name in the `TTypeInfo` block | yes |
-| Object/class RTTI (`write_objectdef_rtti`) | Class real name (`def.objrealname`) | yes |
-| Class VMT (`ncgvmt`) | Class name in the VMT (`_class.RttiName`) | yes |
-| Member RTTI (`write_member_rtti`) | Field/property/method name (`sym.realname`) | yes |
-| Used-units list | Module name in the units-of-use list (`hp.realname`) | yes |
-| Module name (multiple sites) | `current_module.realmodulename^` written into class/interface/object RTTI | yes |
-| Parameter names | Method parameter names in published method RTTI | yes |
-| Type alias name | The `prettyname` written by `write_rtti_data_singleref` for an alias | yes |
+| RTTI header (`write_header`) | Type name in the `TTypeInfo` block | on the type itself |
+| Object/class RTTI (`write_objectdef_rtti`) | Class real name (`def.objrealname`) | on the class |
+| Class VMT (`ncgvmt`) | Class name in the VMT (`_class.RttiName`) | on the class |
+| Type alias name | The `prettyname` written by `write_rtti_data_singleref` | on the alias |
+| Property name (typeinfo) | `sym.realname` for published property | on the owning class |
+| Enum value names | `hp.realname` for each enum value | on the enum type |
+| Procvar parameter names | `parasym.realname` in procvar RTTI | on the procvar type |
+| Method parameter names (extended RTTI) | `para.realname` in extended method table | on the owning class |
+| Published method name (VMT method table) | `tsym.realname` used by `MethodAddress` | on the owning class |
+| Published method name (extended RTTI) | `sym.realname` in extended method entry | on the owning class |
+| Published field name (VMT field table) | `tfieldvarsym.realname` used by `FieldAddress` | on the owning class |
+| Published field name (extended RTTI) | `fldsym.realname` in extended field entry | on the owning class |
+| Module name (RTTI structs) | `current_module.realmodulename^` in class/interface/object RTTI | (not whitelistable per type) |
+| Module name (unit init/finalize table) | Used-unit names in the init/fini dispatch table | (not whitelistable per type) |
+| Used-units list | Module name in the units-of-use list (`hp.realname`) | (not whitelistable per type) |
+
+**Whitelist propagation:** the `expose` keyword on a type sets `df_expose_rtti` on its `tdef`. Members of an exposed type (its properties, enum values, procvar parameters, published methods/fields, and method parameters) inherit the whitelist - their names stay in the binary too. Without `expose` on the parent, members are stripped even if you want a single property name visible; this is by design (whitelist is a per-type opt-in).
 
 The following are **not** stripped (intentionally):
 
 | Source | Why |
 |---|---|
 | Interface GUID string (`def.iidstr^` for `odt_interfacecorba`) | Functional - COM dispatch and `IUnknown.QueryInterface` look it up by string. Stripping breaks COM. |
+| String message handler names (`procedure foo; message 'bar';`) | Functional - runtime message dispatch (Cocoa, Symbian) uses the string for lookup. |
 | Format strings, `writeln` arguments, RTL string constants | These are not RTTI - they are program data. |
 | Symbol names exposed to the linker | Linker-visible symbols are governed by smart-linking and `{$L+}`, not by RTTI stripping. |
 
@@ -134,17 +144,17 @@ Comparisons are case-insensitive (patterns are lowercased on insertion, names lo
 
 ## Side effects
 
-Compiling LCL or anything that walks RTTI by string with `striprtti` on will likely brick the program at startup, because code such as:
+Anything that walks RTTI by string and isn't whitelisted will fail at runtime. Concrete cases:
 
-```pas
-Application.CreateForm(TForm1, Form1);
-```
-
-resolves `TForm1` against the resource section by **string** comparison. With `striprtti` and no whitelist, the compiler emits `''` for the type name - so the lookup looks for `""` and fails.
+- **`Application.CreateForm(TForm1, Form1)`** - resolves `TForm1` against the resource section by string comparison. With `striprtti` and no whitelist, the type name is `''` and the lookup fails.
+- **`SomeObject.MethodAddress('OnClick')`** - the VMT method table has empty names for stripped methods, so the lookup returns `nil`. LCL component event hookup uses this path during form streaming.
+- **`SomeObject.FieldAddress('myButton')`** - same story for the VMT field table.
+- **`GetPropInfo(SomeObject, 'Caption')`** - empty property names in extended RTTI, lookup fails.
+- **`WriteStr(s, someEnumValue)` / `ReadStr(s, someEnumValue)`** - empty enum value names produce empty output / fail to parse input.
 
 The fix is one of:
 
-- whitelist the affected types (preferred): `--rttiexpose=TForm*,TFrame*,TDataModule*` or `expose TForm1 = class(...)` per declaration,
+- whitelist the affected types: `--rttiexpose=TForm*,TFrame*,TDataModule*` or `expose TForm1 = class(...)` per declaration,
 - enable `striprtti` only in units that do not need RTTI lookup (e.g. business-logic units, but not units containing forms),
 - leave `striprtti` off for the whole project (default).
 
@@ -184,8 +194,11 @@ end.
 
 ## Implementation notes
 
-- Decision is encoded as `df_expose_rtti` on `tdef.defoptions` (set during parsing). RTTI emit reads it via the helper `rtti_string(s, def)` in `ncgrtti`.
-- `rtti_string` returns `s` if `striprtti` is off **or** `df_expose_rtti` is set on `def`; otherwise returns `''`. Sites that emit a name without an associated `tdef` (module name, parameter name) call `rtti_string(s)` without `def` - they cannot be whitelisted by name.
+- Decision is encoded as `df_expose_rtti` on `tdef.defoptions` (set during parsing). RTTI emit reads it via the helper `rtti_string(s, def, parent_def)` in `ncgrtti`.
+- `rtti_string` returns `s` if `striprtti` is off **or** `df_expose_rtti` is set on `def` **or** on `parent_def`; otherwise returns `''`.
+  - `def` is the type whose name is being emitted (used at type-name emit sites).
+  - `parent_def` is the owning type for member strings: the class for a property/method/field name, the enum for an enum value, the procvar for a parameter name. This is how an `expose` on the parent propagates to its members.
+  - Sites that emit a name without any associated `tdef` (module name in unit init/finalize table) pass neither - those are stripped unconditionally and not whitelistable per type.
 - The flag is preserved across PPU - whitelisting decisions made in one compile run survive into binary form, so dependent units see the same `df_expose_rtti` state without re-running `--rttiexpose=` matching.
 - Forward declarations (`type TFoo = class;`) - `expose` on the forward applies the flag to the same `tdef` that the final declaration completes, so both writes see it. `{$rttiexpose}` and `--rttiexpose=` match the name when the final declaration is parsed.
 - Generic specialization - the flag follows the specialized def. If you `expose TList<T> = class ...`, every specialization (`TList<integer>`, `TList<string>`, etc.) inherits the flag.
