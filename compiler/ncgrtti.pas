@@ -75,7 +75,7 @@ interface
         procedure write_callconv(tcb:ttai_typedconstbuilder;def:tabstractprocdef);
         procedure write_paralocs(tcb:ttai_typedconstbuilder;para:pcgpara);
         procedure write_param_flag(tcb:ttai_typedconstbuilder;parasym:tparavarsym);
-        procedure write_param(tcb:ttai_typedconstbuilder;para:tparavarsym);
+        procedure write_param(tcb:ttai_typedconstbuilder;para:tparavarsym;parent_def:tdef=nil);
         procedure write_mop_offset_table(tcb:ttai_typedconstbuilder;def:tabstractrecorddef;mop:tmanagementoperator);
         procedure maybe_add_comment(tcb:ttai_typedconstbuilder;const comment : string); inline;
       public
@@ -350,7 +350,7 @@ implementation
                       end;
 
                     for k:=0 to def.paras.count-1 do
-                        write_param(tcb,tparavarsym(def.paras[k]));
+                        write_param(tcb,tparavarsym(def.paras[k]),tdef(st.defowner));
 
                     if not is_void(def.returndef) then
                       begin
@@ -556,7 +556,7 @@ implementation
       end;
 
     procedure TRTTIWriter.write_param(tcb: ttai_typedconstbuilder;
-      para: tparavarsym);
+      para: tparavarsym; parent_def: tdef);
       begin
         maybe_add_comment(tcb,'RTTI: begin param '+para.prettyname);
         tcb.begin_anonymous_record('',defaultpacking,min(reqalign,SizeOf(PInt)),
@@ -573,7 +573,7 @@ implementation
         write_param_flag(tcb,para);
 
         maybe_add_comment(tcb,#9'name');
-        tcb.emit_pooled_shortstring_const_ref(para.realname);
+        tcb.emit_pooled_shortstring_const_ref(rtti_string(para.realname,nil,parent_def));
 
         maybe_add_comment(tcb,#9'locs');
         write_paralocs(tcb,@para.paraloc[callerside]);
@@ -1114,7 +1114,7 @@ implementation
                 begin
                   if tsym(paramst.symlist[i]).typ<>paravarsym then
                     Internalerror(2024103101);
-                  write_param(paramtcb,tparavarsym(paramst.symlist[i]));
+                  write_param(paramtcb,tparavarsym(paramst.symlist[i]),tdef(st.defowner));
                 end;
 
 
