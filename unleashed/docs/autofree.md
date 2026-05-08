@@ -192,20 +192,15 @@ begin
 end;
 ```
 
-### Form D: inline-var declaration, no initializer
+### Form D: inline-var declaration with explicit type
 
 ```pas
-with var p: record x, y: integer; end do
-begin
-  p.x := 10;
-  p.y := 20;
-  writeln(x, ' ', y);   // with-symtable lookup
-end;
+with var NAME : TYPE [:= INIT] do BODY
 ```
 
-Declares a local of the given type, scoped to the with-body. No initializer is provided - the variable is left at its default state (managed types init'd, ordinals zero, records uninitialized) and `vs_declared`, so a read before write triggers the regular uninitialized-variable warning.
+Declares a local of the given type, scoped to the with-body. Mirror of Form C but with an explicit type instead of type inference; the initializer is optional.
 
-Useful for stack-allocating an anonymous-record or short-lived local without polluting the enclosing routine's var section:
+**Without initializer** - useful for stack-allocating a record local that the body fills in directly:
 
 ```pas
 type TPoint = record a: integer; b: dword; end;
@@ -219,7 +214,27 @@ end;
 // t goes out of scope here
 ```
 
-`autofree` is not allowed in this form (no initializer means no class instance to free).
+The variable is left at its default state (managed types init'd, ordinals zero, records uninitialized) with varstate `vs_declared`, so a read before write triggers the regular uninitialized-variable warning.
+
+**With initializer** - any expression assignable to the declared type, including aggregate literals for records and arrays (the same shape `(field: val; ...)` / `(a, b, c)` accepted by typed constants):
+
+```pas
+// record aggregate
+with var p: TPoint := (a: 1; b: 2) do
+  writeln(a, ' ', b);              // 1 2
+
+// regular expression init (record copy)
+var src: TPoint;
+src.a := 100; src.b := 200;
+with var p: TPoint := src do
+  writeln(p.a, ' ', p.b);          // 100 200
+
+// anonymous record type
+with var q: record x, y: integer; end := (x: 5; y: 6) do
+  writeln(x, ' ', y);              // 5 6
+```
+
+`autofree` is not accepted in Form D (the keyword belongs to the inferred-type Form C path).
 
 ### Form B: bind to an existing local
 
