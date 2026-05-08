@@ -893,7 +893,7 @@ implementation
             { FieldVisibility }
             tcb.emit_ord_const(visibility_to_rtti_flags(fldsym.visibility),u8inttype);
             { Name }
-            tcb.emit_pooled_shortstring_const_ref(fldsym.realname);
+            tcb.emit_pooled_shortstring_const_ref(rtti_string(fldsym.realname,nil,def));
             { Attribute table }
             if assigned(fldsym.rtti_attribute_list) and assigned(fldsym.rtti_attribute_list.rtti_attributes) then
               cnt:=fldsym.rtti_attribute_list.rtti_attributes.count

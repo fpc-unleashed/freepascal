@@ -701,7 +701,7 @@ implementation
                         if classindex=-1 then
                           internalerror(200611033);
                         datatcb.emit_tai(Tai_const.Create_16bit(classindex+1),u16inttype);
-                        datatcb.emit_shortstring_const(tfieldvarsym(sym).realname);
+                        datatcb.emit_shortstring_const(rtti_string(tfieldvarsym(sym).realname,nil,_class));
                         datatcb.end_anonymous_record;
                       end;
                   end;
