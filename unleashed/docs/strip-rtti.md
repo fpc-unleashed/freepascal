@@ -78,6 +78,32 @@ type
   expose TColor = (red, green, blue); // and on enums, sets, ranges, aliases...
 ```
 
+#### Where `expose` can be used
+
+The keyword is a generic prefix: parser sets a boolean before reading the type, and the resulting `tdef` (whatever kind) gets `df_expose_rtti`. So `expose` works in front of every kind of type Pascal allows in a `type` block:
+
+| Type kind | Example |
+|---|---|
+| class | `expose TForm1 = class(TForm) ... end;` |
+| object | `expose TOldObj = object ... end;` |
+| interface | `expose IFoo = interface ... end;` |
+| record | `expose TPoint = record x, y: integer; end;` |
+| class helper | `expose TStrHelper = class helper for string ... end;` |
+| record / type helper | `expose THelp = record helper for integer ... end;` |
+| enumeration | `expose TColor = (red, green, blue);` |
+| subrange | `expose TDay = 1..7;` |
+| set | `expose TColors = set of TColor;` |
+| static array | `expose TBuf = array[0..15] of byte;` |
+| dynamic array | `expose TIntArr = array of integer;` |
+| pointer | `expose PNode = ^TNode;` |
+| procedural / procvar | `expose TCallback = procedure(x: integer) of object;` |
+| weak alias | `expose TMyInt = integer;` |
+| strong alias | `expose TMyInt = type integer;` |
+| generic | `expose generic TList<T> = class ... end;` |
+| file type | `expose TLogFile = file of TRecord;` |
+
+What gets kept depends on the type kind, because of the propagation rules - exposing a class keeps its property/method/field/method-param names; exposing an enum keeps its value names; exposing a procvar keeps its parameter names; exposing a record keeps the type name. See the propagation rules above.
+
 The keyword is gated on `m_unleashed`, not on `m_strip_rtti`. That means:
 
 - In any other mode, `expose` is a regular identifier - existing code with a field, variable, or routine called `expose` keeps compiling.
