@@ -47,6 +47,10 @@ interface
          Created by parser, rewritten away in statement_block post-pass.
          Should never reach typecheck/firstpass - internalerror if it does. }
        tdefernode = class(tunarynode)
+          { true when the defer is bound to a variable's scope (classic-var
+            autofree desugar) - inner-block rewrites must skip it, only the
+            variable's owning scope captures it }
+          var_scope : boolean;
           constructor create(l:tnode);virtual;
           function pass_1 : tnode;override;
           function pass_typecheck:tnode;override;

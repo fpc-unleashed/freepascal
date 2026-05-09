@@ -65,7 +65,7 @@ implementation
 
     function statement : tnode;forward;
     function defer_statement : tnode;forward;
-    procedure rewrite_defers_in_block(var first: tnode);forward;
+    procedure rewrite_defers_in_block(var first: tnode; is_routine_body: boolean = false);forward;
 
     function branch_type(olddef, branchdef: tdef): tdef; inline;
       begin
@@ -3908,8 +3908,12 @@ implementation
 
       pdefercollect = ^tdefercollect;
       tdefercollect = record
-        items   : tfplist;
-        counter : longint;
+        items           : tfplist;
+        counter         : longint;
+        { capture classic-var autofree defers (bnf_defer_var_scope blocks)
+          only when rewriting the routine's main begin..end -- otherwise
+          they leak into try-body / nested-block / with-body scopes }
+        is_routine_body : boolean;
       end;
 
 
@@ -3941,13 +3945,18 @@ implementation
         asgn    : tnode;
       begin
         result:=fen_false;
+        ctx:=pdefercollect(arg);
         // inner blocks have their own defer scope - skip, unless flagged
         // as a parser-generated helper (e.g. autofree desugar)
         if (n.nodetype=blockn) and not (bnf_defer_transparent in tblocknode(n).blocknodeflags) then
           exit(fen_norecurse_false);
         if n.nodetype=defern then
           begin
-            ctx:=pdefercollect(arg);
+            // classic-var autofree's defer is bound to the variable's scope,
+            // not whatever block surrounds the assignment - leave it alone
+            // for an outer rewrite to capture at the variable's owning scope
+            if tdefernode(n).var_scope and not ctx^.is_routine_body then
+              exit(fen_false);
             inc(ctx^.counter);
             str(ctx^.counter,flagname);
             flagname:='$defer_flag_'+flagname;
@@ -3973,7 +3982,7 @@ implementation
       end;
 
 
-    procedure rewrite_defers_in_block(var first: tnode);
+    procedure rewrite_defers_in_block(var first: tnode; is_routine_body: boolean = false);
       var
         ctx          : tdefercollect;
         i            : longint;
@@ -3987,6 +3996,7 @@ implementation
       begin
         ctx.items:=tfplist.create;
         ctx.counter:=0;
+        ctx.is_routine_body:=is_routine_body;
         try
           foreachnodestatic(pm_preprocess,first,@defer_collect_callback,@ctx);
           if ctx.items.count=0 then
@@ -4042,6 +4052,7 @@ implementation
          first,last : tnode;
          filepos : tfileposinfo;
          blockst : tblocksymtable;
+         is_routine_body : boolean;
 
       begin
          first:=nil;
@@ -4049,19 +4060,24 @@ implementation
          filepos:=current_tokenpos;
          consume(starttoken);
 
+         { capture whether this is the routine's main begin..end before
+           consuming the flag - used by rewrite_defers_in_block to decide
+           whether to capture classic-var autofree defers (which belong to
+           the variable's scope, i.e. routine, not to inner blocks) }
+         is_routine_body := assigned(current_procinfo) and (starttoken=_BEGIN) and
+                            current_procinfo.parsing_main_block;
+         if is_routine_body then
+           current_procinfo.parsing_main_block:=false;
+
          { Push a block-scope symtable so that inline vars declared inside
            this begin..end are scoped to the block (Delphi-style).
            Only active when m_inline_var is set; avoids overhead in other modes. }
          blockst:=nil;
-         if assigned(current_procinfo) and (m_inline_var in current_settings.modeswitches) then
+         if assigned(current_procinfo) and (m_inline_var in current_settings.modeswitches) and
+            not is_routine_body then
            begin
-             if (starttoken=_BEGIN) and current_procinfo.parsing_main_block then
-               current_procinfo.parsing_main_block:=false
-             else
-               begin
-                 blockst:=tblocksymtable.create(symtablestack.top);
-                 symtablestack.push(blockst);
-               end;
+             blockst:=tblocksymtable.create(symtablestack.top);
+             symtablestack.push(blockst);
            end;
 
          while not((current_scanner.token=_END) or (current_scanner.token=_FINALIZATION)) do
@@ -4101,7 +4117,7 @@ implementation
            Must run while the block-scope symtable is still on the stack so that
            generated flag-vars land in the right scope. No-op if no defer in tree. }
          if assigned(first) then
-           rewrite_defers_in_block(first);
+           rewrite_defers_in_block(first, is_routine_body);
 
          { Pop the block-scope symtable and keep it on the procdef so nested
            debug scopes can still follow the original parent chain later on. }

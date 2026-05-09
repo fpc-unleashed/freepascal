@@ -5930,6 +5930,7 @@ implementation
         free_guarded : tnode;
         chain_block  : tblocknode;
         chain_stat   : tstatementnode;
+        defer_node   : tdefernode;
       begin
         // require a simple variable load on the LHS
         if lhs.nodetype <> loadn then
@@ -5961,7 +5962,12 @@ implementation
         chain_block := internalstatements(chain_stat);
         Include(chain_block.blocknodeflags, bnf_defer_transparent);
         addstatement(chain_stat, cassignmentnode.create(lhs, rhs));
-        addstatement(chain_stat, cdefernode.create(free_guarded));
+        // mark the defer as bound to the variable's scope -- inner-block
+        // rewrites (try-body, nested begin..end, with-body) must skip it;
+        // only the routine's main begin..end captures it
+        defer_node := cdefernode.create(free_guarded);
+        defer_node.var_scope := true;
+        addstatement(chain_stat, defer_node);
         result := chain_block;
       end;
 
