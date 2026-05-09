@@ -195,10 +195,10 @@ end;
 ### Form D: inline-var declaration with explicit type
 
 ```pas
-with var NAME : TYPE [:= INIT] do BODY
+with var NAME : TYPE [:= [autofree] INIT] do BODY
 ```
 
-Declares a local of the given type, scoped to the with-body. Mirror of Form C but with an explicit type instead of type inference; the initializer is optional.
+Declares a local of the given type, scoped to the with-body. Mirror of Form C but with an explicit type instead of type inference; the initializer is optional, and accepts the same `autofree` modifier when present.
 
 **Without initializer** - useful for stack-allocating a record local that the body fills in directly:
 
@@ -234,7 +234,15 @@ with var q: record x, y: integer; end := (x: 5; y: 6) do
   writeln(x, ' ', y);              // 5 6
 ```
 
-`autofree` is not accepted in Form D (the keyword belongs to the inferred-type Form C path).
+**With `autofree`** - explicit-type variant of Form C's auto-cleanup, useful when you want the type written in source rather than inferred:
+
+```pas
+with var a: TStringList := autofree TStringList.Create do
+  a.Add('hello');
+// a.Free called here
+```
+
+`autofree` requires a class derived from `TObject`; aggregate-literal init on records/arrays still rejects it with `parser_e_autofree_requires_class`. Without an initializer there is no instance to free, so `autofree` only makes sense in the `:= EXPR` form.
 
 ### Form B: bind to an existing local
 
