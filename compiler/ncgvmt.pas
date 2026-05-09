@@ -494,7 +494,7 @@ implementation
               begin
                 { l: name_of_method }
                 lists^.pubmethodstcb.start_internal_data_builder(current_asmdata.AsmLists[al_const],sec_rodata,_class.vmt_mangledname,datatcb,l);
-                namedef:=datatcb.emit_shortstring_const(tsym(p).realname);
+                namedef:=datatcb.emit_shortstring_const(rtti_string(tsym(p).realname,nil,_class));
                 lists^.pubmethodstcb.finish_internal_data_builder(datatcb,l,namedef,sizeof(pint));
                 { the tmethodnamerec }
                 lists^.pubmethodstcb.maybe_begin_aggregate(lists^.methodnamerec);
@@ -701,7 +701,7 @@ implementation
                         if classindex=-1 then
                           internalerror(200611033);
                         datatcb.emit_tai(Tai_const.Create_16bit(classindex+1),u16inttype);
-                        datatcb.emit_shortstring_const(tfieldvarsym(sym).realname);
+                        datatcb.emit_shortstring_const(rtti_string(tfieldvarsym(sym).realname,nil,_class));
                         datatcb.end_anonymous_record;
                       end;
                   end;

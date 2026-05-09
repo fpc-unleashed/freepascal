@@ -31,10 +31,11 @@ interface
       symbase,symconst,symtype,symdef,symsym,
       parabase;
 
-    { returns s if rtti stripping is off or def is whitelisted via df_expose_rtti,
-      otherwise returns empty string. used by ncgrtti/ncgvmt at every place where
-      a type-name shortstring would otherwise leak into the binary }
-    function rtti_string(const s: shortstring; def: tdef = nil): shortstring;
+    { returns s if rtti stripping is off or def/parent_def is whitelisted via
+      df_expose_rtti, otherwise returns empty string. parent_def is for member
+      strings (field/method/property/param/enum value): if the owning type is
+      exposed, the member keeps its name too }
+    function rtti_string(const s: shortstring; def: tdef = nil; parent_def: tdef = nil): shortstring;
 
     type
 
@@ -74,7 +75,7 @@ interface
         procedure write_callconv(tcb:ttai_typedconstbuilder;def:tabstractprocdef);
         procedure write_paralocs(tcb:ttai_typedconstbuilder;para:pcgpara);
         procedure write_param_flag(tcb:ttai_typedconstbuilder;parasym:tparavarsym);
-        procedure write_param(tcb:ttai_typedconstbuilder;para:tparavarsym);
+        procedure write_param(tcb:ttai_typedconstbuilder;para:tparavarsym;parent_def:tdef=nil);
         procedure write_mop_offset_table(tcb:ttai_typedconstbuilder;def:tabstractrecorddef;mop:tmanagementoperator);
         procedure maybe_add_comment(tcb:ttai_typedconstbuilder;const comment : string); inline;
       public
@@ -126,11 +127,12 @@ implementation
        end;
 
 
-    function rtti_string(const s: shortstring; def: tdef = nil): shortstring;
+    function rtti_string(const s: shortstring; def: tdef = nil; parent_def: tdef = nil): shortstring;
       begin
         result := s;
         if not (m_strip_rtti in current_settings.modeswitches) then exit;
         if assigned(def) and (df_expose_rtti in tstoreddef(def).defoptions) then exit;
+        if assigned(parent_def) and (df_expose_rtti in tstoreddef(parent_def).defoptions) then exit;
         result := '';
       end;
 
@@ -328,7 +330,7 @@ implementation
                     else
                       tcb.emit_procdef_const(def.invoke_helper);
                     maybe_add_comment(tcb,#9'name');
-                    tcb.emit_pooled_shortstring_const_ref(sym.realname);
+                    tcb.emit_pooled_shortstring_const_ref(rtti_string(sym.realname,nil,tdef(st.defowner)));
 
                     if extended_rtti then
                       begin
@@ -348,7 +350,7 @@ implementation
                       end;
 
                     for k:=0 to def.paras.count-1 do
-                        write_param(tcb,tparavarsym(def.paras[k]));
+                        write_param(tcb,tparavarsym(def.paras[k]),tdef(st.defowner));
 
                     if not is_void(def.returndef) then
                       begin
@@ -554,7 +556,7 @@ implementation
       end;
 
     procedure TRTTIWriter.write_param(tcb: ttai_typedconstbuilder;
-      para: tparavarsym);
+      para: tparavarsym; parent_def: tdef);
       begin
         maybe_add_comment(tcb,'RTTI: begin param '+para.prettyname);
         tcb.begin_anonymous_record('',defaultpacking,min(reqalign,SizeOf(PInt)),
@@ -571,7 +573,7 @@ implementation
         write_param_flag(tcb,para);
 
         maybe_add_comment(tcb,#9'name');
-        tcb.emit_pooled_shortstring_const_ref(para.realname);
+        tcb.emit_pooled_shortstring_const_ref(rtti_string(para.realname,nil,parent_def));
 
         maybe_add_comment(tcb,#9'locs');
         write_paralocs(tcb,@para.paraloc[callerside]);
@@ -891,7 +893,7 @@ implementation
             { FieldVisibility }
             tcb.emit_ord_const(visibility_to_rtti_flags(fldsym.visibility),u8inttype);
             { Name }
-            tcb.emit_pooled_shortstring_const_ref(fldsym.realname);
+            tcb.emit_pooled_shortstring_const_ref(rtti_string(fldsym.realname,nil,def));
             { Attribute table }
             if assigned(fldsym.rtti_attribute_list) and assigned(fldsym.rtti_attribute_list.rtti_attributes) then
               cnt:=fldsym.rtti_attribute_list.rtti_attributes.count
@@ -1112,7 +1114,7 @@ implementation
                 begin
                   if tsym(paramst.symlist[i]).typ<>paravarsym then
                     Internalerror(2024103101);
-                  write_param(paramtcb,tparavarsym(paramst.symlist[i]));
+                  write_param(paramtcb,tparavarsym(paramst.symlist[i]),tdef(st.defowner));
                 end;
 
 
@@ -1198,7 +1200,7 @@ implementation
             { write property name }
             if addcomments then
               tcb.emit_comment(#9'name');
-            tcb.emit_shortstring_const(rtti_string(sym.realname));
+            tcb.emit_shortstring_const(rtti_string(sym.realname,nil,tdef(st.defowner)));
             result:=tcb.end_anonymous_record;
             if addcomments then
               tcb.emit_comment('RTTI: End propinfo record '+sym.realname);
@@ -1372,7 +1374,7 @@ implementation
               if hp.value>def.maxval then
                 break;
               tcb.next_field_name:=hp.name;
-              tcb.emit_shortstring_const(rtti_string(hp.realname));
+              tcb.emit_shortstring_const(rtti_string(hp.realname,nil,def));
             end;
           { write unit name }
           tcb.emit_shortstring_const(rtti_string(current_module.realmodulename^));
@@ -1826,7 +1828,7 @@ implementation
                { write flags for current parameter }
                write_param_flag(tcb,parasym);
                { write name of current parameter }
-               tcb.emit_shortstring_const(rtti_string(parasym.realname));
+               tcb.emit_shortstring_const(rtti_string(parasym.realname,nil,def));
                { write name of type of current parameter }
                write_rtti_name(tcb,parasym.vardef);
              end;
@@ -1848,7 +1850,7 @@ implementation
                else
                  write_rtti_reference(tcb,parasym.vardef,fullrtti);
                { write name of current parameter }
-               tcb.emit_shortstring_const(rtti_string(parasym.realname));
+               tcb.emit_shortstring_const(rtti_string(parasym.realname,nil,def));
                tcb.end_anonymous_record;
              end;
 
