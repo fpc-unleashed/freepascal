@@ -1697,12 +1697,19 @@ implementation
                      lifetime_init := nil;
                      if try_to_consume(_ASSIGNMENT) then
                        begin
+                         if current_scanner.token = _AUTOFREE then
+                           begin
+                             consume(_AUTOFREE);
+                             lifetime_autofree := true;
+                             lifetime_init := comp_expr([ef_accept_equal]);
+                             do_typecheckpass(lifetime_init);
+                           end
                          { Aggregate literal init for record/array: reuse
                            typed-constant parser via a hidden static sym,
                            then copy it into the with-var. The plain
                            expression parser cannot handle (a, b, c) form. }
-                         if (current_scanner.token = _LKLAMMER) and
-                            ((hdef.typ = arraydef) or (hdef.typ = recorddef)) then
+                         else if (current_scanner.token = _LKLAMMER) and
+                                 ((hdef.typ = arraydef) or (hdef.typ = recorddef)) then
                            begin
                              lifetime_tcsym := cstaticvarsym.create(
                                '$with_tc_' + lifetime_name, vs_const, hdef, []);
