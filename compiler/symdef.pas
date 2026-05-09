@@ -1672,6 +1672,10 @@ implementation
         if not assigned(st) then
          internalerror(200204212);
         repeat
+          { peel transparent block-scope layers - they don't contribute
+            to the mangled name (Delphi-style inline-var scopes) }
+          while st.symtabletype=blocksymtable do
+            st:=tblocksymtable(st).blockparentst;
           { sub procedures }
           while (st.symtabletype in [localsymtable,parasymtable]) do
            begin

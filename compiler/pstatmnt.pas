@@ -1630,6 +1630,8 @@ implementation
          lifetime_name : TIDString;
          lifetime_filepos : tfileposinfo;
          lifetime_tcsym : tstaticvarsym;
+         lifetime_name_suffix : string[16];
+         withblockst : tblocksymtable;
 
          procedure pushobjchild(withdef,obj:tobjectdef);
          var
@@ -1669,11 +1671,20 @@ implementation
          lifetime_autofree := false;
          lifetime_init := nil;
          lifetime_tcsym := nil;
+         withblockst := nil;
          hdef := nil;
          if (m_autofree in current_settings.modeswitches) and
             (current_scanner.token in [_VAR,_AUTOFREE]) then
            begin
              lifetime_filepos := current_filepos;
+             { scope the inline var (and any hidden tcsym) to the with-body
+               via a dedicated block symtable, so the same name can appear
+               in a later sibling `with var NAME` in the same routine }
+             if assigned(current_procinfo) then
+               begin
+                 withblockst := tblocksymtable.create(symtablestack.top);
+                 symtablestack.push(withblockst);
+               end;
              if current_scanner.token = _VAR then
                begin
                  { Form C:  with var NAME := [autofree] EXPR do BODY
@@ -1682,6 +1693,11 @@ implementation
                  if current_scanner.token <> _ID then
                    begin
                      consume(_ID);   { trigger expected-identifier error }
+                     if assigned(withblockst) then
+                       begin
+                         symtablestack.pop(withblockst);
+                         withblockst.free;
+                       end;
                      result := cerrornode.create;
                      exit;
                    end;
@@ -1711,8 +1727,13 @@ implementation
                          else if (current_scanner.token = _LKLAMMER) and
                                  ((hdef.typ = arraydef) or (hdef.typ = recorddef)) then
                            begin
+                             { suffix with line number so multiple sibling
+                               `with var NAME : TYPE := (...)` in the same
+                               routine don't share an asm label }
+                             system.str(lifetime_filepos.line, lifetime_name_suffix);
                              lifetime_tcsym := cstaticvarsym.create(
-                               '$with_tc_' + lifetime_name, vs_const, hdef, []);
+                               '$with_tc_' + lifetime_name + '_' + lifetime_name_suffix,
+                               vs_const, hdef, []);
                              include(lifetime_tcsym.symoptions, sp_internal);
                              symtablestack.top.insertsym(lifetime_tcsym);
                              read_typed_const(current_asmdata.asmlists[al_typedconsts],
@@ -1758,6 +1779,11 @@ implementation
              if not assigned(hdef) or (hdef = generrordef) then
                begin
                  if assigned(lifetime_init) then lifetime_init.free;
+                 if assigned(withblockst) then
+                   begin
+                     symtablestack.pop(withblockst);
+                     withblockst.free;
+                   end;
                  result := cerrornode.create;
                  exit;
                end;
@@ -1766,18 +1792,23 @@ implementation
                begin
                  Message(parser_e_autofree_requires_class);
                  if assigned(lifetime_init) then lifetime_init.free;
+                 if assigned(withblockst) then
+                   begin
+                     symtablestack.pop(withblockst);
+                     withblockst.free;
+                   end;
                  result := cerrornode.create;
                  exit;
                end;
-             { create the holder variable in the enclosing routine scope
-               (skip past any with-symtables already on the stack from
-               earlier multi-with entries). }
-             if assigned(current_procinfo) and
-                assigned(current_procinfo.procdef.localst) then
+             { create the holder variable scoped to the with-body. With
+               `withblockst` pushed, symtablestack.top is the block symtable
+               that gets popped at the end of `with`, so a sibling `with var
+               NAME` can reuse the same name. }
+             if assigned(withblockst) then
                begin
                  lifetime_var := clocalvarsym.create(lifetime_name, vs_value, hdef, []);
                  lifetime_var.register_sym;
-                 current_procinfo.procdef.localst.insertsym(lifetime_var);
+                 symtablestack.top.insertsym(lifetime_var);
                end
              else
                begin
@@ -1904,7 +1935,7 @@ implementation
                (
                 (tloadnode(hp).symtable=current_procinfo.procdef.localst) or
                 (tloadnode(hp).symtable=current_procinfo.procdef.parast) or
-                (tloadnode(hp).symtable.symtabletype in [staticsymtable,globalsymtable])
+                (tloadnode(hp).symtable.symtabletype in [staticsymtable,globalsymtable,blocksymtable])
                ) and
                { MacPas objects are mapped to classes, and the MacPas compilers
                  interpret with-statements with MacPas objects the same way
@@ -2096,6 +2127,19 @@ implementation
               symtablestack.pop(TSymtable(withsymtablelist[i]));
             withsymtablelist.free;
             withsymtablelist := nil;
+
+            { pop the with-var block symtable (if any) and hand it to the
+              procdef so its locals get stack space allocated; the wrapping
+              newblock keeps a reference for debug-info scoping }
+            if assigned(withblockst) then
+              begin
+                symtablestack.pop(withblockst);
+                if not assigned(current_procinfo.procdef.blocklocalsymtables) then
+                  current_procinfo.procdef.blocklocalsymtables := tfpobjectlist.create(true);
+                current_procinfo.procdef.blocklocalsymtables.add(withblockst);
+                if assigned(newblock) then
+                  tblocknode(newblock).blocksymtable := withblockst;
+              end;
 
             { FPC Unleashed: scoped-with -- rewrite any defers the body
               registered (e.g. `with X do defer Foo;` or stray defers in
