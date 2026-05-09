@@ -75,3 +75,15 @@ Catch-all page for smaller, targeted improvements that unlock Pascal patterns st
 Two delimiter forms for string literals spanning multiple source lines without manual `+` or `LineEnding`: backtick `` `...` `` (extended literal, embedded newlines tolerated) and a separate triple-quote form with indentation handling. They differ in tokenization and composition rules - the page covers both in depth, including escaping and interaction with concatenation. Stock FPC actually accepts these but never documented them; this page fills that gap.
 
 Enabled via `{$modeswitch multilinestrings}`.
+
+## [Strip RTTI](strip-rtti.md)
+
+Replaces type-name strings emitted into RTTI / VMT structures with empty strings, so an ASCII dump of the binary no longer reveals the program's internal type structure. Comes with three whitelisting mechanisms: the `expose` keyword (per-declaration), the `{$rttiexpose}` directive (per-unit glob list), and the `--rttiexpose=` CLI flag (global glob list). The whitelisting decision is precomputed once per type at parse time and stored as a flag on the `tdef`, so RTTI emit stays cheap.
+
+Enabled via `{$modeswitch striprtti}`. Off by default in `unleashed` mode.
+
+## [Custom Binary Metadata](binary-metadata.md)
+
+Three CLI flags that override metadata fields the compiler embeds into the produced binary: `--fpcsignature=` (the `.fpc.version` ident string, every target), `--linkerversion=` (PE optional header linker version, Windows only), `--osversion=` (PE optional header minimum OS version, Windows only, accepts symbolic names like `Win11` or numeric `Major.Minor`). Useful for distribution branding, build mimicry, and loader gating.
+
+CLI-only; no directive form.

@@ -933,7 +933,8 @@ implementation
          first,
          isgeneric,
          isunique,
-         istyperenaming : boolean;
+         istyperenaming,
+         expose_this : boolean;
          generictypelist : tfphashobjectlist;
          localgenerictokenbuf : tdynamicarray;
          p:tnode;
@@ -958,6 +959,7 @@ implementation
            defpos:=current_tokenpos;
            istyperenaming:=false;
            setdummysym:=false;
+           expose_this:=false;
            generictypelist:=nil;
            localgenerictokenbuf:=nil;
 
@@ -974,6 +976,19 @@ implementation
            typename:=current_scanner.pattern;
            orgtypename:=current_scanner.orgpattern;
            consume(_ID);
+
+           { unleashed: `expose <typename> = ...` whitelists the type from
+             m_strip_rtti. `expose` stays a regular identifier so `var expose:
+             integer;` keeps compiling; only when we read it before another
+             identifier in a type block do we treat it as a prefix }
+           if (m_unleashed in current_settings.modeswitches) and
+              (typename='EXPOSE') and (current_scanner.token=_ID) then
+             begin
+               expose_this:=true;
+               typename:=current_scanner.pattern;
+               orgtypename:=current_scanner.orgpattern;
+               consume(_ID);
+             end;
 
            { delphi generic declaration? }
            if (m_implicit_generics in current_settings.modeswitches) then
@@ -1405,6 +1420,10 @@ implementation
                 { flag parent symtables that they now contain a generic }
                 hdef.owner.includeoption(sto_has_generic);
             end;
+
+           if assigned(hdef) and (hdef is tstoreddef) and
+              (expose_this or rtti_should_expose(orgtypename)) then
+             include(tstoreddef(hdef).defoptions,df_expose_rtti);
 
            if isgeneric and (not(hdef.typ in [objectdef,recorddef,arraydef,procvardef])
                or is_objectpascal_helper(hdef)) then

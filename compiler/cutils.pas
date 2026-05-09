@@ -134,6 +134,15 @@ interface
     function CompareStr(const S1, S2: string): Integer;
     function CompareText(S1, S2: string): integer;
 
+    { glob match with `*` wildcard (matches zero or more chars). both s
+      and pattern are compared case-sensitively; lowercase them before calling
+      if you want a case-insensitive match }
+    function glob_matches(const s, pattern: ansistring): boolean;
+
+    { parses `Major[.Minor]` (e.g. `14.39` or `10`) into two words. trailing
+      garbage and missing minor are accepted as 0; returns false on no match }
+    function parse_version_string(const s: string; out major, minor: word): boolean;
+
     { releases the string p and assigns nil to p  }
     { if p=nil then freemem isn't called          }
     procedure stringdispose(var p : pshortstring);{$ifdef USEINLINE}inline;{$endif}
@@ -1255,6 +1264,57 @@ implementation
         UpperVar(S1);
         UpperVar(S2);
         Result:=CompareStr(S1,S2);
+      end;
+
+
+    function glob_matches(const s, pattern: ansistring): boolean;
+      var
+        i, j, p, m: integer;
+      begin
+        i := 1; j := 1; p := 0; m := 0;
+        while i <= length(s) do begin
+          if (j <= length(pattern)) and ((pattern[j] = s[i]) or (pattern[j] = '*')) then begin
+            if pattern[j] = '*' then begin
+              p := j;
+              m := i;
+              inc(j);
+            end else begin
+              inc(i);
+              inc(j);
+            end;
+          end else if p <> 0 then begin
+            j := p+1;
+            inc(m);
+            i := m;
+          end else exit(false);
+        end;
+        while (j <= length(pattern)) and (pattern[j] = '*') do inc(j);
+        result := j > length(pattern);
+      end;
+
+
+    function parse_version_string(const s: string; out major, minor: word): boolean;
+      var
+        dot, code: integer;
+        v: longint;
+      begin
+        major := 0;
+        minor := 0;
+        if s = '' then exit(false);
+        dot := pos('.', s);
+        if dot = 0 then begin
+          val(s, v, code);
+          if code <> 0 then exit(false);
+          major := v;
+          exit(true);
+        end;
+        val(copy(s, 1, dot-1), v, code);
+        if code <> 0 then exit(false);
+        major := v;
+        val(copy(s, dot+1), v, code);
+        if code <> 0 then exit(false);
+        minor := v;
+        result := true;
       end;
 
 

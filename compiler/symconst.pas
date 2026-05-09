@@ -255,7 +255,10 @@ type
     {  never use the typename for this type, always expand full definition }
     df_llvm_no_typename,
     { record def that backs an anonymous tuple type }
-    df_tuple
+    df_tuple,
+    { keep type-name string in RTTI/VMT even when m_strip_rtti is active;
+      set by expose keyword, rttiexpose directive, or --rttiexpose= CLI }
+    df_expose_rtti
   );
   tdefoptions=set of tdefoption;
 

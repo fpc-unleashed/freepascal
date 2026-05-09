@@ -21,10 +21,11 @@
   - [Tweaks](#tweaks)
   - [Multiline Strings](#multiline-strings)
   - [Array Equality](#array-equality)
-  - [No RTTI](#no-rtti)
+  - [Strip RTTI](#strip-rtti)
   - [Indexed Labels](#indexed-labels)
   - [Lazy Label Declarations](#lazy-label-declarations)
   - [Compound Assignment for Pascal Operators](#compound-assignment-for-pascal-operators)
+  - [Custom Binary Metadata](#custom-binary-metadata)
   - [Extra Improvements](#extra-improvements)
   - [Detailed Documentation](#detailed-documentation)
 - [Installation](#installation)
@@ -616,9 +617,9 @@ end.
 
 ---
 
-### No RTTI
+### Strip RTTI
 
-**Activate:** `{$modeswitch nortti}`
+**Activate:** `{$modeswitch striprtti}`
 
 > [!IMPORTANT]
 > This modeswitch is **not** enabled by default in unleashed mode. It must be opted into explicitly.
@@ -640,7 +641,7 @@ For instance, in the context of game cheats, embedding a name like `TGameWallhac
 ```pas
 program MyCoolCheat;
 
-{$modeswitch nortti}
+{$modeswitch striprtti}
 
 type
   TMyAwesomeCheatBase = class
@@ -747,7 +748,7 @@ end.
 <table>
 <tr>
 <th>Standard</th>
-<th>With <code>{$modeswitch nortti}</code></th>
+<th>With <code>{$modeswitch striprtti}</code></th>
 </tr>
 <tr>
 <td valign="top" style="font-size:smaller">
@@ -788,7 +789,7 @@ Type names like `TGameAimbot`, `TGameWallhack`, or `MyCoolCheat` are no longer p
 
 #### Side effects
 
-Compiling a typical LCL application with `nortti` enabled will likely result in a startup failure, because code such as:
+Compiling a typical LCL application with `striprtti` enabled will likely result in a startup failure, because code such as:
 ```pascal
 application.createform(TForm1, form1);
 ```
@@ -797,27 +798,34 @@ will search for `""` (empty string) in the resources instead of `TForm1`, and fa
 
 #### Workaround
 
-Two ways are provided to selectively whitelist identifiers that should remain visible:
+Three ways are provided to selectively whitelist types that should keep their RTTI name:
 
-**1. `{$expose}` directive** - placed before declarations to preserve their names:
+**1. `expose` keyword** - placed directly before a type declaration in unleashed mode:
 ```pascal
-{$expose} TForm1 = class(TForm)
-  // ...
-end;
+type
+  expose TForm1 = class(TForm)
+    // ...
+  end;
+```
+The keyword is contextual and only recognized in `{$mode unleashed}`. It is parsed even when `striprtti` is off (no-op then), so you can leave the keyword in place while temporarily disabling stripping.
+
+**2. `{$rttiexpose}` directive** - per-unit list of glob patterns. Whitespace and/or comma separated:
+```pascal
+{$rttiexpose TForm* TButton*, TPanelMain}
 ```
 
-**2. `{$rttiwhitelist ID1 ID2 ...}` with multiple identifiers** - used to retain specific identifiers:
-```pascal
-{$rttiexpose TForm1 TForm2}
+**3. `--rttiexpose=` CLI flag** - global list of glob patterns, applied to every compiled unit. Repeatable:
 ```
+fpc --rttiexpose=TForm*,TButton* --rttiexpose=TPanelMain ...
+```
+Useful for whitelisting types you do not control (LCL, RTL).
 
-Wildcards can be used:
-```pascal
-{$rttiwhitelist TForm* ...}
-```
+CLI patterns and per-unit directive patterns are merged (union); the directive can only widen the whitelist for its own unit, never narrow CLI.
 
 > [!NOTE]
-> The `{$modeswitch nortti}` directive works on a per-unit basis. You can enable it only in the units where you want to hide type names, while leaving it disabled in others - for example, in units that contain forms or require RTTI to function correctly.
+> The `{$modeswitch striprtti}` directive works on a per-unit basis. You can enable it only in the units where you want to hide type names, while leaving it disabled in others - for example, in units that contain forms or require RTTI to function correctly.
+
+See [unleashed/docs/strip-rtti.md](unleashed/docs/strip-rtti.md) for the full list of stripped fields, edge cases (forwards, generics, aliases), interaction with PPU, and implementation notes.
 
 ---
 
@@ -886,6 +894,37 @@ end.
 ```
 
 Available: `div=`, `mod=`, `and=`, `or=`, `xor=`, `shl=` and `shr=` .
+
+---
+
+### Custom Binary Metadata
+
+Three CLI flags override metadata that ends up in the produced binary. Useful for branding releases, hiding the toolchain you used to build the binary, or simply controlling what inspection tools display - it is your binary, set the fields to whatever you want.
+
+- **`--fpcsignature=<str>`** - replaces the ident string in the `.fpc.version` section. Cross-platform; every target emits this section. Default is `FPC Unleashed <version> [<date>] for <cpu> - <target>`. Passing an empty string (`--fpcsignature=`) **drops the section entirely** - the produced binary carries no FPC ident marker at all.
+- **`--linkerversion=<Major.Minor>`** - sets `MajorLinkerVersion` / `MinorLinkerVersion` in the PE optional header. Windows PE only. Default derived from FPC version (e.g. `3.31` for FPC 3.3.1).
+- **`--osversion=<spec>`** - sets `MajorOperatingSystemVersion` / `MinorOperatingSystemVersion` in the PE optional header. Windows PE only. `spec` is either an OS name (`XP`, `Win11`, `Vista`, `7`, `8.1`, ...) resolved via a built-in table, or numeric `Major.Minor` (`10.0`, `6.3`). Default is `4.0` unless `-WP` is set.
+
+Examples:
+```
+fpc --fpcsignature="MyApp 1.0" --linkerversion=14.39 --osversion=Win11 my_program.pas
+fpc --fpcsignature="FPC" my_program.pas       # keep "FPC", drop version + date
+fpc --fpcsignature="" my_program.pas          # no signature section in the binary
+fpc --osversion=10.0 my_program.pas
+fpc --osversion=XP --linkerversion=14.0 my_program.pas
+```
+
+The OS-name table is case-insensitive and accepts an optional `Win` prefix (`Win11`, `WinXP` work just like `11`, `XP`).
+
+> [!IMPORTANT]
+> `--linkerversion` and `--osversion` are **Windows PE only** (targets `win32`, `win64`, `wince`). Other binary formats do not carry these fields:
+> - **ELF** (Linux, BSD, Solaris, Haiku, Android) - no linker version or OS version in the header.
+> - **Mach-O** (macOS, iOS) - has `LC_BUILD_VERSION` / `LC_VERSION_MIN_*` but FPC delegates linking to the system `ld`, which fills these from the SDK.
+> - **NE / OMF / WASM / NLM / AmigaOS hunk / Atari TOS** - either no such field or hardcoded for compatibility.
+>
+> Passing the flags on a non-PE target compiles cleanly but the values are silently ignored. `--fpcsignature` works on every target.
+
+See [unleashed/docs/binary-metadata.md](unleashed/docs/binary-metadata.md) for full per-flag rationale, the OS-name table, and cross-platform notes.
 
 ---
 

@@ -1576,34 +1576,6 @@ begin
    end;
 end;
 
-function param_get_arg(param: ansistring; prefix: ansistring=''): ansistring;
-begin
-  if (prefix <> '') and param.StartsWith(prefix) then param := copy(param, length(prefix)+1);
-  if pos('=', param) > 0 then exit(copy(param, 1, pos('=', param)-1));
-  result := param;
-end;
-
-function param_get_val(param: ansistring; prefix: ansistring=''): ansistring;
-begin
-  if pos('=', param) > 0 then exit(copy(param, pos('=', param)+1));
-  result := '';
-end;
-
-procedure parse_unleashed_opt(opt: ansistring);
-var
-  arg, val: ansistring;
-begin
-  arg := param_get_arg(opt, '--');
-  val := param_get_val(opt);
-  if arg = 'unleashed' then begin
-    unleashed_set_options(val.Split(' '));
-  end else
-  if arg.StartsWith('opt-') then begin
-    arg := copy(arg, length('opt-')+1);
-    unleashed_set_setting(arg, val);
-  end;
-end;
-
 procedure TOption.interpret_option(const opt:TCmdStr;ispara:boolean);
 var
   more : TCmdStr;
@@ -1612,8 +1584,21 @@ begin
   if opt='' then
    exit;
 
-  if opt.StartsWith('--unleashed') or opt.StartsWith('--opt-') then begin
-    parse_unleashed_opt(opt);
+  if opt.StartsWith('--rttiexpose=') then begin
+    rtti_expose_add_cli(copy(opt, length('--rttiexpose=')+1));
+    exit;
+  end;
+  if opt.StartsWith('--fpcsignature=') then begin
+    binary_signature_override := copy(opt, length('--fpcsignature=')+1);
+    binary_signature_override_set := true;
+    exit;
+  end;
+  if opt.StartsWith('--linkerversion=') then begin
+    binary_linker_version_override := copy(opt, length('--linkerversion=')+1);
+    exit;
+  end;
+  if opt.StartsWith('--osversion=') then begin
+    binary_os_version_override := copy(opt, length('--osversion=')+1);
     exit;
   end;
 

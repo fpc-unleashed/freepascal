@@ -2500,7 +2500,7 @@ const
          'm_multiline_strings',   { multi-line strings denoted with '`' are enabled and valid }
          'm_statement_expressions', { enables expressions using statements like if, case, try }
          'm_array_equality',      { enables equality operator in addition to ArrayOperators modeswitch }
-         'm_no_rtti',             { hides RTTI ASCII text }
+         'm_strip_rtti',          { strip type-name strings from RTTI/VMT to make ASCII dump less identifying }
          'm_inline_var',          { allow inline variable declarations inside statement blocks }
          'm_multi_var_init',      { allow initializing multiple variables in one declaration }
          'm_tuples',              { allow anonymous tuple types as function return types and related literals }
@@ -2875,7 +2875,8 @@ const
      (mask:df_has_global_ref; str:'Has Global Ref'),
      (mask:df_has_generic_fields; str:'Has generic fields'),
      (mask:df_llvm_no_typename; str:'LLVM no typename'),
-     (mask:df_tuple;          str:'Tuple')
+     (mask:df_tuple;          str:'Tuple'),
+     (mask:df_expose_rtti;    str:'Expose RTTI')
   );
   defstate : array[1..ord(high(tdefstate))] of tdefstateinfo=(
      (mask:ds_vmt_written;           str:'VMT Written'),

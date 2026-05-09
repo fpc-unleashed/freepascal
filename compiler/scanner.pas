@@ -592,9 +592,6 @@ implementation
         else
          b:=false;
 
-        if unleashedsettings.override_mode then
-          current_settings.modeswitches := unleashedmodeswitches+unleashedsettings.override_more;
-
 {$ifdef jvm}
           { enable final fields by default for the JVM targets }
           include(current_settings.modeswitches,m_final_fields);
@@ -2937,67 +2934,11 @@ type
          end;
       end;
 
-{*****************************************************************************
-                                Unleashed
-*****************************************************************************}
-
-    procedure dir_unleashed;
-    begin
-      current_scanner.skipspace;
-      unleashed_set_options(ansistring(current_scanner.readcomment()).Split(' '));
-    end;
-
-    procedure dir_opt;
-    var
-      s, arg, val: string;
-    begin
-      current_scanner.skipspace;
-      s := current_scanner.readcomment();
-      arg := GetToken(s, ' ');
-      val := GetToken(s, ' ');
-      unleashed_set_setting(arg, val);
-    end;
-
-    procedure unleashed_rtti_whitelist_add(s: ansistring);
-    var
-      i: integer;
-    begin
-      i := length(unleashedsettings.rttiwhitelist);
-      setlength(unleashedsettings.rttiwhitelist, i+1);
-      unleashedsettings.rttiwhitelist[i] := lower(s);
-    end;
-
-    procedure unleashed_rtti_whitelist_add(a: array of ansistring);
-    var
-      i: integer;
-    begin
-      for i := 0 to high(a) do unleashed_rtti_whitelist_add(a[i]);
-    end;
-
     procedure dir_rttiexpose;
-    var
-      s, id: ansistring;
-      p: pchar;
-    begin
-      current_scanner.skipspace;
-      s := current_scanner.readcomment();
-
-      // add multiple IDs
-      if s <> '' then begin
-       unleashed_rtti_whitelist_add(s.Split(' '));
-       exit;
+      begin
+        current_scanner.skipspace;
+        rtti_expose_add_module(ansistring(current_scanner.readcomment));
       end;
-
-      // add single token - the next identifier
-      p := current_scanner.inputpointer-1;
-      while p^ in [#32, #13, #10, #9] do inc(p);
-      id := '';
-      repeat
-        id := id+p^;
-        inc(p);
-      until not (p^ in ['a'..'z', 'A'..'Z', '0'..'9', '_']);
-      unleashed_rtti_whitelist_add(id);
-    end;
 
 {*****************************************************************************
                             Preprocessor writing
@@ -7115,8 +7056,6 @@ exit_label:
         AddDirective('I',directive_all, @dir_include);
         AddDirective('DEFINE',directive_all, @dir_define);
         AddDirective('UNDEF',directive_all, @dir_undef);
-        AddDirective('UNLEASHED',directive_all, @dir_unleashed);
-        AddDirective('OPT',directive_all, @dir_opt);
         AddDirective('RTTIEXPOSE',directive_all, @dir_rttiexpose);
 
         AddConditional('IF',directive_all, @dir_if);
