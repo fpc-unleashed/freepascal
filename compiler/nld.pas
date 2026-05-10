@@ -1347,6 +1347,29 @@ implementation
             is_array_of_const(hdef) or
             is_open_array(hdef) then
            hdef:=voidtype;
+         { unleashed: promote sub-32-bit integer element types to LongInt,
+           same way inline-var inference does for sub-int32 expressions. This
+           kills the order-dependent first-element typing surprise (e.g.
+           `[0, 255, 0]` typed as ShortInt with `255` flagged as differing
+           type) - all integer-element literals settle on LongInt. }
+         if (m_unleashed in current_settings.modeswitches) and
+            assigned(hdef) and (hdef.typ=orddef) and
+            (torddef(hdef).ordtype in [u8bit,u16bit,s8bit,s16bit]) and
+            not diff and not varia then
+           begin
+             hdef:=s32inttype;
+             { rewalk and force each element to s32inttype so subsequent
+               typecheck stays consistent }
+             if assigned(left) then
+               begin
+                 hp:=self;
+                 while assigned(hp) do
+                   begin
+                     inserttypeconv(hp.left,hdef);
+                     hp:=tarrayconstructornode(hp.right);
+                   end;
+               end;
+           end;
          resultdef:=carraydef.create(0,len-1,s32inttype);
          include(tarraydef(resultdef).arrayoptions,ado_IsConstructor);
          if varia then
