@@ -1635,7 +1635,18 @@ implementation
           op:=addn;
         if not assigned(delta) then
           delta:=cordconstnode.create(1,sinttype,true);
-        combined:=caddnode.create(op,getter_call,delta);
+        { addn does not accept enum + int directly. For enum properties cast
+          the getter result to an ordinal type, do the arithmetic, then cast
+          the sum back to the enum type for the setter call. Pointer and
+          plain ordinal property types take the native addn path. }
+        if propsym.propdef.typ=enumdef then
+          begin
+            combined:=ctypeconvnode.create_internal(getter_call,sinttype);
+            combined:=caddnode.create(op,combined,delta);
+            combined:=ctypeconvnode.create_internal(combined,propsym.propdef);
+          end
+        else
+          combined:=caddnode.create(op,getter_call,delta);
         callflags:=[];
         membercall:=maybe_load_methodpointer(getter_call.symtableproc,instance);
         if membercall then
