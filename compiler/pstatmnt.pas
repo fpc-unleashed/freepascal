@@ -4024,6 +4024,7 @@ implementation
         ctx     : pdefercollect;
         flagvar : tlocalvarsym;
         flagname: TIDString;
+        linestr : string[12];
         info    : pdeferinfo;
         deferred: tnode;
         asgn    : tnode;
@@ -4041,9 +4042,15 @@ implementation
             // for an outer rewrite to capture at the variable's owning scope
             if tdefernode(n).var_scope and not ctx^.is_routine_body then
               exit(fen_false);
+            { include the source line in the flag name so two separate
+              rewrites in the same routine (each with its own counter)
+              cannot produce the same identifier and collide in the
+              shared procdef.localst. The intra-ctx counter still
+              disambiguates multiple defers on the same line. }
             inc(ctx^.counter);
-            str(ctx^.counter,flagname);
-            flagname:='$defer_flag_'+flagname;
+            str(n.fileinfo.line,flagname);
+            str(ctx^.counter,linestr);
+            flagname:='$defer_flag_'+flagname+'_'+linestr;
             flagvar:=tlocalvarsym.create(flagname,vs_value,pasbool1type,[]);
             symtablestack.top.insertsym(flagvar);
             // detach deferred body before freeing the marker
