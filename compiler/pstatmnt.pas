@@ -1679,10 +1679,16 @@ implementation
              lifetime_filepos := current_filepos;
              { scope the inline var (and any hidden tcsym) to the with-body
                via a dedicated block symtable, so the same name can appear
-               in a later sibling `with var NAME` in the same routine }
-             if assigned(current_procinfo) then
+               in a later sibling `with var NAME` in the same routine.
+               Anchor blockparentst at the routine's localst directly so
+               `make_mangledname` can peel cleanly: walking via stack-top
+               can lead through nested begin..end blocksymtables whose own
+               parent is a withsymtable (no defined ancestor for mangling),
+               which trips IE 200204175. }
+             if assigned(current_procinfo) and
+                assigned(current_procinfo.procdef.localst) then
                begin
-                 withblockst := tblocksymtable.create(symtablestack.top);
+                 withblockst := tblocksymtable.create(current_procinfo.procdef.localst);
                  symtablestack.push(withblockst);
                end;
              if current_scanner.token = _VAR then
