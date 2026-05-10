@@ -2096,6 +2096,18 @@ implementation
         if resultdef.typ<>arraydef then
           internalerror(2017050102);
 
+        { left must be an array constructor here. If an earlier pass
+          replaced it (e.g. arrayconstructor_to_set produced a setconstn)
+          and we still ended up routed to this conversion, bail out
+          gracefully instead of casting to the wrong class and crashing
+          in force_type. The earlier error message already tells the
+          user about the type mismatch. }
+        if left.nodetype<>arrayconstructorn then
+          begin
+            result:=cerrornode.create;
+            exit;
+          end;
+
         tarrayconstructornode(left).force_type(tarraydef(resultdef).elementdef);
 
         result:=internalstatements(newstatement);

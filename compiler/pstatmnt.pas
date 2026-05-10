@@ -67,8 +67,35 @@ implementation
     function defer_statement : tnode;forward;
     procedure rewrite_defers_in_block(var first: tnode; is_routine_body: boolean = false);forward;
 
+    { Promote a "constructor" array type (the result of `[a, b, c]` parsed as
+      a branch value) to a proper dynamic-array def with the same element
+      type. Without this, the synthesized temp variable for an `if`/`case`/
+      `match` expression has the constructor flag set on its def, and the
+      assignment of the constructor value into the temp does not actually
+      allocate a managed dynarray - the function returns nil. }
+    function constructor_to_dynarray(def: tdef): tdef;
+      var
+        arr: tarraydef;
+      begin
+        result:=def;
+        if not assigned(def) or (def.typ<>arraydef) then
+          exit;
+        if not (ado_IsConstructor in tarraydef(def).arrayoptions) then
+          exit;
+        if (tarraydef(def).arrayoptions * [ado_IsArrayOfConst,ado_IsVariant])<>[] then
+          exit;
+        if not assigned(tarraydef(def).elementdef) or (tarraydef(def).elementdef=voidtype) then
+          exit;
+        arr:=carraydef.create(0,-1,ptruinttype);
+        arr.arrayoptions:=arr.arrayoptions+[ado_IsDynamicArray];
+        arr.elementdef:=tarraydef(def).elementdef;
+        result:=arr;
+      end;
+
     function branch_type(olddef, branchdef: tdef): tdef; inline;
       begin
+        olddef:=constructor_to_dynarray(olddef);
+        branchdef:=constructor_to_dynarray(branchdef);
         { Handle promotion of string and char types for expression results.
           String constants are typed as chararray (array of char with
           ado_IsConstString), so chararray must be promoted like strings. }
