@@ -112,7 +112,35 @@ Foo(case mode of 1: 'fast'; else 'slow'; end);
 var x := 1 + (if b then 10 else 20);
 ```
 
-## Limitations
+## Every branch must yield a value
 
-- All branches must yield a value. A branch that contains only statements without a final expression is an error.
+A statement expression is an **expression**, so each branch must produce a value of the result type. Statements that do not produce a value (`raise`, `exit`, `halt`, `break`, `continue`, `goto`, bare procedure calls, ...) are **not** allowed as a branch value:
+
+```pas
+// rejected: raise is a statement, not an expression
+Result := case n of
+  1: 'one';
+  2: 'two';
+else
+  raise Exception.Create('bad n');
+end;
+```
+
+The compiler reports `Illegal expression` at the `raise` token.
+
+For the "this should not happen" pattern, use the regular case-statement and assign `Result` in the value-producing branches:
+
+```pas
+case n of
+  1: Result := 'one';
+  2: Result := 'two';
+else
+  raise Exception.Create('bad n');
+end;
+```
+
+Same rule applies to `if`, `match`, and `try-except` expressions: every branch the expression can take has to evaluate to a value of the unified result type. A branch made up of statements with no final expression is an error.
+
+## Other limitations
+
 - `try-finally` is not supported as an expression (only `try-except`).
