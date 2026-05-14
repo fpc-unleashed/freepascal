@@ -585,15 +585,16 @@ implementation
         { marker }
         b:=ppufile.getbyte;
         if b<>ppunodemarker then
-          internalerror(200208151);
+          Message1(unit_f_ppu_invalid_entry,'expected node marker $'+hexstr(ppunodemarker,2)+
+            ', got $'+hexstr(b,2)+' (PPU/compiler mismatch - rebuild the unit and any dependents, possibly RTL)');
         { load nodetype }
         t:=tnodetype(ppufile.getbyte);
         if t>high(tnodetype) then
-          internalerror(200208152);
+          Message1(unit_f_ppu_invalid_entry,'nodetype index $'+hexstr(ord(t),2)+' out of range (PPU/compiler mismatch - rebuild the unit and any dependents, possibly RTL)');
         if t<>emptynode then
          begin
            if not assigned(nodeclass[t]) then
-             internalerror(200208153);
+             Message1(unit_f_ppu_invalid_entry,'no nodeclass registered for nodetype $'+hexstr(ord(t),2)+' (PPU/compiler mismatch - rebuild the unit and any dependents, possibly RTL)');
            hppuidx:=ppufile.getlongint;
            //writeln('load: ',nodetype2str[t]);
            { generate node of the correct class }
