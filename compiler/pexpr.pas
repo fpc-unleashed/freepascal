@@ -2049,6 +2049,15 @@ implementation
                      p1:=nil;
                      { typed constants are absolutebarsyms now to handle storage properly }
                      propaccesslist_to_node(p1,nil,tabsolutevarsym(sym).ref);
+                   end;
+                 enumsym:
+                   begin
+                     { composablerecords scopes anonymous enum constants
+                       to the surrounding record, so `TRec.kVal` reaches
+                       them through this dot-access path. wrap as a
+                       plain enum node, no carrier offset involved. }
+                     p1.free;
+                     p1:=genenumnode(tenumsym(sym));
                    end
                  else
                    internalerror(16);
@@ -2602,6 +2611,11 @@ implementation
      srsym  : tsym;
      srsymtable : TSymtable;
      structh    : tabstractrecorddef;
+     { composablerecords: when a flat lookup goes through composition links,
+       this is the chain of carriers (outer-most first) we must subscript
+       through before reading the target. nil/empty otherwise. owned here. }
+     compose_chain : tfplist;
+     compose_idx : longint;
      { shouldn't be used that often, so the extra overhead is ok to save
        stack space }
      dispatchstring : ansistring;
@@ -2998,6 +3012,7 @@ implementation
                          erroroutp1:=true;
                          srsym:=nil;
                          structh:=tabstractrecorddef(p1.resultdef);
+                         compose_chain:=nil;
                          if isspecialize then
                            begin
                              { consume the specialize }
@@ -3015,6 +3030,9 @@ implementation
                          else
                            begin
                              searchsym_in_record(structh,current_scanner.pattern,srsym,srsymtable);
+                             if not assigned(srsym) and
+                                (m_composable_records in current_settings.modeswitches) then
+                               lookup_in_composition(structh,current_scanner.pattern,srsym,srsymtable,compose_chain);
                              if assigned(srsym) then
                                begin
                                  old_current_filepos:=current_filepos;
@@ -3037,10 +3055,29 @@ implementation
                            begin
                              p1.free;
                              p1:=cerrornode.create;
+                             if assigned(compose_chain) then
+                               begin
+                                 compose_chain.free;
+                                 compose_chain:=nil;
+                               end;
                            end
                          else
                            if p1.nodetype<>specializen then
-                             do_member_read(structh,getaddr,srsym,p1,again,[],spezcontext);
+                             begin
+                               { composablerecords: walk the carrier chain so the
+                                 final read lands on `record.c1.c2...target` }
+                               if assigned(compose_chain) then
+                                 begin
+                                   for compose_idx:=0 to compose_chain.count-1 do
+                                     begin
+                                       p1:=csubscriptnode.create(tfieldvarsym(compose_chain[compose_idx]),p1);
+                                       structh:=tabstractrecorddef(tfieldvarsym(compose_chain[compose_idx]).vardef);
+                                     end;
+                                   compose_chain.free;
+                                   compose_chain:=nil;
+                                 end;
+                               do_member_read(structh,getaddr,srsym,p1,again,[],spezcontext);
+                             end;
                        end
                      else
                      consume(_ID);
