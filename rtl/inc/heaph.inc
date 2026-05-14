@@ -97,6 +97,17 @@ function Freememory(p:pointer):ptruint; cdecl;
 function AllocMem(Size:ptruint):pointer;
 function ReAllocMem(var p:pointer;Size:ptruint):pointer; inline;
 function ReAllocMemory(p:pointer;Size:ptruint):pointer; cdecl;
+
+{ Aligned heap allocation - returns a pointer aligned to `alignment`
+  (power-of-two, at least sizeof(pointer)). FreeMemAligned must be used
+  to release. AllocMemAligned additionally zeroes the allocation.
+  ReAllocMemAligned resizes (and re-aligns) an existing aligned allocation;
+  do NOT pass an aligned pointer to plain ReAllocMem - heap manager has no
+  knowledge of the aligned-allocation header. }
+function GetMemAligned(size, alignment:ptruint):pointer;
+function AllocMemAligned(size, alignment:ptruint):pointer;
+function ReAllocMemAligned(var p:pointer; new_size, alignment:ptruint):pointer;
+procedure FreeMemAligned(p:pointer);
 function GetHeapStatus:THeapStatus;
 function GetFPCHeapStatus:TFPCHeapStatus;
 
