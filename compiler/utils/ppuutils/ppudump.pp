@@ -2509,7 +2509,8 @@ const
          'm_stringordcast',       { compile-time fold of string literal typecast to ordinal (DWORD('abcd')) }
          'm_implicit_generics',   { Delphi-style generic syntax: 'generic'/'specialize' keywords optional, <T> allowed }
          'm_for_step',            { allow `step N` clause in for-loops }
-         'm_flexible_arrays'      { allow `array[] of T` as last field of a record (C99-style FAM) }
+         'm_flexible_arrays',     { allow `array[] of T` as last field of a record (C99-style FAM) }
+         'm_composable_records'   { record composition: union, anonymous embed, expose, offsetof }
        );
        { optimizer }
        optimizerswitchname : array[toptimizerswitch] of string[50] =
