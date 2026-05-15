@@ -235,6 +235,16 @@ interface
           { offset in record/object, for bitpacked fields the offset is
             given in bit, else in bytes }
           fieldoffset   : asizeint;
+          { composablerecords per-field sizing/alignment overrides. defaults
+            mean "use the type's natural size/alignment".
+              custom_bitsize  = explicit field size in bits  (-1 = unset)
+              custom_size     = explicit field size in bytes (-1 = unset)
+              custom_align    = byte alignment              ( 0 = unset)
+              custom_bitalign = bit alignment               ( 0 = unset) }
+          custom_bitsize : longint;
+          custom_size    : longint;
+          custom_align   : shortint;
+          custom_bitalign: shortint;
 {$ifdef llvm}
           { the llvm version of the record does not support variants,   }
           { so the llvm equivalent field may not be at the exact same   }
@@ -257,6 +267,10 @@ interface
           procedure ppuwrite(ppufile:tcompilerppufile);override;final;
           procedure set_externalname(const s:string);virtual;
           function bitoffset: asizeuint;
+          { storage width in bits, honouring composablerecords
+            per-field `bitsize N` override; falls back to the natural
+            packed bit size of the field's type when no override is set }
+          function effective_packedbitsize: longint;
           function mangledname:TSymStr;override;
           destructor destroy;override;
 {$ifdef DEBUG_NODE_XML}
@@ -2084,6 +2098,10 @@ implementation
       begin
          inherited create(fieldvarsym,n,vsp,def,vopts);
          fieldoffset:=-1;
+         custom_bitsize:=-1;
+         custom_size:=-1;
+         custom_align:=0;
+         custom_bitalign:=0;
       end;
 
 
@@ -2095,6 +2113,10 @@ implementation
            externalname:=ppufile.getpshortstring
          else
            externalname:=nil;
+         custom_bitsize:=-1;
+         custom_size:=-1;
+         custom_align:=0;
+         custom_bitalign:=0;
          ppuload_platform(ppufile);
       end;
 
@@ -2120,6 +2142,20 @@ implementation
         result:=fieldoffset;
         if tabstractrecordsymtable(owner).fieldalignment<>bit_alignment then
          result:=result*8;
+      end;
+
+
+    function tfieldvarsym.effective_packedbitsize: longint;
+      begin
+        if custom_bitsize>0 then
+          result:=custom_bitsize
+        else
+          { mirror the legacy `resultdef.packedbitsize` read: virtual
+            property on the type def, defined for every tdef (including
+            non-ordinal fields like arrays/strings used in bitpacked
+            records at byte boundaries) - unlike `getpackedbitsize`
+            which asserts `is_ordinal` and IEs otherwise }
+          result:=vardef.packedbitsize;
       end;
 
 
