@@ -591,6 +591,12 @@ implementation
                      if (l = in_bitsizeof_x) then
                        statement_syssym:=caddnode.create(muln,statement_syssym,cordconstnode.create(8,sizesinttype,true));
                    end
+                 { composablerecords: a field with an explicit `bitsize N`
+                   override occupies exactly N bits, regardless of the
+                   declared type's natural packed bit width }
+                 else if (p1.nodetype = subscriptn) and
+                         (tsubscriptnode(p1).vs.custom_bitsize > 0) then
+                   statement_syssym:=genintconstnode(tsubscriptnode(p1).vs.custom_bitsize,sizesinttype)
                  else
                    statement_syssym:=genintconstnode(p1.resultdef.packedbitsize,sizesinttype);
                  { type def is a struct with generic fields }
@@ -3862,6 +3868,225 @@ implementation
              result:=false;
            end;
 
+         { compile-time fold of `offsetof(TStruct.path.to.field)`. supports
+           composition flatten in the path: each composition hop (anon embed,
+           inline anon, expose) accumulates every carrier's own offset along
+           the chain before descending into its record. caller has not
+           consumed the OFFSETOF token yet. }
+         function parse_offsetof_like_intrinsic(in_bits: boolean): tnode;
+           { shared walker for offsetof() and bitoffsetof().
+
+             offsetof returns the field offset in bytes; if any field along
+             the path sits in a bitpacked record on a non-byte boundary the
+             intrinsic raises parser_e_offsetof_subbyte_field. bitoffsetof
+             always returns bits regardless of the record layout.
+
+             accumulation always happens in bits internally; each hop checks
+             its owning symtable to convert fieldoffset (which is in bits for
+             bitpacked records, in bytes elsewhere) to a uniform bit total. }
+           var
+             cursym : tsym;
+             cursymtable : tsymtable;
+             chain : tfplist;
+             cur_def : tabstractrecorddef;
+             bit_total : asizeint;
+             haderr : boolean;
+             ci : longint;
+             last_field_name : string;
+
+           procedure add_field_to_total(fs: tfieldvarsym);
+             begin
+               if tabstractrecordsymtable(fs.owner).is_packed then
+                 bit_total:=bit_total+fs.fieldoffset
+               else
+                 bit_total:=bit_total+fs.fieldoffset*8;
+             end;
+
+           begin
+             consume(_ID); { eat OFFSETOF or BITOFFSETOF }
+             consume(_LKLAMMER);
+             haderr:=false;
+             bit_total:=0;
+             cur_def:=nil;
+             last_field_name:='';
+             if current_scanner.token<>_ID then
+               begin
+                 consume(_ID);
+                 consume(_RKLAMMER);
+                 exit(cerrornode.create);
+               end;
+             searchsym_type(current_scanner.pattern,cursym,cursymtable);
+             if not assigned(cursym) or (cursym.typ<>typesym) or
+                not (ttypesym(cursym).typedef.typ in [recorddef,objectdef]) then
+               begin
+                 Message1(sym_e_id_no_member,current_scanner.orgpattern);
+                 haderr:=true;
+               end
+             else
+               cur_def:=tabstractrecorddef(ttypesym(cursym).typedef);
+             consume(_ID);
+             { accept either Pascal-style `Type.field` or C-style `Type, field`
+               separators; mixing within the same call is allowed too }
+             while not haderr and (try_to_consume(_POINT) or try_to_consume(_COMMA)) do
+               begin
+                 if current_scanner.token<>_ID then
+                   begin
+                     consume(_ID);
+                     haderr:=true;
+                     break;
+                   end;
+                 cursym:=tsym(cur_def.symtable.find(upper(current_scanner.pattern)));
+                 chain:=nil;
+                 if not assigned(cursym) and
+                    (m_composable_records in current_settings.modeswitches) then
+                   lookup_in_composition(cur_def,current_scanner.pattern,cursym,cursymtable,chain);
+                 if not assigned(cursym) or (cursym.typ<>fieldvarsym) then
+                   begin
+                     Message1(sym_e_id_no_member,current_scanner.orgpattern);
+                     consume(_ID);
+                     haderr:=true;
+                     if assigned(chain) then chain.free;
+                     break;
+                   end;
+                 if assigned(chain) then
+                   begin
+                     for ci:=0 to chain.count-1 do
+                       add_field_to_total(tfieldvarsym(chain[ci]));
+                     chain.free;
+                   end;
+                 add_field_to_total(tfieldvarsym(cursym));
+                 last_field_name:=current_scanner.orgpattern;
+                 consume(_ID);
+                 if tfieldvarsym(cursym).vardef.typ in [recorddef,objectdef] then
+                   cur_def:=tabstractrecorddef(tfieldvarsym(cursym).vardef)
+                 else
+                   cur_def:=nil;
+               end;
+             consume(_RKLAMMER);
+             if haderr then
+               result:=cerrornode.create
+             else if in_bits then
+               result:=cordconstnode.create(bit_total,sizeuinttype,true)
+             else if (bit_total mod 8)<>0 then
+               begin
+                 Message1(parser_e_offsetof_subbyte_field,last_field_name);
+                 result:=cerrornode.create;
+               end
+             else
+               result:=cordconstnode.create(bit_total div 8,sizeuinttype,true);
+           end;
+
+         function parse_alignof_like_intrinsic(in_bits: boolean): tnode;
+           { AlignOf and BitAlignOf intrinsics for composablerecords.
+
+             AlignOf returns the type or field alignment in bytes,
+             BitAlignOf returns it in bits. For a type argument the value
+             is the type's natural alignment. For a field reference the
+             value honours per-field `align N` / `bitalign N` overrides,
+             falling back to the field type's alignment when no override
+             is present. }
+           var
+             cursym : tsym;
+             cursymtable : tsymtable;
+             chain : tfplist;
+             cur_def : tabstractrecorddef;
+             type_align : asizeint;
+             found_field : tfieldvarsym;
+             haderr : boolean;
+           begin
+             consume(_ID); { eat ALIGNOF or BITALIGNOF }
+             consume(_LKLAMMER);
+             haderr:=false;
+             cur_def:=nil;
+             type_align:=0;
+             found_field:=nil;
+             if current_scanner.token<>_ID then
+               begin
+                 consume(_ID);
+                 consume(_RKLAMMER);
+                 exit(cerrornode.create);
+               end;
+             searchsym_type(current_scanner.pattern,cursym,cursymtable);
+             if not assigned(cursym) or (cursym.typ<>typesym) then
+               begin
+                 Message1(sym_e_id_no_member,current_scanner.orgpattern);
+                 haderr:=true;
+               end
+             else
+               begin
+                 type_align:=ttypesym(cursym).typedef.alignment;
+                 if ttypesym(cursym).typedef.typ in [recorddef,objectdef] then
+                   cur_def:=tabstractrecorddef(ttypesym(cursym).typedef);
+               end;
+             consume(_ID);
+             { optional `.field` or `,field` chain for field reference }
+             while not haderr and (try_to_consume(_POINT) or try_to_consume(_COMMA)) do
+               begin
+                 if current_scanner.token<>_ID then
+                   begin
+                     consume(_ID);
+                     haderr:=true;
+                     break;
+                   end;
+                 if not assigned(cur_def) then
+                   begin
+                     Message1(sym_e_id_no_member,current_scanner.orgpattern);
+                     consume(_ID);
+                     haderr:=true;
+                     break;
+                   end;
+                 cursym:=tsym(cur_def.symtable.find(upper(current_scanner.pattern)));
+                 chain:=nil;
+                 if not assigned(cursym) and
+                    (m_composable_records in current_settings.modeswitches) then
+                   lookup_in_composition(cur_def,current_scanner.pattern,cursym,cursymtable,chain);
+                 if not assigned(cursym) or (cursym.typ<>fieldvarsym) then
+                   begin
+                     Message1(sym_e_id_no_member,current_scanner.orgpattern);
+                     consume(_ID);
+                     haderr:=true;
+                     if assigned(chain) then chain.free;
+                     break;
+                   end;
+                 if assigned(chain) then chain.free;
+                 found_field:=tfieldvarsym(cursym);
+                 consume(_ID);
+                 if tfieldvarsym(cursym).vardef.typ in [recorddef,objectdef] then
+                   cur_def:=tabstractrecorddef(tfieldvarsym(cursym).vardef)
+                 else
+                   cur_def:=nil;
+               end;
+             consume(_RKLAMMER);
+             if haderr then
+               exit(cerrornode.create);
+             if assigned(found_field) then
+               begin
+                 if in_bits then
+                   begin
+                     if found_field.custom_bitalign>0 then
+                       result:=cordconstnode.create(found_field.custom_bitalign,sizeuinttype,true)
+                     else if found_field.custom_align>0 then
+                       result:=cordconstnode.create(found_field.custom_align*8,sizeuinttype,true)
+                     else
+                       result:=cordconstnode.create(found_field.vardef.alignment*8,sizeuinttype,true);
+                   end
+                 else
+                   begin
+                     if found_field.custom_align>0 then
+                       result:=cordconstnode.create(found_field.custom_align,sizeuinttype,true)
+                     else
+                       result:=cordconstnode.create(found_field.vardef.alignment,sizeuinttype,true);
+                   end;
+               end
+             else
+               begin
+                 if in_bits then
+                   result:=cordconstnode.create(type_align*8,sizeuinttype,true)
+                 else
+                   result:=cordconstnode.create(type_align,sizeuinttype,true);
+               end;
+           end;
+
          var
            srsym: tsym;
            srsymtable: TSymtable;
@@ -3901,6 +4126,43 @@ implementation
              end
            else
              isspecialize:=ef_had_specialize in flags;
+
+           { composablerecords: offsetof(TStruct.path.to.field) returns byte
+             offset; bitoffsetof returns bit offset (always defined, even for
+             sub-byte bitpacked fields). pattern-detected here so we don't
+             depend on a sysconst symbol (which would require an RTL rebuild). }
+           if (current_scanner.token=_ID) and
+              (m_composable_records in current_settings.modeswitches) and
+              (current_scanner.pattern='OFFSETOF') then
+             begin
+               p1:=parse_offsetof_like_intrinsic(false);
+               again:=false;
+               exit;
+             end;
+           if (current_scanner.token=_ID) and
+              (m_composable_records in current_settings.modeswitches) and
+              (current_scanner.pattern='BITOFFSETOF') then
+             begin
+               p1:=parse_offsetof_like_intrinsic(true);
+               again:=false;
+               exit;
+             end;
+           if (current_scanner.token=_ID) and
+              (m_composable_records in current_settings.modeswitches) and
+              (current_scanner.pattern='ALIGNOF') then
+             begin
+               p1:=parse_alignof_like_intrinsic(false);
+               again:=false;
+               exit;
+             end;
+           if (current_scanner.token=_ID) and
+              (m_composable_records in current_settings.modeswitches) and
+              (current_scanner.pattern='BITALIGNOF') then
+             begin
+               p1:=parse_alignof_like_intrinsic(true);
+               again:=false;
+               exit;
+             end;
 
            { first check for identifier }
            if current_scanner.token<>_ID then
