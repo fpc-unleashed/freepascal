@@ -3745,6 +3745,9 @@ implementation
         hashedid: THashedIDString;
         contextstructdef: tabstractrecorddef;
         stackitem: psymtablestackitem;
+        { composablerecords fallback when a `with` body lookup misses }
+        compose_st: TSymtable;
+        compose_chain: tfplist;
       begin
         result:=false;
         hashedid.id:=s;
@@ -3808,6 +3811,29 @@ implementation
                         if assigned(current_procinfo) and
                            (srsym.owner.symtabletype=staticsymtable) then
                           include(current_procinfo.flags,pi_uses_static_symtable);
+                        if not (ssf_no_addsymref in flags) then
+                          addsymref(srsym);
+                        result:=true;
+                        exit;
+                      end;
+                  end;
+                { composablerecords: a `with d do ...` body resolves bare
+                  names against the outer record's symtable; for fields
+                  reached only through a composition carrier (embed /
+                  inline anon) the bare name is absent there. fall back
+                  to lookup_in_composition - the actual carrier walk is
+                  done in is_member_read where the withrefnode is at
+                  hand. }
+                if not assigned(srsym) and
+                   (srsymtable.symtabletype=withsymtable) and
+                   assigned(srsymtable.defowner) and
+                   (srsymtable.defowner.typ in [recorddef,objectdef]) and
+                   (m_composable_records in current_settings.modeswitches) then
+                  begin
+                    if lookup_in_composition(tabstractrecorddef(srsymtable.defowner),
+                         s,srsym,compose_st,compose_chain) then
+                      begin
+                        if assigned(compose_chain) then compose_chain.free;
                         if not (ssf_no_addsymref in flags) then
                           addsymref(srsym);
                         result:=true;

@@ -3453,6 +3453,34 @@ implementation
       end; { while again }
     end;
 
+    { composablerecords: rediscover the carrier chain that
+      `lookup_in_composition` traversed to reach `s` on `recordh`, and
+      wrap p1 in a subscript through each carrier so the read lands on
+      `with_target.$compose$N. ... .field`. used by `is_member_read`
+      for the WithSymtable case. }
+    function compose_lookup_walk(recordh: tabstractrecorddef;
+                                 const s: TIDString;
+                                 var p1: tnode): boolean;
+      var
+        compose_sym: tsym;
+        compose_st: tsymtable;
+        chain: tfplist;
+        i: longint;
+      begin
+        result:=false;
+        if lookup_in_composition(recordh,s,compose_sym,compose_st,chain) then
+          begin
+            if assigned(chain) then
+              begin
+                for i:=0 to chain.count-1 do
+                  p1:=csubscriptnode.create(tfieldvarsym(chain[i]),p1);
+                chain.free;
+              end;
+            result:=true;
+          end;
+      end;
+
+
     function is_member_read(sym: tsym; st: tsymtable; var p1: tnode;
                             out memberparentdef: tdef): boolean;
       var
@@ -3475,6 +3503,25 @@ implementation
 
               hdef:=tnode(twithsymtable(st).withrefnode).resultdef;
               p1:=tnode(twithsymtable(st).withrefnode).getcopy;
+
+              { composablerecords: a flat name resolved through a
+                composition carrier lives in a record def deeper than
+                hdef. walk through the carrier chain so that the
+                subscripts land on `with_target.$compose$N. ... .sym`
+                before do_member_read receives the inner record def. }
+              if (hdef.typ in [recorddef,objectdef]) and
+                 (m_composable_records in current_settings.modeswitches) and
+                 (sym.typ in [fieldvarsym,procsym,propertysym]) and
+                 assigned(sym.owner) and assigned(sym.owner.defowner) and
+                 (sym.owner.defowner<>tdef(hdef)) then
+                begin
+                  if compose_lookup_walk(tabstractrecorddef(hdef),
+                       sym.name,p1) then
+                    begin
+                      memberparentdef:=tdef(sym.owner.defowner);
+                      exit;
+                    end;
+                end;
 
               if not(hdef.typ in [objectdef,classrefdef]) then
                 exit;
@@ -4006,17 +4053,30 @@ implementation
                  consume(_RKLAMMER);
                  exit(cerrornode.create);
                end;
-             searchsym_type(current_scanner.pattern,cursym,cursymtable);
-             if not assigned(cursym) or (cursym.typ<>typesym) then
+             searchsym(current_scanner.pattern,cursym,cursymtable);
+             if not assigned(cursym) then
                begin
                  Message1(sym_e_id_no_member,current_scanner.orgpattern);
                  haderr:=true;
                end
-             else
+             else if cursym.typ=typesym then
                begin
                  type_align:=ttypesym(cursym).typedef.alignment;
                  if ttypesym(cursym).typedef.typ in [recorddef,objectdef] then
                    cur_def:=tabstractrecorddef(ttypesym(cursym).typedef);
+               end
+             else if cursym.typ in [staticvarsym,localvarsym,paravarsym,fieldvarsym,absolutevarsym] then
+               begin
+                 { accept a variable / parameter / field as the operand;
+                   its type's alignment stands in for the typename case }
+                 type_align:=tabstractvarsym(cursym).vardef.alignment;
+                 if tabstractvarsym(cursym).vardef.typ in [recorddef,objectdef] then
+                   cur_def:=tabstractrecorddef(tabstractvarsym(cursym).vardef);
+               end
+             else
+               begin
+                 Message1(sym_e_id_no_member,current_scanner.orgpattern);
+                 haderr:=true;
                end;
              consume(_ID);
              { optional `.field` or `,field` chain for field reference }
