@@ -583,6 +583,15 @@ implementation
         fallthrough:=(current_scanner.token=_ID) and (current_scanner.pattern='ALL');
         if fallthrough then
           consume(_ID);
+        { empty `match end` / `match all end` as statement: no-op, parity with
+          empty `begin..end` and empty `case X of end`. only allowed as
+          statement, expression context still needs a value }
+        if (not is_expr) and (current_scanner.token=_END) then
+          begin
+            consume(_END);
+            result:=cnothingnode.create;
+            exit;
+          end;
         { determine mode: subject-based (match X of) vs condition-based }
         has_subject:=false;
         subject:=nil;
