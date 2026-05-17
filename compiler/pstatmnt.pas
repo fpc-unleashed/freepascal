@@ -2858,6 +2858,81 @@ implementation
       symbol table (procedure-wide scope, same as ordinary local variables) and
       returns an assignment node when an initialiser is present, or a nothing
       node otherwise. }
+
+    { unleashed: pick a dynamic-array element type from the first non-nil
+      element's category, force every element to that type (compile error on
+      mismatch), and return a fresh `array of T` dynamic def. The arrayconstructor
+      already went through pass_typecheck producing some legacy carrier; we
+      replace its semantic shape here. Mixed-type literals (string+int+...)
+      become a compile error - use `array of Variant` explicitly or pass to an
+      `array of const` parameter for genuinely mixed cases. }
+    function unleashed_infer_array_literal(arrconstr: tarrayconstructornode) : tdef;
+      var
+        hp : tarrayconstructornode;
+        first_nonnil : tnode;
+        elemdef : tdef;
+        dyndef : tarraydef;
+      begin
+        first_nonnil := nil;
+        if assigned(arrconstr.left) then
+          begin
+            hp := arrconstr;
+            while assigned(hp) do
+              begin
+                if (not assigned(first_nonnil)) and (hp.left.nodetype <> niln) then
+                  first_nonnil := hp.left;
+                hp := tarrayconstructornode(hp.right);
+              end;
+          end;
+
+        elemdef := nil;
+        if not assigned(arrconstr.left) then
+          begin
+            Comment(V_Hint, 'empty array literal, defaulting element type to AnsiString');
+            elemdef := getansistringdef;
+          end
+        else if arrconstr.left.nodetype = niln then
+          { first element is nil -> Pointer regardless of remaining elements }
+          elemdef := voidpointertype
+        else if not assigned(first_nonnil) then
+          begin
+            Comment(V_Hint, 'array literal with only nil elements, defaulting element type to Pointer');
+            elemdef := voidpointertype;
+          end
+        else if is_char(first_nonnil.resultdef) or
+                (first_nonnil.resultdef.typ = stringdef) or
+                is_conststring_array(first_nonnil.resultdef) then
+          elemdef := getansistringdef
+        else if is_boolean(first_nonnil.resultdef) then
+          elemdef := pasbool8type
+        else if is_integer(first_nonnil.resultdef) then
+          elemdef := ptrsinttype
+        else if is_enum(first_nonnil.resultdef) then
+          elemdef := first_nonnil.resultdef
+        else if first_nonnil.resultdef.typ = floatdef then
+          elemdef := s64floattype
+        else if first_nonnil.resultdef.typ = objectdef then
+          elemdef := first_nonnil.resultdef
+        else if first_nonnil.resultdef.typ = pointerdef then
+          elemdef := first_nonnil.resultdef
+        else if first_nonnil.resultdef.typ = variantdef then
+          elemdef := cvarianttype
+        else
+          elemdef := first_nonnil.resultdef;
+
+        { force every element to elemdef - incompatible elements surface as
+          compile errors here, before the cassignment runs }
+        arrconstr.force_type(elemdef);
+
+        { build the dynamic array def for the inferred var; cassignmentnode
+          routes through typecheck_arrayconstructor_to_dynarray which calls
+          setlength + per-element assign at runtime }
+        dyndef := carraydef.create(0, -1, sizesinttype);
+        include(dyndef.arrayoptions, ado_IsDynamicArray);
+        dyndef.elementdef := elemdef;
+        result := dyndef;
+      end;
+
     function inline_var_statement : tnode;
       var
         vs             : tabstractnormalvarsym;
@@ -3104,6 +3179,20 @@ implementation
               initexpr := expr(true);
               do_typecheckpass(initexpr);
               hdef := initexpr.resultdef;
+              { unleashed: array literal `[...]` -> infer element type from the
+                first non-nil element's category, force every element to that
+                type (compile error on mismatch), and wrap the constructor's
+                static carrier into a proper `array of T` dynamic def for the
+                inferred var. Diverges from the legacy fall-through behaviour
+                that would silently produce a static array of the first
+                element's exact byte width and truncate everything else. }
+              if (m_unleashed in current_settings.modeswitches) and
+                 assigned(initexpr) and
+                 (initexpr.nodetype = arrayconstructorn) and
+                 assigned(hdef) and (hdef.typ = arraydef) and
+                 (ado_IsConstructor in tarraydef(hdef).arrayoptions) and
+                 not (ado_IsDynamicArray in tarraydef(hdef).arrayoptions) then
+                hdef := unleashed_infer_array_literal(tarrayconstructornode(initexpr));
               if not assigned(hdef) or (hdef = generrordef) then
                 begin
                   { Type inference failed – keep error def on the sym so that
