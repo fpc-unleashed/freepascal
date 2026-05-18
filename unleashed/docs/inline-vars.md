@@ -80,7 +80,7 @@ A bare `[...]` literal on the right-hand side of an inferred `var` yields a prop
 | First non-`nil` element     | Inferred element type |
 |-----------------------------|-----------------------|
 | string / char literal       | `AnsiString`          |
-| integer literal             | `PtrInt`              |
+| integer literal             | `LongInt`             |
 | float literal               | `Double`              |
 | boolean literal             | `Boolean`             |
 | enum value                  | the enum type         |
@@ -92,7 +92,7 @@ Every subsequent element must be assignable to the chosen `T`; mismatching liter
 
 ```pas
 var a := ['', 'a', 'bb', 'longer'];        // array of AnsiString, all 4 elements kept fully
-var c := [1, 2, 1_000_000];                // array of PtrInt
+var c := [1, 2, 1_000_000];                // array of LongInt
 var d := [3.14, 2.71];                     // array of Double
 var e := [true, false];                    // array of Boolean
 var pa := [nil, nil, nil];                 // array of Pointer (hint emitted)
@@ -103,7 +103,7 @@ var x := [];                               // array of AnsiString (hint: empty, 
 var bad := ['aaa', 1, 'bbb'];
 ```
 
-Element category is what matters, not size: `[10, 200_000]` infers `array of PtrInt` regardless of whether individual literals would fit in `Byte`. Without this rule the parser would silently emit a static array sized to the first element and truncate the rest. Use an explicit declaration if you need a different shape: `var fixed: array[0..2] of String := [...]`.
+Element category is what matters, not size: `[10, 200_000]` infers `array of LongInt` regardless of whether individual literals would fit in `Byte`. Without this rule the parser would silently emit a static array sized to the first element and truncate the rest. Use an explicit declaration if you need a different shape: `var fixed: array[0..2] of String := [...]`.
 
 ## For-loop variables
 

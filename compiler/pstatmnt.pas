@@ -2906,7 +2906,7 @@ implementation
         else if is_boolean(first_nonnil.resultdef) then
           elemdef := pasbool8type
         else if is_integer(first_nonnil.resultdef) then
-          elemdef := ptrsinttype
+          elemdef := s32inttype
         else if is_enum(first_nonnil.resultdef) then
           elemdef := first_nonnil.resultdef
         else if first_nonnil.resultdef.typ = floatdef then
