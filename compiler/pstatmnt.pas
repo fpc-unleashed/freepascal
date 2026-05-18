@@ -2905,8 +2905,17 @@ implementation
             still Pointer (nil semantically *is* a pointer) but no hint - the
             non-nil tail tells us the user's intent is pointer-like enough }
           elemdef := voidpointertype
+        else if arrconstr.left.resultdef.typ = stringdef then
+          { preserve the specific string kind the user wrote (UnicodeString,
+            WideString, ShortString) - only fall back to AnsiString for the
+            conststring literals where the source didn't say }
+          case tstringdef(arrconstr.left.resultdef).stringtype of
+            st_unicodestring: elemdef := cunicodestringtype;
+            st_widestring:    elemdef := cwidestringtype;
+            st_shortstring:   elemdef := cshortstringtype;
+            else              elemdef := getansistringdef;
+          end
         else if is_char(arrconstr.left.resultdef) or
-                (arrconstr.left.resultdef.typ = stringdef) or
                 is_conststring_array(arrconstr.left.resultdef) then
           elemdef := getansistringdef
         else if is_boolean(arrconstr.left.resultdef) then
