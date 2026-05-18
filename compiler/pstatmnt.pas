@@ -2859,13 +2859,15 @@ implementation
       returns an assignment node when an initialiser is present, or a nothing
       node otherwise. }
 
-    { unleashed: pick a dynamic-array element type from the first non-nil
-      element's category, force every element to that type (compile error on
-      mismatch), and return a fresh `array of T` dynamic def. The arrayconstructor
-      already went through pass_typecheck producing some legacy carrier; we
-      replace its semantic shape here. Mixed-type literals (string+int+...)
-      become a compile error - use `array of Variant` explicitly or pass to an
-      `array of const` parameter for genuinely mixed cases. }
+    { unleashed: pick a dynamic-array element type from the first element's
+      category (nil maps to Pointer), force every element to that type (compile
+      error on mismatch), and return a fresh `array of T` dynamic def. The
+      arrayconstructor already went through pass_typecheck producing some
+      legacy carrier; we replace its semantic shape here. Mixed-type literals
+      (string+int+...) become a compile error - use `array of Variant`
+      explicitly or pass to an `array of const` parameter for genuinely mixed
+      cases. Empty `[]` and all-nil literals get a diagnostic hint and the
+      reasonable defaults (AnsiString / Pointer). }
     function unleashed_infer_array_literal(arrconstr: tarrayconstructornode) : tdef;
       var
         hp : tarrayconstructornode;
@@ -2888,37 +2890,41 @@ implementation
         elemdef := nil;
         if not assigned(arrconstr.left) then
           begin
+            { empty `[]` }
             Comment(V_Hint, 'empty array literal, defaulting element type to AnsiString');
             elemdef := getansistringdef;
           end
-        else if arrconstr.left.nodetype = niln then
-          { first element is nil -> Pointer regardless of remaining elements }
-          elemdef := voidpointertype
         else if not assigned(first_nonnil) then
           begin
+            { every element is nil - hint that the type was guessed }
             Comment(V_Hint, 'array literal with only nil elements, defaulting element type to Pointer');
             elemdef := voidpointertype;
           end
-        else if is_char(first_nonnil.resultdef) or
-                (first_nonnil.resultdef.typ = stringdef) or
-                is_conststring_array(first_nonnil.resultdef) then
+        else if arrconstr.left.nodetype = niln then
+          { first element is nil but the literal carries a real one further on;
+            still Pointer (nil semantically *is* a pointer) but no hint - the
+            non-nil tail tells us the user's intent is pointer-like enough }
+          elemdef := voidpointertype
+        else if is_char(arrconstr.left.resultdef) or
+                (arrconstr.left.resultdef.typ = stringdef) or
+                is_conststring_array(arrconstr.left.resultdef) then
           elemdef := getansistringdef
-        else if is_boolean(first_nonnil.resultdef) then
+        else if is_boolean(arrconstr.left.resultdef) then
           elemdef := pasbool8type
-        else if is_integer(first_nonnil.resultdef) then
+        else if is_integer(arrconstr.left.resultdef) then
           elemdef := s32inttype
-        else if is_enum(first_nonnil.resultdef) then
-          elemdef := first_nonnil.resultdef
-        else if first_nonnil.resultdef.typ = floatdef then
+        else if is_enum(arrconstr.left.resultdef) then
+          elemdef := arrconstr.left.resultdef
+        else if arrconstr.left.resultdef.typ = floatdef then
           elemdef := s64floattype
-        else if first_nonnil.resultdef.typ = objectdef then
-          elemdef := first_nonnil.resultdef
-        else if first_nonnil.resultdef.typ = pointerdef then
-          elemdef := first_nonnil.resultdef
-        else if first_nonnil.resultdef.typ = variantdef then
+        else if arrconstr.left.resultdef.typ = objectdef then
+          elemdef := arrconstr.left.resultdef
+        else if arrconstr.left.resultdef.typ = pointerdef then
+          elemdef := arrconstr.left.resultdef
+        else if arrconstr.left.resultdef.typ = variantdef then
           elemdef := cvarianttype
         else
-          elemdef := first_nonnil.resultdef;
+          elemdef := arrconstr.left.resultdef;
 
         { force every element to elemdef - incompatible elements surface as
           compile errors here, before the cassignment runs }

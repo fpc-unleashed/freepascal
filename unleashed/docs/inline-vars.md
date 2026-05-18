@@ -75,20 +75,29 @@ var b := Byte(10); // Byte, not LongInt
 
 #### Array literal type inference
 
-A bare `[...]` literal on the right-hand side of an inferred `var` yields a proper **dynamic array** (`array of T`). `T` is decided by the first non-`nil` element's category, not its byte width:
+A bare `[...]` literal on the right-hand side of an inferred `var` yields a proper **dynamic array** (`array of T`). `T` is decided by the **first element**, regardless of what comes after; `nil` counts as a category that maps to `Pointer`.
 
-| First non-`nil` element     | Inferred element type |
-|-----------------------------|-----------------------|
-| string / char literal       | `AnsiString`          |
-| integer literal             | `LongInt`             |
-| float literal               | `Double`              |
-| boolean literal             | `Boolean`             |
-| enum value                  | the enum type         |
-| class instance              | the class type        |
-| variant                     | `Variant`             |
-| `nil` (anywhere in front)   | `Pointer`             |
+| First element             | Inferred element type |
+|---------------------------|-----------------------|
+| string / char literal     | `AnsiString`          |
+| integer literal           | `LongInt`             |
+| float literal             | `Double`              |
+| boolean literal           | `Boolean`             |
+| enum value                | the enum type         |
+| class instance            | the class type        |
+| variant                   | `Variant`             |
+| `nil`                     | `Pointer`             |
 
 Every subsequent element must be assignable to the chosen `T`; mismatching literals are a compile error. For genuinely mixed-type collections use `array of Variant` explicitly, or pass through an `array of const` parameter.
+
+Two diagnostic edge cases:
+
+| Literal shape             | Default               | Diagnostic |
+|---------------------------|-----------------------|------------|
+| `[]` (empty)              | `array of AnsiString` | Hint       |
+| `[nil, nil, ...]` (all nil) | `array of Pointer`  | Hint       |
+
+`[nil, obj, obj]` (nil first, real values after) silently picks `Pointer` without a hint - the non-nil tail clearly signals the intent is a pointer container.
 
 ```pas
 var a := ['', 'a', 'bb', 'longer'];        // array of AnsiString, all 4 elements kept fully
@@ -96,7 +105,7 @@ var c := [1, 2, 1_000_000];                // array of LongInt
 var d := [3.14, 2.71];                     // array of Double
 var e := [true, false];                    // array of Boolean
 var pa := [nil, nil, nil];                 // array of Pointer (hint emitted)
-var pb := [nil, TFoo.Create];              // array of Pointer (Pointer because first is nil)
+var pb := [nil, TFoo.Create];              // array of Pointer (no hint, nil first)
 var x := [];                               // array of AnsiString (hint: empty, defaulting)
 
 // compile error: integer `1` cannot be assigned to inferred element type AnsiString
