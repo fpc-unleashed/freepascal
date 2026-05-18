@@ -709,9 +709,11 @@ implementation
 
     function result_type(options:TSingleTypeOptions):tdef;
       begin
-        { for array-of-X return types, use read_anon_type; otherwise
-          stick with single_type to avoid breaking type resolution }
-        if current_scanner.token in [_ARRAY,_PACKED,_BITPACKED] then
+        { unleashed: inline `array of X` / `packed array ...` / `bitpacked
+          array ...` as a function result goes through read_anon_type; classic
+          modes keep requiring a named type identifier (stock FPC behaviour) }
+        if (m_unleashed in current_settings.modeswitches) and
+           (current_scanner.token in [_ARRAY,_PACKED,_BITPACKED]) then
           read_anon_type(result,false,nil)
         else
           single_type(result,options);
