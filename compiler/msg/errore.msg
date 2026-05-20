@@ -1790,12 +1790,63 @@ parser_e_for_step_not_ordinal=03383_E_Step expression must be of ordinal type
 parser_e_step_not_allowed_in_for_in=03384_E_Step is not allowed in for-in loops
 % The \var{step} keyword can only be used with classic
 % \var{for ... to/downto ...} loops, not with \var{for ... in ...}.
+parser_e_embed_needs_record_type=03395_E_Record type expected after "embed"
+% The \var{embed} keyword in a record body must be followed by a single
+% record type name and a semicolon. Classes, objects, interfaces, and
+% non-record types are not allowed (they would embed a pointer or VMT
+% rather than the fields).
+parser_e_offsetof_subbyte_field=03396_E_offsetof("$1") is not on a byte boundary - use bitoffsetof instead
+% The field's bit offset inside a bitpacked record is not a multiple of 8,
+% so it has no byte-granular offset. Use \var{bitoffsetof} to get the
+% offset in bits.
+parser_e_union_exceeds_size=03397_E_Union variants need $1 bytes but the union was declared "size $2"
+% A union declared as \var{union size N ... end} cannot hold variants whose
+% maximum size exceeds N bytes. Increase the declared size or shrink the
+% variants.
+parser_e_composition_duplicate_id=03398_E_Duplicate identifier "$1" from composition - already present in the surrounding record
+% A field flattened into a record by an \var{embed} or inline anonymous
+% record collides with another field of the same name already in the
+% surrounding record (either a direct field or one brought in by a
+% previous composition). Rename, use a named subfield instead of an
+% embed, or remove the duplicate.
+parser_e_union_exceeds_bitsize=03399_E_Union variants need $1 bits but the union was declared "bitsize $2"
+% A union declared as \var{union bitsize N ... end} cannot hold variants
+% whose maximum size exceeds N bits. Increase the declared bitsize or
+% shrink the variants.
+parser_e_record_of_requires_bitpacked=03400_E_"of <type>" only allowed on union or bitpacked record
+% The `of <type>` modifier on a record sets the default field type for
+% the C-style `name: N` and `pad N` bitfield syntax, which is only
+% meaningful in a bit-packed scope. Use `bitpacked record of T` or
+% remove the `of <type>` clause.
+parser_e_record_exceeds_size=03401_E_Record needs $1 bytes but was declared "size $2"
+% A record declared as \var{record size N ... end} cannot hold fields
+% whose total size exceeds N bytes. Increase the declared size or
+% shrink the contents.
+parser_e_record_exceeds_bitsize=03402_E_Record needs $1 bits but was declared "bitsize $2"
+% A record declared as \var{record bitsize N ... end} cannot hold fields
+% whose total size exceeds N bits. Increase the declared bitsize or
+% shrink the contents.
+parser_e_size_bitsize_exclusive=03403_E_"size" and "bitsize" are mutually exclusive - choose one
+% The `size N` and `bitsize N` pre-body modifiers both constrain the
+% same storage dimension. Specifying both is ambiguous: pick the unit
+% that matches your intent (bytes -> size, bits -> bitsize).
+parser_e_duplicate_modifier=03404_E_Modifier "$1" already specified
+% A pre-body modifier (`size`, `bitsize`, `align`, `of`) can appear
+% at most once per declaration. Remove the duplicate.
+parser_e_of_must_be_first=03405_E_"of <type>" must be the first modifier
+% The `of TYPE` modifier sets defaults that other modifiers override.
+% It must appear right after the `union` or `record` keyword, before
+% any `size`, `bitsize` or `align` clauses.
+parser_e_align_bitalign_exclusive=03406_E_"align" and "bitalign" are mutually exclusive - choose one
+% The `align N` and `bitalign N` pre-body modifiers both express
+% alignment in different units. Specifying both is ambiguous: pick
+% bytes (align) or bits (bitalign), not both.
 %
 % \end{description}
 %
 # Type Checking
 #
-# 03394 is the last used parser one
+# 03406 is the last used parser one
 #
 # 04136 is the last used one
 #

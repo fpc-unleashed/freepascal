@@ -31,7 +31,7 @@ interface
       symtable,symsym,symdef,symtype;
 
     type
-      tvar_dec_option=(vd_record,vd_object,vd_threadvar,vd_class,vd_final,vd_canreorder,vd_check_generic);
+      tvar_dec_option=(vd_record,vd_object,vd_threadvar,vd_class,vd_final,vd_canreorder,vd_check_generic,vd_one_variant);
       tvar_dec_options=set of tvar_dec_option;
 
     function  read_property_dec(is_classproperty:boolean;astruct:tabstractrecorddef):tpropertysym;
@@ -43,6 +43,14 @@ interface
     procedure read_public_and_external(vs: tabstractvarsym);
 
     procedure try_consume_sectiondirective(var asection: ansistring);
+
+    { composablerecords: parser-wide stack of default field types
+      established by `union of T` or `bitpacked record of T`. consulted by
+      the C-style `name: N` / `pad N` bitfield syntax. innermost wins.
+      callers must push on enter and pop on exit (paired). }
+    function current_composable_default_type: tdef;
+    procedure push_composable_default_type(def: tdef);
+    procedure pop_composable_default_type;
 
     function check_allowed_for_var_or_const(def:tdef;allowdynarray:boolean):boolean;
 
@@ -1734,6 +1742,358 @@ implementation
       end;
 
 
+    { stack of default field types established by `union of T` or
+      `bitpacked record of T`. inner scope inherits from outer until a new
+      `of T` is encountered (innermost wins). consulted by the C-style
+      `name: N` / `pad N` bitfield syntax. }
+    var
+      composable_default_type_stack: tfplist;
+
+    function current_composable_default_type: tdef;
+      begin
+        if assigned(composable_default_type_stack) and
+           (composable_default_type_stack.count>0) then
+          result:=tdef(composable_default_type_stack[composable_default_type_stack.count-1])
+        else
+          result:=nil;
+      end;
+
+    procedure push_composable_default_type(def: tdef);
+      begin
+        if not assigned(composable_default_type_stack) then
+          composable_default_type_stack:=tfplist.create;
+        composable_default_type_stack.add(def);
+      end;
+
+    procedure pop_composable_default_type;
+      begin
+        if assigned(composable_default_type_stack) and
+           (composable_default_type_stack.count>0) then
+          composable_default_type_stack.delete(composable_default_type_stack.count-1);
+      end;
+
+    { walk a record def's symtable + its own composition chain, collecting
+      every user-facing field name into `names`. internal carriers
+      ($compose$N) are descended through, not added. used to detect
+      collisions when registering a new composition. }
+    procedure collect_flattened_field_names(def: tabstractrecorddef; names: tfphashlist);
+      var
+        i: integer;
+        sym: tsym;
+        fv: tfieldvarsym;
+      begin
+        if not assigned(def) then exit;
+        for i:=0 to def.symtable.symlist.count-1 do
+          begin
+            sym:=tsym(def.symtable.symlist[i]);
+            if sym.typ<>fieldvarsym then continue;
+            fv:=tfieldvarsym(sym);
+            if copy(sym.realname,1,9)='$compose$' then
+              begin
+                if fv.vardef.typ in [recorddef,objectdef] then
+                  collect_flattened_field_names(tabstractrecorddef(fv.vardef),names);
+              end
+            else
+              if names.find(sym.name)=nil then
+                names.add(sym.name,sym);
+          end;
+      end;
+
+    { check whether any flattened field name from `target_def` collides with
+      the already-present user-facing name space of `recst`. returns the
+      first colliding name, '' if none. }
+    function find_composition_collision(recst: tabstractrecordsymtable;
+                                        target_def: tdef): string;
+      var
+        outer_names, target_names: tfphashlist;
+        i: integer;
+        nm: shortstring;
+      begin
+        result:='';
+        if not (target_def.typ in [recorddef,objectdef]) then exit;
+        outer_names:=tfphashlist.create;
+        target_names:=tfphashlist.create;
+        try
+          collect_flattened_field_names(tabstractrecorddef(recst.defowner),outer_names);
+          collect_flattened_field_names(tabstractrecorddef(target_def),target_names);
+          for i:=0 to target_names.count-1 do
+            begin
+              nm:=target_names.nameofindex(i);
+              if outer_names.find(nm)<>nil then
+                exit(nm);
+            end;
+        finally
+          outer_names.free;
+          target_names.free;
+        end;
+      end;
+
+    { collect ONLY the composition-flattened field names of `def` (the names
+      brought in via $compose$N carriers). direct user fields are skipped.
+      symmetric counterpart of `collect_flattened_field_names` used when the
+      check goes the other way: a new direct field / union variant being
+      added to `def` needs to make sure it does not shadow a name already
+      reachable through a previously declared embed / inline anonymous
+      record. }
+    procedure collect_composition_flat_names(def: tabstractrecorddef; names: tfphashlist);
+      var
+        i: integer;
+        uce: pcomposition_entry;
+      begin
+        if not assigned(def) then exit;
+        for i:=0 to def.composition_count-1 do
+          begin
+            uce:=def.composition_at(i);
+            if not assigned(uce) or not assigned(uce^.carrier) then continue;
+            if tfieldvarsym(uce^.carrier).vardef.typ in [recorddef,objectdef] then
+              collect_flattened_field_names(
+                tabstractrecorddef(tfieldvarsym(uce^.carrier).vardef),names);
+          end;
+      end;
+
+    { check whether `fname` collides with any composition-flattened name
+      already reachable on `recst`. on collision, emits
+      parser_e_composition_duplicate_id and returns true. mirror of the
+      collision pass `add_composition_carrier` already runs in the other
+      direction; this one covers fields and union variants added AFTER an
+      embed. }
+    function field_collides_with_compositions(recst: tabstractrecordsymtable;
+                                              const fname: TIDString): boolean;
+      var
+        composed_names: tfphashlist;
+      begin
+        result:=false;
+        if tabstractrecorddef(recst.defowner).composition_count=0 then exit;
+        composed_names:=tfphashlist.create;
+        try
+          collect_composition_flat_names(
+            tabstractrecorddef(recst.defowner),composed_names);
+          result:=composed_names.find(fname)<>nil;
+          if result then
+            Message1(parser_e_composition_duplicate_id,fname);
+        finally
+          composed_names.free;
+        end;
+      end;
+
+    { create a hidden carrier field for record composition (anonymous embed or
+      inline anonymous record). storage lives on the carrier; lookup-time
+      resolution flattens its members into the surrounding record's name space
+      via the composition link recorded on the parent record def. carrier name
+      is auto-generated as $compose$N (N = sym count in recst) so it never
+      collides with user identifiers.
+
+      duplicate detection: every field name brought in by the new composition
+      (recursively through its own embeds) is checked against the surrounding
+      record's already-visible flat name space. a hit raises
+      parser_e_composition_duplicate_id and skips registration. }
+    function add_composition_carrier(recst: tabstractrecordsymtable;
+                                     target_def: tdef;
+                                     vis: tvisibility;
+                                     kind: tcomposition_kind): tfieldvarsym;
+      var
+        collision: string;
+      begin
+        result:=nil;
+        collision:=find_composition_collision(recst,target_def);
+        if collision<>'' then
+          begin
+            Message1(parser_e_composition_duplicate_id,collision);
+            exit;
+          end;
+        { target_def.unique_id_str gives a module-wide unique number,
+          so two carriers under the same outer record (one direct, one
+          through a union variant merged into the parent symtable) do
+          not collide on `$compose$N` even though their local symtables
+          number from zero independently }
+        result:=cfieldvarsym.create('$compose$'+target_def.unique_id_str,vs_value,target_def,[]);
+        result.visibility:=vis;
+        result.register_sym;
+        recst.insertsym(result);
+        recst.addfield(result,vis);
+        tabstractrecorddef(recst.defowner).add_composition(result,kind);
+      end;
+
+
+    { parse one `union ... end;` block in modern composable records syntax.
+      caller already consumed the `union` keyword; we own the body up to and
+      including the closing `end` (and any trailing `;`). variants overlay
+      from the same offset, identical layout to legacy `case` of variant
+      records but with no tag selector. }
+    procedure parse_modern_union(recst: tabstractrecordsymtable;
+                                 target_size: asizeint;
+                                 target_align: shortint;
+                                 target_bitsize: longint;
+                                 target_bitalign: longint);
+      { target_size = -1 means "no explicit size", otherwise force the union
+        to occupy exactly that many bytes (assert + pad). target_align = 0
+        means "no explicit alignment", otherwise force the union's record
+        alignment to that value. target_bitsize = -1 means "no explicit bit
+        constraint", otherwise assert max(variant bit size) <= N and pad
+        union storage to ceil(N/8) bytes. target_bitalign = 0 means "no
+        explicit bit alignment", otherwise behaves like `align ceil(N/8)`
+        - the union is byte-overlay so any bit-level alignment value
+        collapses to byte alignment, but accepting `bitalign` here keeps
+        the modifier set symmetric with record pre-body modifiers. }
+      var
+        unionsymtable : trecordsymtable;
+        uniondef : trecorddef;
+        startvarrecsize, maxsize, max_bit_size : asizeint;
+        startvarrecalign, startpadalign,
+        maxalignment, maxpadalign,
+        usedalign : shortint;
+        offset : longint;
+        hadgendummy : boolean;
+        dummyattrelementcount : integer;
+        i : longint;
+        uce : pcomposition_entry;
+      begin
+        unionsymtable:=trecordsymtable.create('',current_settings.packrecords,current_settings.alignment.recordalignmin);
+        uniondef:=crecorddef.create('',unionsymtable);
+        uniondef.isunion:=true;
+
+        startvarrecsize:=unionsymtable.datasize;
+        startvarrecalign:=unionsymtable.fieldalignment;
+        startpadalign:=unionsymtable.padalignment;
+
+        maxsize:=0;
+        maxalignment:=0;
+        maxpadalign:=0;
+        max_bit_size:=0;
+
+        symtablestack.push(unionsymtable);
+        inc(variantrecordlevel);
+        try
+          while current_scanner.token<>_END do
+            begin
+              read_record_fields([vd_record,vd_one_variant],nil,nil,hadgendummy,dummyattrelementcount);
+
+              { variant boundary: track max layout, then reset for next overlay.
+                for bit_size, use the actual bit usage of any bit-packed sub-
+                record carrier this variant produced - byte-rounded
+                unionsymtable.current_bit_offset would over-report when the
+                inner record's payload is sub-byte. }
+              if unionsymtable.datasize>maxsize then maxsize:=unionsymtable.datasize;
+              i:=unionsymtable.current_bit_offset;
+              { peek the most recently added field; if it's an inline
+                bitpacked record carrier, use its precise databitsize so
+                a 20-bit payload doesn't get over-reported as 24 due to
+                byte-boundary padding on the inner record }
+              if (unionsymtable.symlist.count>0) and
+                 (tsym(unionsymtable.symlist[unionsymtable.symlist.count-1]).typ=fieldvarsym) and
+                 (tfieldvarsym(unionsymtable.symlist[unionsymtable.symlist.count-1]).vardef.typ=recorddef) and
+                 trecorddef(tfieldvarsym(unionsymtable.symlist[unionsymtable.symlist.count-1]).vardef).is_packed then
+                i:=trecordsymtable(trecorddef(tfieldvarsym(unionsymtable.symlist[unionsymtable.symlist.count-1]).vardef).symtable).current_bit_offset;
+              if i>max_bit_size then max_bit_size:=i;
+              if unionsymtable.fieldalignment>maxalignment then maxalignment:=unionsymtable.fieldalignment;
+              if unionsymtable.padalignment>maxpadalign then maxpadalign:=unionsymtable.padalignment;
+              unionsymtable.datasize:=startvarrecsize;
+              unionsymtable.fieldalignment:=startvarrecalign;
+              unionsymtable.padalignment:=startpadalign;
+            end;
+        finally
+          dec(variantrecordlevel);
+          symtablestack.pop(unionsymtable);
+        end;
+
+        consume(_END);
+
+        { explicit `union bitsize N`: assert variants fit in N bits; if
+          they do, the union's byte storage is forced to ceil(N/8) }
+        if target_bitsize>=0 then
+          begin
+            if max_bit_size>target_bitsize then
+              Message2(parser_e_union_exceeds_bitsize,tostr(max_bit_size),tostr(target_bitsize));
+            maxsize:=(target_bitsize+7) div 8;
+          end;
+
+        { explicit `union size N`: variants must fit in N, else error;
+          when they do, pad the union to exactly N bytes (similar to how
+          field-level `size N` widens a field's slot) }
+        if target_size>=0 then
+          begin
+            if maxsize>target_size then
+              Message2(parser_e_union_exceeds_size,tostr(maxsize),tostr(target_size));
+            maxsize:=target_size;
+          end;
+        unionsymtable.datasize:=maxsize;
+        unionsymtable.fieldalignment:=maxalignment;
+        unionsymtable.addalignmentpadding;
+
+        { explicit `union align N`: bump the union's record-level alignment
+          up to N. propagates to parent record via the recordalignment
+          comparison below. `bitalign N` collapses to ceil(N/8) byte
+          alignment because the union is byte-overlay (bit-level
+          alignment within a byte-overlay container has no meaning). }
+        if target_bitalign>0 then
+          begin
+            i:=(target_bitalign+7) div 8;
+            if i>target_align then
+              target_align:=i;
+          end;
+        if target_align>0 then
+          begin
+            if target_align>unionsymtable.recordalignment then
+              unionsymtable.recordalignment:=target_align;
+            if target_align>unionsymtable.explicitrecordalignment then
+              unionsymtable.explicitrecordalignment:=target_align;
+          end;
+
+        if target_align>0 then
+          { explicit `union align N` bypasses the recordalignmax clamp -
+            user asked for N, give them N }
+          usedalign:=target_align
+        else
+          case recst.usefieldalignment of
+            0,
+            C_alignment:
+              usedalign:=used_align(unionsymtable.recordalignment,current_settings.alignment.recordalignmin,current_settings.alignment.maxCrecordalign);
+            bit_alignment:
+              usedalign:=1;
+            mac68k_alignment:
+              usedalign:=2;
+            else
+              usedalign:=used_align(recst.fieldalignment,current_settings.alignment.recordalignmin,current_settings.alignment.recordalignmax);
+          end;
+        offset:=align(recst.datasize,usedalign);
+        recst.datasize:=offset+unionsymtable.datasize;
+
+        if unionsymtable.recordalignment>recst.fieldalignment then
+          recst.fieldalignment:=unionsymtable.recordalignment;
+        if unionsymtable.explicitrecordalignment>recst.explicitrecordalignment then
+          recst.explicitrecordalignment:=unionsymtable.explicitrecordalignment;
+        { propagate explicit `union align N` / `union bitalign N` past
+          the parent record's recordalignmax clamp - if the user asked
+          for cache-line alignment on the union, the surrounding record
+          must respect it too (otherwise AlignOf(outer) would silently
+          drop back to the platform default) }
+        if (unionsymtable.explicitrecordalignment>0) and
+           (unionsymtable.explicitrecordalignment>recst.recordalignment) then
+          recst.recordalignment:=unionsymtable.explicitrecordalignment;
+
+        { variant field names are about to flatten into the surrounding
+          record; catch any that shadow a previously declared composition }
+        if tabstractrecorddef(recst.defowner).composition_count>0 then
+          for i:=0 to unionsymtable.symlist.count-1 do
+            begin
+              if tsym(unionsymtable.symlist[i]).typ<>fieldvarsym then continue;
+              if copy(tsym(unionsymtable.symlist[i]).realname,1,9)='$compose$' then continue;
+              field_collides_with_compositions(recst,tsym(unionsymtable.symlist[i]).name);
+            end;
+
+        trecordsymtable(recst).insertunionst(unionsymtable,offset);
+        { compositions added on the union def (anon embed / inline anon inside
+          a variant) belong to the surrounding record since the carriers are
+          now flattened into it. migrate before deletedef frees the list. }
+        for i:=0 to uniondef.composition_count-1 do
+          begin
+            uce:=uniondef.composition_at(i);
+            tabstractrecorddef(recst.defowner).add_composition(uce^.carrier,uce^.kind);
+          end;
+        uniondef.owner.deletedef(uniondef);
+      end;
+
+
     procedure read_record_fields(options:Tvar_dec_options; reorderlist: TFPObjectList; variantdesc : ppvariantrecdesc;out had_generic:boolean; out attr_element_count : integer);
       var
          sc : TFPObjectList;
@@ -1761,14 +2121,38 @@ implementation
          deprecatedmsg : pshortstring;
          hadgendummy,
          semicoloneaten,
-         removeclassoption: boolean;
+         removeclassoption,
+         primed_first_field: boolean;
+         primed_first_sorg: string;
+         anon_target_def: tdef;
          dummyattrelementcount : integer;
+         { composablerecords per-field sizing/alignment overrides parsed off
+           the post-suffix `align N` / `bitalign N` / `size N` / `bitsize N` }
+         parsed_custom_align,
+         parsed_custom_bitalign : shortint;
+         parsed_custom_size,
+         parsed_custom_bitsize : longint;
+         { temporaries for subrange-vs-C-style disambiguation:
+           `name: N` is a bitfield, `name: N..M` is a subrange type }
+         parsed_potential_low,
+         parsed_potential_high : tconstexprint;
+         { union pre-body `bitalign N` modifier (4th flag - the other 3
+           reuse pre-existing locals as seen_size/seen_bitsize/seen_align) }
+         seen_bitalign : boolean;
+         parsed_union_bitalign : longint;
          { tracks whether the record already has a flexible array member;
            once set, no further fields are allowed }
          record_fam_seen : boolean;
+         { tracks whether the body opened with `of <type>` and pushed a
+           default type onto the composable_default_type_stack }
+         pushed_default_type : boolean;
          priorfields, k : longint;
          scidx : longint;
          is_in_sc : boolean;
+         { used during generic specialisation to map the current inline
+           anon record back to its origin in the generic's composition
+           list, so read_anon_type can specialise the nested record }
+         uce : pcomposition_entry;
 {$if defined(powerpc) or defined(powerpc64)}
          tempdef: tdef;
          is_first_type: boolean;
@@ -1782,8 +2166,49 @@ implementation
 {$if defined(powerpc) or defined(powerpc64)}
          is_first_type:=true;
 {$endif powerpc or powerpc64}
+         { composablerecords: `bitpacked record of T` opens a scope with
+           T as the default type for the C-style `name: N` and `pad N`
+           bitfield syntax below. plain `record of T` is rejected. }
+         pushed_default_type:=false;
+         if (vd_record in options) and
+            (m_composable_records in current_settings.modeswitches) and
+            (current_scanner.token=_OF) then
+           begin
+             if recst.usefieldalignment<>bit_alignment then
+               begin
+                 Message(parser_e_record_of_requires_bitpacked);
+                 consume(_OF);
+                 if current_scanner.token=_ID then
+                   consume(_ID);
+               end
+             else
+               begin
+                 consume(_OF);
+                 if current_scanner.token=_ID then
+                   begin
+                     searchsym_type(current_scanner.pattern,srsym,srsymtable);
+                     if assigned(srsym) and (srsym.typ=typesym) then
+                       begin
+                         push_composable_default_type(ttypesym(srsym).typedef);
+                         pushed_default_type:=true;
+                         consume(_ID);
+                       end
+                     else
+                       begin
+                         Message1(sym_e_id_no_member,current_scanner.orgpattern);
+                         consume(_ID);
+                       end;
+                   end
+                 else
+                   consume(_ID);
+               end;
+           end;
+         try
          { Force an expected ID error message }
-         if not (current_scanner.token in [_ID,_CASE,_END]) then
+         if not (current_scanner.token in [_ID,_CASE,_END]) and
+            not((vd_record in options) and
+                (m_composable_records in current_settings.modeswitches) and
+                (current_scanner.token in [_RECORD,_PACKED,_BITPACKED])) then
            consume(_ID);
          { read vars }
          sc:=TFPObjectList.create(false);
@@ -1791,7 +2216,10 @@ implementation
          had_generic:=false;
          attr_element_count:=0;
          record_fam_seen:=false;
-         while (current_scanner.token=_ID) and
+         while ((current_scanner.token=_ID) or
+                ((vd_record in options) and
+                 (m_composable_records in current_settings.modeswitches) and
+                 (current_scanner.token in [_RECORD,_PACKED,_BITPACKED]))) and
             not(((vd_object in options) or
                  ((vd_record in options) and (m_advanced_records in current_settings.modeswitches))) and
                 ((current_scanner.idtoken in [_PUBLIC,_PRIVATE,_PUBLISHED,_PROTECTED,_STRICT]) or
@@ -1804,26 +2232,365 @@ implementation
                  Message(parser_e_fam_must_be_last_field);
                  break;
                end;
+             { inline anonymous record `record fields end;` solo (optionally
+               prefixed with `packed` / `bitpacked`): parse an unnamed record
+               def and embed via composition carrier }
+             if (vd_record in options) and
+                (m_composable_records in current_settings.modeswitches) and
+                (current_scanner.token in [_RECORD,_PACKED,_BITPACKED]) then
+               begin
+                 { during generic specialisation the inline anon record
+                   needs a genericdef hint so its nested record_dec runs
+                   in specialisation mode (matching what the regular
+                   field-decl path computes via field-name lookup). use
+                   the position-based mapping: the k-th composition we
+                   are about to add corresponds to the k-th composition
+                   in the generic's def, so feed that carrier's vardef
+                   as the hint }
+                 gendef:=nil;
+                 if (current_structdef<>nil) and
+                    (df_specialization in current_structdef.defoptions) and
+                    (current_structdef.genericdef<>nil) and
+                    (current_structdef.genericdef.typ in [recorddef,objectdef]) then
+                   begin
+                     k:=tabstractrecorddef(recst.defowner).composition_count;
+                     if k<tabstractrecorddef(current_structdef.genericdef).composition_count then
+                       begin
+                         uce:=tabstractrecorddef(current_structdef.genericdef).composition_at(k);
+                         if assigned(uce) and assigned(uce^.carrier) then
+                           gendef:=tfieldvarsym(uce^.carrier).vardef;
+                       end;
+                   end;
+                 read_anon_type(anon_target_def,false,tstoreddef(gendef));
+                 add_composition_carrier(recst,anon_target_def,symtablestack.top.currentvisibility,ck_inline_record);
+                 if current_scanner.token=_SEMICOLON then
+                   consume(_SEMICOLON);
+                 if vd_one_variant in options then
+                   break
+                 else
+                   continue;
+               end;
+             { contextual `union` keyword (composablerecords): treat as the
+               start of a memory-overlap block ONLY if the next token is not
+               `:` or `,`. preserves backward compat for records that use
+               `union` as a field name (e.g. jwawinuser.pas: `union: record`). }
+             primed_first_field:=false;
+             primed_first_sorg:='';
+             if (vd_record in options) and
+                (m_composable_records in current_settings.modeswitches) and
+                (current_scanner.pattern='UNION') then
+               begin
+                 sorg:=current_scanner.orgpattern;
+                 consume(_ID);
+                 if current_scanner.token in [_COLON,_COMMA] then
+                   begin
+                     { it was a field name -- seed the field collection and
+                       fall through to the regular field-decl path }
+                     primed_first_field:=true;
+                     primed_first_sorg:=sorg;
+                   end
+                 else
+                   begin
+                     { modifiers after `union` keyword:
+                       - `of TYPE`: anchor; size := sizeof(TYPE),
+                         align := AlignOf(TYPE). these become defaults that
+                         can still be overridden by an explicit `size` or
+                         `align` on the same line.
+                       - `size <constexpr>`: forces union to N bytes
+                         (assert + pad).
+                       - `bitsize <constexpr>`: forces union to ceil(N/8)
+                         bytes (bit-precise variant assertion).
+                       - `align <constexpr>`: forces record alignment.
+                       - `bitalign <constexpr>`: same as `align ceil(N/8)`
+                         (kept for symmetry with record pre-body).
+                       any order, each at most once, of-first, size/bitsize
+                       mutex, align/bitalign mutex. }
+                     parsed_custom_size:=-1;
+                     parsed_custom_align:=0;
+                     parsed_custom_bitsize:=-1;
+                     parsed_union_bitalign:=0;
+                     anon_target_def:=nil;
+                     { strict modifier ordering for union:
+                       1. `of T` first if present
+                       2. `size N` XOR `bitsize N`
+                       3. `align N` XOR `bitalign N`
+                       4. each modifier at most once
+                       5. `of T` after another modifier = error }
+                     if current_scanner.token=_OF then
+                       begin
+                         consume(_OF);
+                         if current_scanner.token=_ID then
+                           begin
+                             searchsym_type(current_scanner.pattern,srsym,srsymtable);
+                             if assigned(srsym) and (srsym.typ=typesym) then
+                               begin
+                                 parsed_custom_size:=ttypesym(srsym).typedef.size;
+                                 parsed_custom_align:=ttypesym(srsym).typedef.alignment;
+                                 anon_target_def:=ttypesym(srsym).typedef;
+                                 consume(_ID);
+                               end
+                             else
+                               begin
+                                 Message1(sym_e_id_no_member,current_scanner.orgpattern);
+                                 consume(_ID);
+                               end;
+                           end
+                         else
+                           consume(_ID);
+                       end;
+                     primed_first_field:=false; { = seen_size  }
+                     hadgendummy:=false;        { = seen_bitsize }
+                     semicoloneaten:=false;     { = seen_align }
+                     seen_bitalign:=false;
+                     while current_scanner.token=_ID do
+                       begin
+                         if current_scanner.pattern='SIZE' then
+                           begin
+                             if primed_first_field then
+                               Message1(parser_e_duplicate_modifier,'size');
+                             if hadgendummy then
+                               Message(parser_e_size_bitsize_exclusive);
+                             primed_first_field:=true;
+                             consume(_ID);
+                             parsed_custom_size:=get_intconst.svalue;
+                             if parsed_custom_size<0 then
+                               begin
+                                 Message(parser_e_illegal_expression);
+                                 parsed_custom_size:=-1;
+                               end;
+                           end
+                         else if current_scanner.pattern='BITSIZE' then
+                           begin
+                             if hadgendummy then
+                               Message1(parser_e_duplicate_modifier,'bitsize');
+                             if primed_first_field then
+                               Message(parser_e_size_bitsize_exclusive);
+                             hadgendummy:=true;
+                             consume(_ID);
+                             parsed_custom_bitsize:=get_intconst.svalue;
+                             parsed_custom_size:=-1;
+                             if parsed_custom_bitsize<1 then
+                               begin
+                                 Message(parser_e_illegal_expression);
+                                 parsed_custom_bitsize:=-1;
+                               end;
+                           end
+                         else if current_scanner.pattern='ALIGN' then
+                           begin
+                             if semicoloneaten then
+                               Message1(parser_e_duplicate_modifier,'align');
+                             if seen_bitalign then
+                               Message(parser_e_align_bitalign_exclusive);
+                             semicoloneaten:=true;
+                             consume(_ID);
+                             parsed_custom_align:=get_intconst.svalue;
+                             if (parsed_custom_align<1) or
+                                ((parsed_custom_align and (parsed_custom_align-1))<>0) then
+                               begin
+                                 Message(parser_e_illegal_expression);
+                                 parsed_custom_align:=0;
+                               end;
+                           end
+                         else if current_scanner.pattern='BITALIGN' then
+                           begin
+                             if seen_bitalign then
+                               Message1(parser_e_duplicate_modifier,'bitalign');
+                             if semicoloneaten then
+                               Message(parser_e_align_bitalign_exclusive);
+                             seen_bitalign:=true;
+                             consume(_ID);
+                             parsed_union_bitalign:=get_intconst.svalue;
+                             if parsed_union_bitalign<1 then
+                               begin
+                                 Message(parser_e_illegal_expression);
+                                 parsed_union_bitalign:=0;
+                               end;
+                           end
+                         else
+                           break;
+                       end;
+                     if current_scanner.token=_OF then
+                       begin
+                         Message(parser_e_of_must_be_first);
+                         consume(_OF);
+                         if current_scanner.token=_ID then
+                           consume(_ID);
+                       end;
+                     primed_first_field:=false;
+                     hadgendummy:=false;
+                     semicoloneaten:=false;
+                     seen_bitalign:=false;
+                     { propagate `union of T` default type to variant bodies }
+                     if assigned(anon_target_def) then
+                       push_composable_default_type(anon_target_def);
+                     try
+                       parse_modern_union(recst,parsed_custom_size,parsed_custom_align,parsed_custom_bitsize,parsed_union_bitalign);
+                     finally
+                       if assigned(anon_target_def) then
+                         pop_composable_default_type;
+                     end;
+                     if current_scanner.token=_SEMICOLON then
+                       consume(_SEMICOLON);
+                     if vd_one_variant in options then
+                       break
+                     else
+                       continue;
+                   end;
+               end;
+             { contextual `embed` keyword (composablerecords): consumes a
+               record/object type name followed by `;` to register an
+               anonymous embed. backward compat: if the next token after
+               `embed` is `:` or `,`, treat `embed` as a field name (stock
+               FPC accepts records with `embed: T;` / `embed, x: T;` and
+               those must keep parsing). }
+             if (vd_record in options) and
+                (m_composable_records in current_settings.modeswitches) and
+                (current_scanner.pattern='EMBED') then
+               begin
+                 sorg:=current_scanner.orgpattern;
+                 consume(_ID);
+                 if current_scanner.token in [_COLON,_COMMA] then
+                   begin
+                     primed_first_field:=true;
+                     primed_first_sorg:=sorg;
+                   end
+                 else
+                   begin
+                     if current_scanner.token=_ID then
+                       begin
+                         searchsym(upper(current_scanner.orgpattern),srsym,srsymtable);
+                         if assigned(srsym) and (srsym.typ=typesym) and
+                            (ttypesym(srsym).typedef.typ=recorddef) then
+                           begin
+                             anon_target_def:=ttypesym(srsym).typedef;
+                             consume(_ID);
+                             add_composition_carrier(recst,anon_target_def,
+                                                     symtablestack.top.currentvisibility,
+                                                     ck_anon_embed);
+                             consume(_SEMICOLON);
+                             if vd_one_variant in options then
+                               break
+                             else
+                               continue;
+                           end;
+                       end;
+                     Message(parser_e_embed_needs_record_type);
+                     { recovery: skip to the next semicolon to keep the
+                       record body parsable }
+                     while not (current_scanner.token in [_SEMICOLON,_END,_EOF]) do
+                       consume(current_scanner.token);
+                     if current_scanner.token=_SEMICOLON then
+                       consume(_SEMICOLON);
+                     if vd_one_variant in options then
+                       break
+                     else
+                       continue;
+                   end;
+               end;
+             { contextual `pad` keyword (composablerecords): anonymous
+               padding bits inside a bitpacked record. `pad N` for N > 0
+               reserves N bits with no accessible field; `pad 0` aligns
+               the next field to the next storage-unit boundary - of
+               the active default type if any, otherwise of a byte.
+               backward compat: if `pad` is followed by `:` or `,` it
+               is treated as a regular field name. }
+             if (vd_record in options) and
+                (m_composable_records in current_settings.modeswitches) and
+                (recst.usefieldalignment=bit_alignment) and
+                (current_scanner.pattern='PAD') then
+               begin
+                 sorg:=current_scanner.orgpattern;
+                 consume(_ID);
+                 if current_scanner.token in [_COLON,_COMMA] then
+                   begin
+                     primed_first_field:=true;
+                     primed_first_sorg:=sorg;
+                   end
+                 else
+                   begin
+                     k:=get_intconst.svalue;
+                     if k<0 then
+                       begin
+                         Message(scanner_e_illegal_alignment_directive);
+                         k:=0;
+                       end;
+                     if k=0 then
+                       begin
+                         { `pad 0` aligns to the next storage-unit
+                           boundary; default type if present sets the
+                           unit width, otherwise fall back to a byte }
+                         if assigned(current_composable_default_type) then
+                           i:=current_composable_default_type.size*8
+                         else
+                           i:=8;
+                         if i<=0 then i:=8;
+                         k:=(i-(recst.current_bit_offset mod i)) mod i;
+                       end;
+                     if k>0 then
+                       begin
+                         { carrier type for the anonymous pad slot;
+                           default type when active, byte otherwise -
+                           the field is strict private and only its
+                           custom_bitsize is observed by codegen }
+                         if assigned(current_composable_default_type) then
+                           vs:=cfieldvarsym.create(
+                             '$pad$'+tostr(recst.SymList.Count),
+                             vs_value,current_composable_default_type,[])
+                         else
+                           vs:=cfieldvarsym.create(
+                             '$pad$'+tostr(recst.SymList.Count),
+                             vs_value,u8inttype,[]);
+                         tfieldvarsym(vs).custom_bitsize:=k;
+                         vs.visibility:=vis_strictprivate;
+                         vs.register_sym;
+                         recst.insertsym(vs);
+                         recst.addfield(tfieldvarsym(vs),vis_strictprivate);
+                         { mark record as having field sizing overrides
+                           for the PPU section }
+                         include(tabstractrecorddef(recst.defowner).objectoptions,oo_has_field_sizing);
+                       end;
+                     if current_scanner.token=_SEMICOLON then
+                       consume(_SEMICOLON);
+                     if vd_one_variant in options then
+                       break
+                     else
+                       continue;
+                   end;
+               end;
              visibility:=symtablestack.top.currentvisibility;
              semicoloneaten:=false;
+             anon_target_def:=nil;
              sc.clear;
              repeat
-               sorg:=current_scanner.orgpattern;
-               if current_scanner.token=_ID then
+               if primed_first_field then
                  begin
+                   { a UNION/EMBED that turned out to be a field name was
+                     already consumed by the keyword probe; seed the collection
+                     without re-reading and without consuming another _ID }
+                   sorg:=primed_first_sorg;
                    vs:=cfieldvarsym.create(sorg,vs_value,generrordef,[]);
-
-                   { normally the visibility is set via addfield, but sometimes
-                     we collect symbols so we can add them in a batch of
-                     potentially mixed visibility, and then the individual
-                     symbols need to have their visibility already set }
                    vs.visibility:=visibility;
-                   if (vd_check_generic in options) and (current_scanner.idtoken=_GENERIC) then
-                     had_generic:=true;
+                   primed_first_field:=false;
                  end
                else
-                 vs:=nil;
-               consume(_ID);
+                 begin
+                   sorg:=current_scanner.orgpattern;
+                   if current_scanner.token=_ID then
+                     begin
+                       vs:=cfieldvarsym.create(sorg,vs_value,generrordef,[]);
+
+                       { normally the visibility is set via addfield, but sometimes
+                         we collect symbols so we can add them in a batch of
+                         potentially mixed visibility, and then the individual
+                         symbols need to have their visibility already set }
+                       vs.visibility:=visibility;
+                       if (vd_check_generic in options) and (current_scanner.idtoken=_GENERIC) then
+                         had_generic:=true;
+                     end
+                   else
+                     vs:=nil;
+                   consume(_ID);
+                 end;
                if assigned(vs) and
                   (
                     not had_generic or
@@ -1832,6 +2599,12 @@ implementation
                  begin
                    vs.register_sym;
                    sc.add(vs);
+                   { catch a field name that shadows something already
+                     reachable through a previously declared embed /
+                     inline anonymous record. vs.name is not populated
+                     until insertsym registers the symbol with its hash
+                     list, so probe against upper(realname) here. }
+                   field_collides_with_compositions(recst,upper(vs.realname));
                    recst.insertsym(vs);
                    had_generic:=false;
                  end
@@ -1866,7 +2639,45 @@ implementation
                  gendef:=tfieldvarsym(srsym).vardef;
                end;
 
-             read_anon_type(hdef,false,tstoreddef(gendef));
+             { composablerecords C-style bitfield: `name: N;` where N is an
+               integer literal and the surrounding scope established a
+               DEFAULT_TYPE via `of T` on a bit-aligned record. translates
+               to `name: T bitsize N` without invoking read_anon_type.
+               disambiguation: if `..` follows the integer, this is a
+               subrange type (`Low..High`), not a bitfield width - build
+               the subrange manually and fall through to the normal path
+               so per-field modifiers (`bitsize N` etc.) keep working. }
+             parsed_custom_align:=0;
+             parsed_custom_bitalign:=0;
+             parsed_custom_size:=-1;
+             parsed_custom_bitsize:=-1;
+             if (m_composable_records in current_settings.modeswitches) and
+                (current_scanner.token=_INTCONST) and
+                assigned(current_composable_default_type) and
+                (recst.usefieldalignment=bit_alignment) then
+               begin
+                 parsed_potential_low:=get_intconst;
+                 if current_scanner.token=_POINTPOINT then
+                   begin
+                     consume(_POINTPOINT);
+                     parsed_potential_high:=get_intconst;
+                     hdef:=corddef.create(
+                       range_to_basetype(parsed_potential_low,parsed_potential_high),
+                       parsed_potential_low,parsed_potential_high,true);
+                   end
+                 else
+                   begin
+                     parsed_custom_bitsize:=parsed_potential_low.svalue;
+                     if parsed_custom_bitsize<1 then
+                       begin
+                         Message(scanner_e_illegal_alignment_directive);
+                         parsed_custom_bitsize:=1;
+                       end;
+                     hdef:=current_composable_default_type;
+                   end;
+               end
+             else
+               read_anon_type(hdef,false,tstoreddef(gendef));
              maybe_guarantee_record_typesym(hdef,symtablestack.top);
 {$ifdef wasm}
              if is_wasm_reference_type(hdef) then
@@ -2014,6 +2825,62 @@ implementation
                if is_managed_type(hdef) then
                  Message(parser_e_cant_use_inittable_here);
 
+             { composablerecords post-suffix sizing/alignment overrides:
+                 `Field: Type [align N] [bitalign M] [size N] [bitsize M];`
+               applied uniformly to every identifier in sc[]. parser only
+               here; layout integration is in addfield. defaults were set
+               before read_anon_type to allow the C-style `name: N` syntax
+               to pre-populate parsed_custom_bitsize. }
+             if m_composable_records in current_settings.modeswitches then
+               while (current_scanner.token=_ID) and
+                     ((current_scanner.pattern='ALIGN') or
+                      (current_scanner.pattern='BITALIGN') or
+                      (current_scanner.pattern='SIZE') or
+                      (current_scanner.pattern='BITSIZE')) do
+                 begin
+                   if current_scanner.pattern='ALIGN' then
+                     begin
+                       consume(_ID);
+                       parsed_custom_align:=get_intconst.svalue;
+                       if (parsed_custom_align<1) or
+                          ((parsed_custom_align and (parsed_custom_align-1))<>0) then
+                         begin
+                           Message(scanner_e_illegal_alignment_directive);
+                           parsed_custom_align:=0;
+                         end;
+                     end
+                   else if current_scanner.pattern='BITALIGN' then
+                     begin
+                       consume(_ID);
+                       parsed_custom_bitalign:=get_intconst.svalue;
+                       if parsed_custom_bitalign<1 then
+                         begin
+                           Message(scanner_e_illegal_alignment_directive);
+                           parsed_custom_bitalign:=0;
+                         end;
+                     end
+                   else if current_scanner.pattern='SIZE' then
+                     begin
+                       consume(_ID);
+                       parsed_custom_size:=get_intconst.svalue;
+                       if parsed_custom_size<1 then
+                         begin
+                           Message(scanner_e_illegal_alignment_directive);
+                           parsed_custom_size:=-1;
+                         end;
+                     end
+                   else { BITSIZE }
+                     begin
+                       consume(_ID);
+                       parsed_custom_bitsize:=get_intconst.svalue;
+                       if parsed_custom_bitsize<1 then
+                         begin
+                           Message(scanner_e_illegal_alignment_directive);
+                           parsed_custom_bitsize:=-1;
+                         end;
+                     end;
+                 end;
+
              { try to parse the hint directives }
              hintsymoptions:=[];
              deprecatedmsg:=nil;
@@ -2028,8 +2895,29 @@ implementation
                  fieldvs.symoptions := fieldvs.symoptions + hintsymoptions;
                  if deprecatedmsg<>nil then
                    fieldvs.deprecatedmsg:=stringdup(deprecatedmsg^);
+                 { apply per-field sizing overrides }
+                 if parsed_custom_align<>0 then
+                   fieldvs.custom_align:=parsed_custom_align;
+                 if parsed_custom_bitalign<>0 then
+                   fieldvs.custom_bitalign:=parsed_custom_bitalign;
+                 if parsed_custom_size<>-1 then
+                   fieldvs.custom_size:=parsed_custom_size;
+                 if parsed_custom_bitsize<>-1 then
+                   fieldvs.custom_bitsize:=parsed_custom_bitsize;
                end;
                stringdispose(deprecatedmsg);
+             { composablerecords: a `bitsize N` or `bitalign N` field forces
+               the containing record into bit-packed alignment so the bit-level
+               offsets are computed correctly. switching happens lazily on the
+               first such field. }
+             if (parsed_custom_bitsize<>-1) or (parsed_custom_bitalign<>0) then
+               recst.usefieldalignment:=bit_alignment;
+             { composablerecords: any per-field override sets the marker flag
+               on the parent record def so ppu read/write know to (de)serialise
+               the per-field sizing list }
+             if (parsed_custom_align<>0) or (parsed_custom_bitalign<>0) or
+                (parsed_custom_size<>-1) or (parsed_custom_bitsize<>-1) then
+               include(tabstractrecorddef(recst.defowner).objectoptions,oo_has_field_sizing);
 
              { Records and objects can't have default values }
              { for a record there doesn't need to be a ; before the END or )    }
@@ -2133,13 +3021,25 @@ implementation
              else
                { we may reorder the fields before adding them to the symbol
                  table }
-               reorderlist.concatlistcopy(sc)
+               reorderlist.concatlistcopy(sc);
+
+             { single-iteration mode for parsing one union variant at a time }
+             if vd_one_variant in options then
+               break;
            end;
 
          if m_delphi in current_settings.modeswitches then
            block_type:=bt_var_type
          else
            block_type:=old_block_type;
+         { single-variant invocation does not consume case/union construct }
+         if vd_one_variant in options then
+           begin
+             sc.free;
+             sc:=nil;
+             block_type:=old_block_type;
+             exit;
+           end;
          { Check for Case }
          if (vd_record in options) and
             try_to_consume(_CASE) then
@@ -2299,6 +3199,10 @@ implementation
          is_first_type := false;
 {$endif powerpc}
          block_type:=old_block_type;
+         finally
+           if pushed_default_type then
+             pop_composable_default_type;
+         end;
       end;
 
 end.

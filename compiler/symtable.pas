@@ -134,6 +134,10 @@ interface
           procedure addalignmentpadding;
           procedure insertdef(def:TDefEntry);override;
           function is_packed: boolean;
+          { current bit-level data size during construction (only meaningful
+            for bit-aligned records); used by composablerecords `pad N` to
+            compute alignment to a storage-unit boundary }
+          function current_bit_offset: asizeint;
           function has_single_field(out def:tdef): boolean;
           function has_double_field(out def1,def2:tdef; out offset:integer): integer;
           { collects all management operators of the specified type in list (which
@@ -375,6 +379,13 @@ interface
     function  searchsym_in_named_module(const unitname, symname: TIDString; out srsym: tsym; out srsymtable: tsymtable): boolean;
     function  searchsym_in_class(classh: tobjectdef; contextclassh:tabstractrecorddef;const s : TIDString;out srsym:tsym;out srsymtable:TSymtable;flags:tsymbol_search_flags):boolean;
     function  searchsym_in_record(recordh:tabstractrecorddef;const s : TIDString;out srsym:tsym;out srsymtable:TSymtable):boolean;
+    { composablerecords: lookup-time fallback for flat access through composition
+      links. on hit, srsym/srsymtable point at the resolved target; carrier_chain
+      is the sequence of carriers (outer-most first) the caller must subscript
+      through before reading srsym. empty chain means the target sits directly
+      on recordh (e.g. a typename match on an anon-embed carrier). owns the
+      returned tfplist; caller frees. }
+    function  lookup_in_composition(recordh:tabstractrecorddef;const s:TIDString;out srsym:tsym;out srsymtable:TSymtable;out carrier_chain:tfplist):boolean;
     function  searchsym_in_class_by_msgint(classh:tobjectdef;msgid:longint;out srdef : tdef;out srsym:tsym;out srsymtable:TSymtable):boolean;
     function  searchsym_in_class_by_msgstr(classh:tobjectdef;const s:string;out srsym:tsym;out srsymtable:TSymtable):boolean;
     { searches symbols inside of a helper's implementation }
@@ -1353,6 +1364,11 @@ implementation
         l:=sym.getsize;
         vardef:=sym.vardef;
         varalign:=vardef.structalignment;
+        { composablerecords: per-field overrides from post-suffix modifiers }
+        if sym.custom_align<>0 then
+          varalign:=sym.custom_align;
+        if sym.custom_size<>-1 then
+          l:=sym.custom_size;
         case usefieldalignment of
           bit_alignment:
             begin
@@ -1360,8 +1376,18 @@ implementation
               { 1 byte (compatible with GPC/GCC)                             }
               if is_ordinal(vardef) then
                 begin
-                  sym.fieldoffset:=databitsize;
-                  l:=sym.getpackedbitsize;
+                  { composablerecords: `bitalign N` pads up to the next N-bit
+                    boundary before placing the field }
+                  if sym.custom_bitalign<>0 then
+                    sym.fieldoffset:=align(databitsize,sym.custom_bitalign)
+                  else
+                    sym.fieldoffset:=databitsize;
+                  { composablerecords: per-field `bitsize N` overrides the
+                    natural packed bit size of the ordinal type }
+                  if sym.custom_bitsize<>-1 then
+                    l:=sym.custom_bitsize
+                  else
+                    l:=sym.getpackedbitsize;
                 end
               else
                 begin
@@ -1623,9 +1649,14 @@ implementation
 
     procedure tabstractrecordsymtable.insertdef(def:TDefEntry);
       begin
-        { Enums must also be available outside the record scope,
-          insert in the owner of this symtable }
-        if def.typ=enumdef then
+        { Stock behaviour: enum defs declared inside a record scope are
+          redirected to the surrounding symtable so the enumerator names
+          stay reachable unqualified. In composablerecords mode the
+          enumerators stay scoped to the record - the unit's symbol
+          table stays clean. Qualified access (`TRec.kVal`) still works
+          through the record symtable. }
+        if (def.typ=enumdef) and
+           not (m_composable_records in current_settings.modeswitches) then
           defowner.owner.insertdef(def)
         else
           inherited insertdef(def);
@@ -1635,6 +1666,15 @@ implementation
     function tabstractrecordsymtable.is_packed: boolean;
       begin
         result:=usefieldalignment=bit_alignment;
+      end;
+
+
+    function tabstractrecordsymtable.current_bit_offset: asizeint;
+      begin
+        if usefieldalignment=bit_alignment then
+          result:=databitsize
+        else
+          result:=_datasize*8;
       end;
 
 
@@ -1838,6 +1878,11 @@ implementation
         l:=sym.getsize;
         vardef:=sym.vardef;
         varalign:=vardef.structalignment;
+        { composablerecords: per-field overrides from post-suffix modifiers }
+        if sym.custom_align<>0 then
+          varalign:=sym.custom_align;
+        if sym.custom_size<>-1 then
+          l:=sym.custom_size;
         case usefieldalignment of
           bit_alignment:
             { has to be handled separately }
@@ -1885,7 +1930,13 @@ implementation
         end;
         if varalign=0 then
           varalign:=size_2_align(l);
-        varalignfield:=used_align(varalign,recordalignmin,globalfieldalignment);
+        { composablerecords: explicit `align N` post-suffix overrides the
+          packrecords cap; the user asked for a specific alignment and we
+          respect it bit-for-bit }
+        if sym.custom_align<>0 then
+          varalignfield:=sym.custom_align
+        else
+          varalignfield:=used_align(varalign,recordalignmin,globalfieldalignment);
 
         result:=align(base,varalignfield);
       end;
@@ -3694,6 +3745,9 @@ implementation
         hashedid: THashedIDString;
         contextstructdef: tabstractrecorddef;
         stackitem: psymtablestackitem;
+        { composablerecords fallback when a `with` body lookup misses }
+        compose_st: TSymtable;
+        compose_chain: tfplist;
       begin
         result:=false;
         hashedid.id:=s;
@@ -3757,6 +3811,29 @@ implementation
                         if assigned(current_procinfo) and
                            (srsym.owner.symtabletype=staticsymtable) then
                           include(current_procinfo.flags,pi_uses_static_symtable);
+                        if not (ssf_no_addsymref in flags) then
+                          addsymref(srsym);
+                        result:=true;
+                        exit;
+                      end;
+                  end;
+                { composablerecords: a `with d do ...` body resolves bare
+                  names against the outer record's symtable; for fields
+                  reached only through a composition carrier (embed /
+                  inline anon) the bare name is absent there. fall back
+                  to lookup_in_composition - the actual carrier walk is
+                  done in is_member_read where the withrefnode is at
+                  hand. }
+                if not assigned(srsym) and
+                   (srsymtable.symtabletype=withsymtable) and
+                   assigned(srsymtable.defowner) and
+                   (srsymtable.defowner.typ in [recorddef,objectdef]) and
+                   (m_composable_records in current_settings.modeswitches) then
+                  begin
+                    if lookup_in_composition(tabstractrecorddef(srsymtable.defowner),
+                         s,srsym,compose_st,compose_chain) then
+                      begin
+                        if assigned(compose_chain) then compose_chain.free;
                         if not (ssf_no_addsymref in flags) then
                           addsymref(srsym);
                         result:=true;
@@ -4130,6 +4207,116 @@ implementation
           end;
         srsym:=nil;
         srsymtable:=nil;
+      end;
+
+
+    function lookup_in_composition(recordh:tabstractrecorddef;const s:TIDString;
+                                   out srsym:tsym;out srsymtable:TSymtable;
+                                   out carrier_chain:tfplist):boolean;
+      var
+        i, ci : longint;
+        e : pcomposition_entry;
+        carrier : tfieldvarsym;
+        carrier_def : tabstractrecorddef;
+        cand : tsym;
+        cand_st : TSymtable;
+        sub_chain : tfplist;
+        ups : string;
+      begin
+        result:=false;
+        srsym:=nil;
+        srsymtable:=nil;
+        carrier_chain:=nil;
+        ups:=upper(s);
+        for i:=0 to recordh.composition_count-1 do
+          begin
+            e:=recordh.composition_at(i);
+            carrier:=tfieldvarsym(e^.carrier);
+            case e^.kind of
+              ck_anon_embed:
+                begin
+                  { typename match: e.g. `d.TBase` -> the carrier itself }
+                  if assigned(carrier.vardef.typesym) and
+                     (upper(carrier.vardef.typesym.realname)=ups) then
+                    begin
+                      srsym:=carrier;
+                      srsymtable:=recordh.symtable;
+                      carrier_chain:=tfplist.create;
+                      addsymref(srsym);
+                      exit(true);
+                    end;
+                  if carrier.vardef.typ in [recorddef,objectdef] then
+                    begin
+                      carrier_def:=tabstractrecorddef(carrier.vardef);
+                      { direct member of the carrier's record }
+                      cand:=tsym(carrier_def.symtable.find(ups));
+                      if assigned(cand) and
+                         (cand.typ in [fieldvarsym,procsym,propertysym]) and
+                         is_visible_for_object(cand,current_structdef) then
+                        begin
+                          srsym:=cand;
+                          srsymtable:=carrier_def.symtable;
+                          carrier_chain:=tfplist.create;
+                          carrier_chain.add(carrier);
+                          addsymref(srsym);
+                          exit(true);
+                        end;
+                      { cascade: target is reached via composition links on
+                        the carrier itself (e.g. A embeds B, B embeds C) }
+                      sub_chain:=nil;
+                      if lookup_in_composition(carrier_def,s,cand,cand_st,sub_chain) then
+                        begin
+                          srsym:=cand;
+                          srsymtable:=cand_st;
+                          carrier_chain:=tfplist.create;
+                          carrier_chain.add(carrier);
+                          if assigned(sub_chain) then
+                            begin
+                              for ci:=0 to sub_chain.count-1 do
+                                carrier_chain.add(sub_chain[ci]);
+                              sub_chain.free;
+                            end;
+                          exit(true);
+                        end;
+                    end;
+                end;
+              ck_inline_record:
+                begin
+                  if carrier.vardef.typ in [recorddef,objectdef] then
+                    begin
+                      carrier_def:=tabstractrecorddef(carrier.vardef);
+                      cand:=tsym(carrier_def.symtable.find(ups));
+                      if assigned(cand) and
+                         (cand.typ in [fieldvarsym,procsym,propertysym]) and
+                         is_visible_for_object(cand,current_structdef) then
+                        begin
+                          srsym:=cand;
+                          srsymtable:=carrier_def.symtable;
+                          carrier_chain:=tfplist.create;
+                          carrier_chain.add(carrier);
+                          addsymref(srsym);
+                          exit(true);
+                        end;
+                      { cascade through inline carrier too }
+                      sub_chain:=nil;
+                      if lookup_in_composition(carrier_def,s,cand,cand_st,sub_chain) then
+                        begin
+                          srsym:=cand;
+                          srsymtable:=cand_st;
+                          carrier_chain:=tfplist.create;
+                          carrier_chain.add(carrier);
+                          if assigned(sub_chain) then
+                            begin
+                              for ci:=0 to sub_chain.count-1 do
+                                carrier_chain.add(sub_chain[ci]);
+                              sub_chain.free;
+                            end;
+                          exit(true);
+                        end;
+                    end;
+                end;
+            end;
+          end;
       end;
 
     function searchsym_in_class_by_msgint(classh:tobjectdef;msgid:longint;out srdef : tdef;out srsym:tsym;out srsymtable:TSymtable):boolean;
