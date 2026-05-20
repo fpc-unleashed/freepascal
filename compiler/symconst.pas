@@ -591,7 +591,9 @@ type
     oo_is_funcref,        { interface has a single Invoke method that can be directly called }
     oo_is_invokable,      { interface that is invokable like a function }
     oo_is_capturer,        { the class is the capturer for anonymous functions (or converted proc(var)s) }
-    oo_inherits_not_specialized { the class inherits from a not yet specialized type }
+    oo_inherits_not_specialized, { the class inherits from a not yet specialized type }
+    oo_has_compositions,   { composablerecords: this record has at least one composition link (gates ppu read/write of the composition list) }
+    oo_has_field_sizing    { composablerecords: this record has at least one field with a custom_* (size/bitsize/align/bitalign) override (gates ppu read/write of the per-field sizing list) }
   );
   tobjectoptions=set of tobjectoption;
 

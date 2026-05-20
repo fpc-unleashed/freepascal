@@ -1645,6 +1645,12 @@ function get_next_varsym(def: tabstractrecorddef; const SymList:TFPHashObjectLis
         is_packed,
         is_positional_tuple: boolean;
         startoffset: {$ifdef CPU8BITALU}word{$else}aword{$endif};
+        { composablerecords: transient fieldvarsyms created when a
+          flatten field name (reached through `embed` / inline anon
+          carriers) is matched. each fake carries a rebased offset
+          so the aggregate loop's offset arithmetic still works.
+          freed when the aggregate completes. }
+        compose_fakes: tfplist;
 
       procedure handle_stringconstn;
         begin
@@ -1658,10 +1664,44 @@ function get_next_varsym(def: tabstractrecorddef; const SymList:TFPHashObjectLis
             Message(parser_e_improper_guid_syntax);
         end;
 
+      { composablerecords: aggregate-init helper - resolves a flatten
+        field name reached only through one or more `embed` carriers
+        and returns a transient fieldvarsym whose `fieldoffset` is
+        rebased to the outer record (carriers' offsets + inner field
+        offset). caller pushes it into `fakes` so the surrounding
+        aggregate can free them on completion. }
+      function try_compose_field_for_aggregate(rdef:tabstractrecorddef;
+                                               const s:TIDString;
+                                               fakes:tfplist):tfieldvarsym;
+        var
+          found_sym:tsym;
+          found_st:TSymtable;
+          chain:tfplist;
+          total:asizeint;
+          ci:longint;
+        begin
+          result:=nil;
+          if lookup_in_composition(rdef,s,found_sym,found_st,chain) and
+             assigned(found_sym) and (found_sym.typ=fieldvarsym) then
+            begin
+              total:=tfieldvarsym(found_sym).fieldoffset;
+              if assigned(chain) then
+                for ci:=0 to chain.count-1 do
+                  inc(total,tfieldvarsym(chain[ci]).fieldoffset);
+              result:=cfieldvarsym.create(tfieldvarsym(found_sym).realname,
+                                          vs_value,
+                                          tfieldvarsym(found_sym).vardef,[]);
+              result.fieldoffset:=total;
+              fakes.add(result);
+            end;
+          if assigned(chain) then chain.free;
+        end;
+
       var
         i : longint;
         SymList:TFPHashObjectList;
       begin
+        compose_fakes:=tfplist.create;
         { GUID }
         if (def=rec_tguid) and (current_scanner.token=_ID) then
           begin
@@ -1727,6 +1767,18 @@ function get_next_varsym(def: tabstractrecorddef; const SymList:TFPHashObjectLis
             consume(_ID);
             consume(_COLON);
             recsym := tsym(def.symtable.Find(s));
+            { composablerecords: a flatten field name reached only
+              through a composition carrier is absent from the outer
+              symtable. resolve it via lookup_in_composition and wrap
+              the result in a transient fieldvarsym with the
+              accumulated offset (sum of carriers + inner offset);
+              the rest of the aggregate loop's offset bookkeeping
+              continues unchanged. }
+            if not assigned(recsym) and
+               (m_composable_records in current_settings.modeswitches) and
+               (def.typ in [recorddef,objectdef]) then
+              recsym:=try_compose_field_for_aggregate(
+                        tabstractrecorddef(def),s,compose_fakes);
               end;
             if not assigned(recsym) or (recsym.typ<>fieldvarsym) then
               begin
@@ -1867,6 +1919,11 @@ function get_next_varsym(def: tabstractrecorddef; const SymList:TFPHashObjectLis
           end;
 
         consume(_RKLAMMER);
+        { composablerecords: free any transient compose fakes
+          minted during aggregate parsing }
+        for i:=0 to compose_fakes.count-1 do
+          tfieldvarsym(compose_fakes[i]).free;
+        compose_fakes.free;
       end;
 
 

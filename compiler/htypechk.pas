@@ -225,6 +225,7 @@ implementation
        symtable,symutil,
        defutil,defcmp,
        nbas,ncnv,nld,nmem,ncal,nmat,ninl,nutils,procinfo,
+       pass_1,
        pgenutil
        ;
 
@@ -733,6 +734,111 @@ implementation
       end;
 
 
+    { compose-flatten retry for unary operators. walks fcompositions on ld,
+      for each carrier whose target def has operators, rewrites the unary
+      operand as a subscript onto that carrier and probes the candidate set.
+      on success t.left and ld are left rewritten, ppn and candidates are
+      live with count>0; on failure everything is restored and candidates is
+      re-initialised with count=0 so the caller's normal error path takes
+      over. }
+    procedure try_compose_unary_rewrite(var t: tnode;
+                                        var ld: tdef;
+                                        optoken: ttoken;
+                                        var ppn: tcallparanode;
+                                        var candidates: tcallcandidates);
+
+      function build_chain(base: tnode; chain: tfplist): tnode;
+        var
+          k: longint;
+        begin
+          result:=base.getcopy;
+          for k:=0 to chain.count-1 do
+            result:=csubscriptnode.create(tfieldvarsym(chain[k]),result);
+          typecheckpass(result);
+        end;
+
+      function probe(cd: tabstractrecorddef; chain: tfplist; orig_left: tnode): boolean;
+        var
+          k: longint;
+          e: pcomposition_entry;
+          carrier: tfieldvarsym;
+          sub_def: tabstractrecorddef;
+          sub_chain: tfplist;
+          new_left: tnode;
+          m: longint;
+        begin
+          result:=false;
+          if sto_has_operator in cd.symtable.tableoptions then
+            begin
+              new_left:=build_chain(orig_left,chain);
+              tunarynode(t).left:=new_left;
+              ld:=new_left.resultdef;
+              ppn:=ccallparanode.create(tunarynode(t).left.getcopy,nil);
+              ppn.get_paratype;
+              candidates.init_operator(optoken,ppn);
+              if candidates.count>0 then
+                exit(true);
+              candidates.done;
+              ppn.free; ppn:=nil;
+              new_left.free;
+              tunarynode(t).left:=orig_left;
+              ld:=orig_left.resultdef;
+            end;
+          for k:=0 to cd.composition_count-1 do
+            begin
+              e:=cd.composition_at(k);
+              if not assigned(e) or not assigned(e^.carrier) then continue;
+              carrier:=tfieldvarsym(e^.carrier);
+              if not (carrier.vardef.typ in [recorddef,objectdef]) then continue;
+              sub_def:=tabstractrecorddef(carrier.vardef);
+              sub_chain:=tfplist.create;
+              try
+                for m:=0 to chain.count-1 do
+                  sub_chain.add(chain[m]);
+                sub_chain.add(carrier);
+                if probe(sub_def,sub_chain,orig_left) then
+                  exit(true);
+              finally
+                sub_chain.free;
+              end;
+            end;
+        end;
+
+      var
+        j: integer;
+        e: pcomposition_entry;
+        carrier: tfieldvarsym;
+        carrier_def: tabstractrecorddef;
+        orig_left: tnode;
+        chain: tfplist;
+      begin
+        orig_left:=tunarynode(t).left;
+        for j:=0 to tabstractrecorddef(ld).composition_count-1 do
+          begin
+            e:=tabstractrecorddef(ld).composition_at(j);
+            if not assigned(e) or not assigned(e^.carrier) then continue;
+            carrier:=tfieldvarsym(e^.carrier);
+            if not (carrier.vardef.typ in [recorddef,objectdef]) then continue;
+            carrier_def:=tabstractrecorddef(carrier.vardef);
+            chain:=tfplist.create;
+            try
+              chain.add(carrier);
+              if probe(carrier_def,chain,orig_left) then
+                begin
+                  orig_left.free;
+                  exit;
+                end;
+            finally
+              chain.free;
+            end;
+          end;
+        { all carriers exhausted - restore initial state with count=0 }
+        ppn:=ccallparanode.create(orig_left.getcopy,nil);
+        ppn.get_paratype;
+        candidates.init_operator(optoken,ppn);
+      end;
+
+
     function isunaryoverloaded(var t : tnode;ocf:toverload_check_flags) : boolean;
       var
         ld      : tdef;
@@ -802,29 +908,38 @@ implementation
           end;
         candidates.init_operator(optoken,ppn);
 
-        { stop when there are no operators found }
-        if candidates.count=0 then
+        { try to pick a candidate from the initial set }
+        if candidates.count>0 then
+          begin
+            candidates.get_information;
+{$ifdef EXTDEBUG}
+            candidates.dump_info(V_Debug);
+{$endif EXTDEBUG}
+            cand_cnt:=candidates.choose_best(tabstractprocdef(operpd),false);
+          end
+        else
+          cand_cnt:=0;
+
+        { compose-flatten retry: nothing fits (no candidate or no match) and
+          the operand is a record with embeds. walk fcompositions on ld and
+          retry through each carrier with operators. }
+        if (cand_cnt=0) and
+           (m_composable_records in current_settings.modeswitches) and
+           (ld.typ=recorddef) and
+           (tabstractrecorddef(ld).composition_count>0) then
           begin
             candidates.done;
             ppn.free;
-            ppn := nil;
-            if not (ocf_check_only in ocf) then
+            ppn:=nil;
+            try_compose_unary_rewrite(t,ld,optoken,ppn,candidates);
+            if candidates.count>0 then
               begin
-                CGMessage2(parser_e_operator_not_overloaded_2,ld.typename,arraytokeninfo[optoken].str);
-                t:=cnothingnode.create;
+                candidates.get_information;
+                cand_cnt:=candidates.choose_best(tabstractprocdef(operpd),false);
               end;
-            exit;
           end;
 
-        { Retrieve information about the candidates }
-        candidates.get_information;
-{$ifdef EXTDEBUG}
-        { Display info when multiple candidates are found }
-        candidates.dump_info(V_Debug);
-{$endif EXTDEBUG}
-        cand_cnt:=candidates.choose_best(tabstractprocdef(operpd),false);
-
-        { exit when no overloads are found }
+        { exit when still no overloads are found }
         if cand_cnt=0 then
           begin
             candidates.done;
@@ -959,6 +1074,136 @@ implementation
             candidates.done;
           end;
 
+        { compose-flatten retry: when no operator matches on the outer record,
+          walk fcompositions on the operand type and retry through each carrier
+          (cascading into nested embeds). on a successful retry t.left/t.right
+          become subscript nodes onto the carrier chain so the operator binds
+          to the embedded slice; the result type is the embed's type, not the
+          outer record. handles both asymmetric ops (e.g. vec*integer; rewrite
+          left only) and symmetric ops (e.g. vec+vec; rewrite both). }
+        function try_compose_rewrite(optok:ttoken):sizeint;
+
+          function build_chain(base: tnode; chain: tfplist): tnode;
+            var
+              k: longint;
+            begin
+              result:=base.getcopy;
+              for k:=0 to chain.count-1 do
+                result:=csubscriptnode.create(tfieldvarsym(chain[k]),result);
+              typecheckpass(result);
+            end;
+
+          function attempt(chain: tfplist; rewrite_right: boolean): sizeint;
+            var
+              orig_left, orig_right, new_left, new_right: tnode;
+              cnt: sizeint;
+            begin
+              result:=0;
+              orig_left:=tbinarynode(t).left;
+              orig_right:=tbinarynode(t).right;
+              new_left:=build_chain(orig_left,chain);
+              if rewrite_right then
+                new_right:=build_chain(orig_right,chain)
+              else
+                new_right:=nil;
+              tbinarynode(t).left:=new_left;
+              if rewrite_right then
+                tbinarynode(t).right:=new_right;
+              ld:=new_left.resultdef;
+              if rewrite_right then
+                rd:=new_right.resultdef;
+              cnt:=search_operator(optok,false);
+              if cnt>0 then
+                begin
+                  orig_left.free;
+                  if rewrite_right then orig_right.free;
+                  exit(cnt);
+                end;
+              if assigned(ppn) then begin ppn.free; ppn:=nil; end;
+              new_left.free;
+              if rewrite_right then new_right.free;
+              tbinarynode(t).left:=orig_left;
+              if rewrite_right then tbinarynode(t).right:=orig_right;
+              ld:=orig_left.resultdef;
+              if rewrite_right then rd:=orig_right.resultdef;
+            end;
+
+          function probe(cd: tabstractrecorddef; chain: tfplist; both_equal: boolean): sizeint;
+            var
+              k: longint;
+              e: pcomposition_entry;
+              carrier: tfieldvarsym;
+              sub_def: tabstractrecorddef;
+              sub_chain: tfplist;
+              cnt: sizeint;
+              m: longint;
+            begin
+              result:=0;
+              if sto_has_operator in cd.symtable.tableoptions then
+                begin
+                  cnt:=attempt(chain,false);
+                  if cnt>0 then exit(cnt);
+                  if both_equal then
+                    begin
+                      cnt:=attempt(chain,true);
+                      if cnt>0 then exit(cnt);
+                    end;
+                end;
+              for k:=0 to cd.composition_count-1 do
+                begin
+                  e:=cd.composition_at(k);
+                  if not assigned(e) or not assigned(e^.carrier) then continue;
+                  carrier:=tfieldvarsym(e^.carrier);
+                  if not (carrier.vardef.typ in [recorddef,objectdef]) then continue;
+                  sub_def:=tabstractrecorddef(carrier.vardef);
+                  sub_chain:=tfplist.create;
+                  try
+                    for m:=0 to chain.count-1 do
+                      sub_chain.add(chain[m]);
+                    sub_chain.add(carrier);
+                    cnt:=probe(sub_def,sub_chain,both_equal);
+                    if cnt>0 then exit(cnt);
+                  finally
+                    sub_chain.free;
+                  end;
+                end;
+            end;
+
+          var
+            initial_eq : boolean;
+            j          : longint;
+            e          : pcomposition_entry;
+            carrier    : tfieldvarsym;
+            carrier_def: tabstractrecorddef;
+            chain      : tfplist;
+            cnt        : sizeint;
+          begin
+            result:=0;
+            if not (m_composable_records in current_settings.modeswitches) then
+              exit;
+            if ld.typ<>recorddef then
+              exit;
+            if tabstractrecorddef(ld).composition_count=0 then
+              exit;
+            initial_eq:=(rd.typ=recorddef) and equal_defs(ld,rd);
+            for j:=0 to tabstractrecorddef(ld).composition_count-1 do
+              begin
+                e:=tabstractrecorddef(ld).composition_at(j);
+                if not assigned(e) or not assigned(e^.carrier) then continue;
+                carrier:=tfieldvarsym(e^.carrier);
+                if not (carrier.vardef.typ in [recorddef,objectdef]) then continue;
+                carrier_def:=tabstractrecorddef(carrier.vardef);
+                chain:=tfplist.create;
+                try
+                  chain.add(carrier);
+                  cnt:=probe(carrier_def,chain,initial_eq);
+                  if cnt>0 then exit(cnt);
+                finally
+                  chain.free;
+                end;
+              end;
+          end;
+
       begin
         isbinaryoverloaded:=false;
         operpd:=nil;
@@ -993,22 +1238,52 @@ implementation
             exit;
           end;
 
-        cand_cnt:=search_operator(optoken,(optoken<>_NE) and not (ocf_check_only in ocf));
+        { initial search - silent so we can retry through composition first }
+        cand_cnt:=search_operator(optoken,false);
+
+        { compose-flatten retry: if no operator was found on the outer record,
+          walk its compositions and retry with subscript onto each carrier }
+        if (cand_cnt=0) then
+          begin
+            if assigned(ppn) then
+              begin
+                ppn.free;
+                ppn:=nil;
+              end;
+            cand_cnt:=try_compose_rewrite(optoken);
+          end;
 
         { no operator found for "<>" then search for "=" operator }
-        if (cand_cnt=0) and (optoken=_NE) and not (ocf_check_only in ocf) then
+        if (cand_cnt=0) and (optoken=_NE) then
           begin
-            ppn.free;
-            ppn:=nil;
+            if assigned(ppn) then
+              begin
+                ppn.free;
+                ppn:=nil;
+              end;
             operpd:=nil;
             optoken:=_EQ;
-            cand_cnt:=search_operator(optoken,true);
+            cand_cnt:=search_operator(optoken,false);
+            if (cand_cnt=0) then
+              begin
+                if assigned(ppn) then
+                  begin
+                    ppn.free;
+                    ppn:=nil;
+                  end;
+                cand_cnt:=try_compose_rewrite(optoken);
+              end;
           end;
 
         if (cand_cnt=0) then
           begin
-            ppn.free;
-            ppn := nil;
+            if not (ocf_check_only in ocf) then
+              CGMessage3(parser_e_operator_not_overloaded_3,ld.GetTypeName,arraytokeninfo[optoken].str,rd.GetTypeName);
+            if assigned(ppn) then
+              begin
+                ppn.free;
+                ppn:=nil;
+              end;
             if not (ocf_check_only in ocf) then
               t:=cnothingnode.create;
             exit;
