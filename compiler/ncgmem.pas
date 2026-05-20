@@ -510,7 +510,7 @@ implementation
                          end
                        else
                          begin
-                           location.sreg.bitlen := resultdef.packedbitsize;
+                           location.sreg.bitlen := vs.effective_packedbitsize;
                            if (target_info.endian = ENDIAN_BIG) then
                              location.sreg.startbit := (tcgsize2size[location.sreg.subsetregsize]*8 - location.sreg.bitlen) - vs.fieldoffset+offsetcorrection
                            else
@@ -532,7 +532,7 @@ implementation
                      end
                    else
                      begin
-                       location.sreg.bitlen := resultdef.packedbitsize;
+                       location.sreg.bitlen := vs.effective_packedbitsize;
                        if (target_info.endian = ENDIAN_BIG) then
                          inc(location.sreg.startbit, left.location.sreg.bitlen - location.sreg.bitlen - vs.fieldoffset)
                        else
@@ -575,10 +575,10 @@ implementation
                  location.reference.alignment:=newalignment(location.reference.alignment,vs.fieldoffset);
                end
              else if (vs.fieldoffset mod 8 = 0) and
-                     (resultdef.packedbitsize mod 8 = 0) and
+                     (vs.effective_packedbitsize mod 8 = 0) and
                      { is different in case of e.g. packenum 2 and an enum }
                      { which fits in 8 bits                                }
-                     (resultdef.size*8 = resultdef.packedbitsize) then
+                     (resultdef.size*8 = vs.effective_packedbitsize) then
                begin
                  inc(location.reference.offset,vs.fieldoffset div 8);
                  location.reference.alignment:=newalignment(location.reference.alignment,vs.fieldoffset div 8);
@@ -590,7 +590,7 @@ implementation
                  sref.bitindexreg:=NR_NO;
                  inc(sref.ref.offset,vs.fieldoffset div 8);
                  sref.startbit:=vs.fieldoffset mod 8;
-                 sref.bitlen:=resultdef.packedbitsize;
+                 sref.bitlen:=vs.effective_packedbitsize;
                  if (left.location.loc=LOC_REFERENCE) then
                    location.loc:=LOC_SUBSETREF
                  else

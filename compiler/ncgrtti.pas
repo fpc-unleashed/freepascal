@@ -687,15 +687,60 @@ implementation
 
     { writes a 32-bit count followed by array of field infos for given symtable }
     procedure TRTTIWriter.fields_write_rtti_data(tcb: ttai_typedconstbuilder; def: tabstractrecorddef; rt: trttitype);
+      type
+        pfield_entry = ^tfield_entry;
+        tfield_entry = record
+          sym    : tfieldvarsym;
+          offset : asizeint;
+        end;
+
+      function compose_carrier(s: tsym): boolean; inline;
+        begin
+          result := (s.typ=fieldvarsym) and (pos('$compose$',s.realname)=1);
+        end;
+
+      procedure walk_compositions(curdef: tabstractrecorddef; base: asizeint; into: tfplist);
+        var
+          k, m: longint;
+          ce  : pcomposition_entry;
+          carrier : tfieldvarsym;
+          carrier_def : tabstractrecorddef;
+          subsym : tsym;
+          fe : pfield_entry;
+        begin
+          if curdef.composition_count=0 then exit;
+          for k:=0 to curdef.composition_count-1 do
+            begin
+              ce := curdef.composition_at(k);
+              if not assigned(ce) or not assigned(ce^.carrier) then continue;
+              carrier := tfieldvarsym(ce^.carrier);
+              if not (carrier.vardef.typ in [recorddef,objectdef]) then continue;
+              carrier_def := tabstractrecorddef(carrier.vardef);
+              for m := 0 to carrier_def.symtable.symlist.count-1 do
+                begin
+                  subsym := tsym(carrier_def.symtable.symlist[m]);
+                  if not is_normal_fieldvarsym(subsym) then continue;
+                  if (rt<>fullrtti) and not tfieldvarsym(subsym).vardef.needs_inittable then continue;
+                  if is_objc_class_or_protocol(tfieldvarsym(subsym).vardef) then continue;
+                  if compose_carrier(subsym) then continue;
+                  new(fe);
+                  fe^.sym := tfieldvarsym(subsym);
+                  fe^.offset := base + carrier.fieldoffset + tfieldvarsym(subsym).fieldoffset;
+                  into.add(fe);
+                end;
+              walk_compositions(carrier_def, base + carrier.fieldoffset, into);
+            end;
+        end;
+
       var
         i   : longint;
         sym : tsym;
         fieldcnt: longint;
         st: tsymtable;
         fields: tfplist;
+        fe: pfield_entry;
         parentrtti: boolean;
       begin
-        fieldcnt:=0;
         parentrtti:=false;
         st:=def.symtable;
         fields:=tfplist.create;
@@ -705,11 +750,12 @@ implementation
         if (def.typ=objectdef) and (tobjectdef(def).objecttype=odt_object) and
             Assigned(tobjectdef(def).childof) and
             ((rt=fullrtti) or (tobjectdef(def).childof.needs_inittable)) then
-           begin
-             parentrtti:=true;
-             inc(fieldcnt);
-           end;
+          parentrtti:=true;
 
+        { direct fields, skipping `$compose$N` carriers - they get expanded
+          below into their flattened members at the carrier's offset so the
+          outer record's RTTI matches what the user wrote (`embed TBase` is
+          semantically `x, y` inlined, not one anonymous TBase subfield) }
         for i:=0 to st.SymList.Count-1 do
           begin
             sym:=tsym(st.SymList[i]);
@@ -718,12 +764,18 @@ implementation
                 (rt=fullrtti) or
                 tfieldvarsym(sym).vardef.needs_inittable
                ) and
-               not is_objc_class_or_protocol(tfieldvarsym(sym).vardef) then
+               not is_objc_class_or_protocol(tfieldvarsym(sym).vardef) and
+               not compose_carrier(sym) then
               begin
-                fields.add(tfieldvarsym(sym));
-                inc(fieldcnt);
+                new(fe);
+                fe^.sym := tfieldvarsym(sym);
+                fe^.offset := tfieldvarsym(sym).fieldoffset;
+                fields.add(fe);
               end;
           end;
+        { flatten members from embed / inline anonymous / union carriers }
+        walk_compositions(def, 0, fields);
+        fieldcnt := ord(parentrtti) + fields.count;
         { insert field count before data }
         maybe_add_comment(tcb,'Field count');
         tcb.emit_ord_const(fieldcnt,u32inttype);
@@ -736,11 +788,13 @@ implementation
         { fields }
         for i:=0 to fields.count-1 do
           begin
-            sym:=tsym(fields[i]);
+            fe := pfield_entry(fields[i]);
+            sym := fe^.sym;
             maybe_add_comment(tcb,'RTTI begin field '+tostr(i)+': '+sym.prettyname);
             write_rtti_reference(tcb,tfieldvarsym(sym).vardef,rt);
-            tcb.emit_ord_const(tfieldvarsym(sym).fieldoffset,sizeuinttype);
+            tcb.emit_ord_const(fe^.offset,sizeuinttype);
             maybe_add_comment(tcb,'RTTI end field '+tostr(i)+': '+sym.prettyname);
+            dispose(fe);
           end;
         fields.free;
         fields := nil;
@@ -845,31 +899,84 @@ implementation
 
 
     procedure TRTTIWriter.write_extended_field_table(tcb:ttai_typedconstbuilder;def:tabstractrecorddef;packrecords:longint);
+      type
+        pflatten_entry = ^tflatten_entry;
+        tflatten_entry = record
+          sym    : tfieldvarsym;
+          offset : asizeint;
+        end;
+
+      procedure collect_flatten(curdef:tabstractrecorddef; base:asizeint; into:tfplist);
+        var
+          k,m   : longint;
+          ce    : pcomposition_entry;
+          carrier : tfieldvarsym;
+          carrier_def : tabstractrecorddef;
+          subsym : tsym;
+          fe    : pflatten_entry;
+        begin
+          if curdef.composition_count=0 then exit;
+          for k:=0 to curdef.composition_count-1 do
+            begin
+              ce:=curdef.composition_at(k);
+              if not assigned(ce) or not assigned(ce^.carrier) then continue;
+              carrier:=tfieldvarsym(ce^.carrier);
+              if not (carrier.vardef.typ in [recorddef,objectdef]) then continue;
+              carrier_def:=tabstractrecorddef(carrier.vardef);
+              for m:=0 to carrier_def.symtable.symlist.count-1 do
+                begin
+                  subsym:=tsym(carrier_def.symtable.symlist[m]);
+                  if (subsym.typ<>fieldvarsym) then continue;
+                  if (sp_static in subsym.symoptions) then continue;
+                  if not curdef.is_visible_for_rtti(ro_fields,subsym.visibility) then continue;
+                  if pos('$compose$',tfieldvarsym(subsym).realname)=1 then continue;
+                  new(fe);
+                  fe^.sym:=tfieldvarsym(subsym);
+                  fe^.offset:=base+carrier.fieldoffset+tfieldvarsym(subsym).fieldoffset;
+                  into.add(fe);
+                end;
+              collect_flatten(carrier_def,base+carrier.fieldoffset,into);
+            end;
+        end;
+
       var
         i,cnt: integer;
         asym: tsym;
         fldsym : tfieldvarsym;
         list: TFPList;
+        flatten: TFPList;
+        total: integer;
+        fe: pflatten_entry;
+        emit_offset: asizeint;
       begin
         list:=TFPList.Create;
-        { build list of visible fields }
+        { build list of visible direct fields, skipping `$compose$N` carriers -
+          they get expanded below into their flattened members so RTTI matches
+          the user-level view (`embed TBase` is `x, y` inlined, not a separate
+          anonymous TBase subfield) }
         for i:=0 to def.symtable.symlist.Count-1 do
           begin
             asym:=tsym(def.symtable.symlist[i]);
             if (asym.typ=fieldvarsym) and
                not(sp_static in asym.symoptions) and
-               def.is_visible_for_rtti(ro_fields, asym.visibility) then
+               def.is_visible_for_rtti(ro_fields, asym.visibility) and
+               (pos('$compose$',asym.realname)<>1) then
               list.add(asym);
           end;
+        { walk record compositions (`embed`, inline anon records, `union`) and
+          collect each flattened sub-field with its accumulated carrier offset }
+        flatten:=TFPList.Create;
+        collect_flatten(def,0,flatten);
+        total:=list.count+flatten.count;
         {
           TExtendedFieldTable = record
             FieldCount: Word;
             Fields: array[0..0] of TExtendedFieldInfo;
           end;
         }
-        tcb.begin_anonymous_record(internaltypeprefixName[itp_extended_rtti_table]+tostr(list.count),packrecords,min(reqalign,SizeOf(PInt)),targetinfos[target_info.system]^.alignment.recordalignmin);
+        tcb.begin_anonymous_record(internaltypeprefixName[itp_extended_rtti_table]+tostr(total),packrecords,min(reqalign,SizeOf(PInt)),targetinfos[target_info.system]^.alignment.recordalignmin);
         maybe_add_comment(tcb,'RTTI: Extended Field count');
-        tcb.emit_ord_const(list.count,u16inttype);
+        tcb.emit_ord_const(total,u16inttype);
         for i := 0 to list.count-1 do
           begin
             fldsym:=tfieldvarsym(list[i]);
@@ -902,9 +1009,29 @@ implementation
             write_attribute_data(tcb,fldsym.rtti_attribute_list);
             tcb.end_anonymous_record;
           end;
+        { flattened fields - same record layout but adjusted offset }
+        for i:=0 to flatten.count-1 do
+          begin
+            fe:=pflatten_entry(flatten[i]);
+            fldsym:=fe^.sym;
+            emit_offset:=fe^.offset;
+            tcb.begin_anonymous_record(internaltypeprefixName[itp_extended_rtti_field]+'flat'+tostr(emit_offset),packrecords,min(reqalign,SizeOf(PInt)),targetinfos[target_info.system]^.alignment.recordalignmin);
+            tcb.emit_tai(Tai_const.Create_sizeint(emit_offset),sizeuinttype);
+            if is_objc_class_or_protocol(fldsym.vardef) then
+              tcb.emit_tai(Tai_const.Create_sym(RTTIWriter.get_rtti_label(voidpointertype,fullrtti,true)),voidpointertype)
+            else
+              tcb.emit_tai(Tai_const.Create_sym(RTTIWriter.get_rtti_label(fldsym.vardef,fullrtti,true)),voidpointertype);
+            tcb.emit_ord_const(visibility_to_rtti_flags(fldsym.visibility),u8inttype);
+            tcb.emit_pooled_shortstring_const_ref(rtti_string(fldsym.realname,nil,def));
+            write_attribute_data(tcb,fldsym.rtti_attribute_list);
+            tcb.end_anonymous_record;
+            dispose(fe);
+          end;
         tcb.end_anonymous_record;
         list.free;
         list := nil;
+        flatten.free;
+        flatten := nil;
       end;
 
 

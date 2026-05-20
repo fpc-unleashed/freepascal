@@ -62,6 +62,12 @@ Declare arrays of labels with numeric ranges (`label state[0..4]`) or string key
 
 Available whenever `{$goto on}` is active; no dedicated modeswitch.
 
+## [Composable Records](composable-records.md)
+
+Record composition without duplicating fields, plus C-style memory overlap and per-field layout control. Three composition forms - `embed TBase;` flattens fields of an existing record into the outer scope (declaration-time duplicate detection rejects name collisions), `record fields end;` (and `packed`/`bitpacked` variants) does the same for an inline anonymous record, the classic `name: T;` keeps the regular named subfield. Modern `union ... end;` replaces `case TYPE of` for plain memory overlap, can appear anywhere in the body, multiple unions per record allowed; optional `union size N` (assert + pad in bytes) / `union bitsize N` (assert in bits, byte storage) / `union align N` (cache-line placement) / `union of TYPE` (size+align+default type anchor) modifiers. `bitpacked record of TYPE` plus innermost-wins propagation enables C-style `name: N;` bitfield syntax inside (translates to `name: T bitsize N`) and `pad N;` / `pad 0;` anonymous padding / alignment markers. Per-field modifiers `align N` / `bitalign N` / `size N` / `bitsize N` give byte- and bit-level layout control for faithful WinAPI / POSIX struct ports. `OffsetOf()` / `BitOffsetOf()` / `AlignOf()` / `BitAlignOf()` / `BitSizeOf()` intrinsics for compile-time layout introspection, honouring per-field overrides where applicable. `GetMemAligned` / `AllocMemAligned` / `ReAllocMemAligned` / `FreeMemAligned` in the `system` unit deliver aligned heap allocation for cache-line patterns.
+
+Enabled via `{$modeswitch composablerecords}`.
+
 ## [Tweaks](tweaks.md)
 
 Small semantic adjustments that make standard Pascal constructs behave the way most people expect them to. No dedicated modeswitch - these are unleashed-mode-only. Currently covers the preserved for-loop counter (`for i := 1 to N do ... break;` keeps the right value of `i` after the loop), with more entries to follow.
