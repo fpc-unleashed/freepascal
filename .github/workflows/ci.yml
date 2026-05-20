@@ -2,16 +2,128 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Build even when HEAD already matches the nightly tag'
+        type: boolean
+        default: false
   schedule:
     - cron: '0 0 * * *'
-    
+
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - name: Checkout HEAD only
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: Fetch 'nightly' tag only
+        run: git fetch origin refs/tags/nightly:refs/tags/nightly || true
+
+      - name: Check for changes since nightly
+        id: check
+        run: |
+          if [ "${{ inputs.force_build }}" = "true" ]; then
+            echo "force_build=true requested, skipping HEAD vs nightly comparison"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          if git rev-parse nightly >/dev/null 2>&1; then
+            nightly_commit=$(git rev-list -n 1 nightly)
+            head_commit=$(git rev-parse HEAD)
+            echo "Nightly tag commit: $nightly_commit"
+            echo "HEAD commit: $head_commit"
+            if [ "$nightly_commit" = "$head_commit" ]; then
+              echo "No new commits since nightly release"
+              echo "should_build=false" >> $GITHUB_OUTPUT
+            else
+              echo "New commits found since nightly release"
+              echo "should_build=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "No 'nightly' tag found - will build"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
+
   windows:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
     uses: ./.github/workflows/windows.yml
-    permissions:
-      contents: write
-      
+
   linux:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
     uses: ./.github/workflows/linux.yml
+
+  release:
+    needs: [windows, linux]
+    if: needs.windows.result == 'success' && needs.linux.result == 'success'
+    runs-on: ubuntu-latest
     permissions:
       contents: write
+    steps:
+      - name: Checkout HEAD only
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: Download windows-bundle.zip
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-bundle.zip
+
+      - name: Download windows-ppcx64.zip
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-ppcx64.zip
+
+      - name: Download windows-ppcross386.zip
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-ppcross386.zip
+
+      - name: Download linux-bundle.zip
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-bundle.zip
+
+      - name: Download linux-ppcx64.zip
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-ppcx64.zip
+
+      - name: Download linux-ppcross386.zip
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-ppcross386.zip
+
+      - name: Prepare release notes
+        run: |
+          ts=$(TZ=Europe/Berlin date +"%Y-%m-%d %H:%M:%S CEST")
+          {
+            echo "FPC Unleashed nightly build"
+            echo
+            echo "Generated from commit: $GITHUB_SHA"
+            echo "Build time: $ts"
+          } > release-body.txt
+
+      - name: Update tag
+        uses: richardsimko/update-tag@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: nightly
+
+      - name: Release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: windows-bundle.zip,windows-ppcx64.zip,windows-ppcross386.zip,linux-bundle.zip,linux-ppcx64.zip,linux-ppcross386.zip
+          tag: nightly
+          name: FPC Unleashed nightly
+          bodyFile: release-body.txt
+          prerelease: true
+          allowUpdates: true
