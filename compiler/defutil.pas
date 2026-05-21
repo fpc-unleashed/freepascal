@@ -432,10 +432,24 @@ interface
       without arguments }
     function invokable_has_argless_invoke(def:tobjectdef):boolean;
 
+    { resolves a field-name chain `path[0].path[1]...` starting at start_def.
+      bit_total receives the cumulative offset in bits (records' fieldoffset
+      is in bits when bitpacked, in bytes otherwise; helper unifies to bits).
+      last_field receives the deepest fieldvarsym reached, or nil on miss.
+      on failure returns false with fail_at = index of path[] that did not
+      resolve. uses composable-records composition flatten (`lookup_in_composition`)
+      when `m_composable_records` is on. shared by the main expression parser
+      (pexpr offsetof/alignof) and the preprocessor `$if` evaluator. }
+    function walk_field_path_bits(start_def: tabstractrecorddef;
+                                  const path: array of TIDString;
+                                  out bit_total: asizeint;
+                                  out last_field: tsym;
+                                  out fail_at: longint): boolean;
+
 implementation
 
     uses
-       verbose,cutils,
+       verbose,cutils,cclasses,
        symbase,
        symtable, // search_system_type
        symsym,
@@ -2291,6 +2305,68 @@ implementation
             end;
           def:=def.childof;
         until not assigned(def);
+      end;
+
+    function walk_field_path_bits(start_def: tabstractrecorddef;
+                                  const path: array of TIDString;
+                                  out bit_total: asizeint;
+                                  out last_field: tsym;
+                                  out fail_at: longint): boolean;
+      var
+        cur_def : tabstractrecorddef;
+        cursym  : tsym;
+        cursymtable : tsymtable;
+        chain : tfplist;
+        i, ci : longint;
+        fs : tfieldvarsym;
+
+      procedure add_field(f: tfieldvarsym); inline;
+        begin
+          if tabstractrecordsymtable(f.owner).is_packed then
+            bit_total:=bit_total+f.fieldoffset
+          else
+            bit_total:=bit_total+f.fieldoffset*8;
+        end;
+
+      begin
+        bit_total:=0;
+        last_field:=nil;
+        fail_at:=-1;
+        result:=false;
+        if (start_def=nil) or (Length(path)=0) then exit;
+        cur_def:=start_def;
+        for i:=0 to High(path) do
+          begin
+            if cur_def=nil then
+              begin
+                fail_at:=i;
+                exit;
+              end;
+            cursym:=tsym(cur_def.symtable.find(upper(path[i])));
+            chain:=nil;
+            if (cursym=nil) and (m_composable_records in current_settings.modeswitches) then
+              lookup_in_composition(cur_def,path[i],cursym,cursymtable,chain);
+            if (cursym=nil) or (cursym.typ<>fieldvarsym) then
+              begin
+                fail_at:=i;
+                if chain<>nil then chain.free;
+                exit;
+              end;
+            if chain<>nil then
+              begin
+                for ci:=0 to chain.count-1 do
+                  add_field(tfieldvarsym(chain[ci]));
+                chain.free;
+              end;
+            fs:=tfieldvarsym(cursym);
+            add_field(fs);
+            last_field:=fs;
+            if fs.vardef.typ in [recorddef,objectdef] then
+              cur_def:=tabstractrecorddef(fs.vardef)
+            else
+              cur_def:=nil;
+          end;
+        result:=true;
       end;
 
 end.
