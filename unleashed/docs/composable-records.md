@@ -747,7 +747,7 @@ type
 
 ## Per-field sizing and alignment
 
-Four post-suffix modifiers attach to a single field declaration, between the type and any hint directives. All four are independent, can appear in any order, and only have effect inside `composablerecords` (outside the modeswitch they would be parsed as the start of the next field declaration and rejected).
+Four post-suffix modifiers attach to a single field declaration, between the type and any hint directives. They can appear in any order, each modifier at most once, and only have effect inside `composablerecords` (outside the modeswitch they would be parsed as the start of the next field declaration and rejected). Same mutual-exclusion rules as the pre-body modifier set (see [Modifier rules](#modifier-rules)): `size` and `bitsize` are mutually exclusive, `align` and `bitalign` are mutually exclusive.
 
 | Modifier      | Unit  | Effect                                                                 |
 |---------------|-------|------------------------------------------------------------------------|
