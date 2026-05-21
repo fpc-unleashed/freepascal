@@ -925,6 +925,37 @@ implementation
         member_blocktype:=bt_general;
         rtti_attrs_def := nil;
         repeat
+          { composablerecords: a SIZE/BITSIZE/ALIGN/BITALIGN id that the
+            pre-body modifier parser ended up reclassifying as a field name
+            is sitting in the bridge global; route it to the regular
+            field-decl path before the case dispatcher (which is keyed on
+            _ID and would otherwise hit the default "ident expected" error
+            on the `:` / `,` / `;` we are now sitting on). }
+          if composable_pre_consumed_field_name<>'' then
+            begin
+              check_unbound_attributes;
+              vdoptions:=[vd_record];
+              if classfields then
+                include(vdoptions,vd_class);
+              if not (m_implicit_generics in current_settings.modeswitches) then
+                include(vdoptions,vd_check_generic);
+              if threadvarfields then
+                include(vdoptions,vd_threadvar);
+              fldCount:=current_structdef.symtable.SymList.Count;
+              read_record_fields(vdoptions,nil,nil,hadgeneric,attr_element_count);
+              if assigned(rtti_attrs_def) then
+                begin
+                  while attr_element_count>1 do
+                    begin
+                      trtti_attribute_list.copyandbind(rtti_attrs_def,(current_structdef.symtable.SymList[fldCount] as tfieldvarsym).rtti_attribute_list);
+                      inc(fldCount);
+                      dec(attr_element_count);
+                    end;
+                  if fldCount<current_structdef.symtable.SymList.Count then
+                    trtti_attribute_list.bind(rtti_attrs_def,(current_structdef.symtable.SymList[fldCount] as tfieldvarsym).rtti_attribute_list);
+                end;
+              continue;
+            end;
           case current_scanner.token of
             _TYPE :
               begin
@@ -1302,6 +1333,7 @@ implementation
          srsymtable : TSymtable;
          pre_body_size, pre_body_bitsize : longint;
          pre_body_align, pre_body_bitalign : shortint;
+         pre_body_sorg : TIDString;
       begin
          old_current_structdef:=current_structdef;
          old_current_genericdef:=current_genericdef;
@@ -1430,14 +1462,26 @@ implementation
                     (current_scanner.pattern='ALIGN') or
                     (current_scanner.pattern='BITALIGN')) do
                begin
+                 { the id might be a field name (e.g. `record size: integer; end;`)
+                   instead of a modifier. save it, consume, then peek the next
+                   token - if it's `:` / `,` / `;`, hand the name off to
+                   read_record_fields as a pre-consumed first field and bail
+                   out of the modifier loop (without firing the mutex / dup
+                   checks - those apply to actual modifiers, not field names). }
+                 pre_body_sorg:=current_scanner.orgpattern;
                  if current_scanner.pattern='SIZE' then
                    begin
+                     consume(_ID);
+                     if current_scanner.token in [_COLON,_COMMA,_SEMICOLON] then
+                       begin
+                         composable_pre_consumed_field_name:=pre_body_sorg;
+                         break;
+                       end;
                      if (dummyattrelcount and 1)<>0 then
                        Message1(parser_e_duplicate_modifier,'size');
                      if (dummyattrelcount and 2)<>0 then
                        Message(parser_e_size_bitsize_exclusive);
                      dummyattrelcount:=dummyattrelcount or 1;
-                     consume(_ID);
                      pre_body_size:=get_intconst.svalue;
                      if pre_body_size<1 then
                        begin
@@ -1447,12 +1491,17 @@ implementation
                    end
                  else if current_scanner.pattern='BITSIZE' then
                    begin
+                     consume(_ID);
+                     if current_scanner.token in [_COLON,_COMMA,_SEMICOLON] then
+                       begin
+                         composable_pre_consumed_field_name:=pre_body_sorg;
+                         break;
+                       end;
                      if (dummyattrelcount and 2)<>0 then
                        Message1(parser_e_duplicate_modifier,'bitsize');
                      if (dummyattrelcount and 1)<>0 then
                        Message(parser_e_size_bitsize_exclusive);
                      dummyattrelcount:=dummyattrelcount or 2;
-                     consume(_ID);
                      pre_body_bitsize:=get_intconst.svalue;
                      if pre_body_bitsize<1 then
                        begin
@@ -1462,12 +1511,17 @@ implementation
                    end
                  else if current_scanner.pattern='ALIGN' then
                    begin
+                     consume(_ID);
+                     if current_scanner.token in [_COLON,_COMMA,_SEMICOLON] then
+                       begin
+                         composable_pre_consumed_field_name:=pre_body_sorg;
+                         break;
+                       end;
                      if (dummyattrelcount and 4)<>0 then
                        Message1(parser_e_duplicate_modifier,'align');
                      if (dummyattrelcount and 8)<>0 then
                        Message(parser_e_align_bitalign_exclusive);
                      dummyattrelcount:=dummyattrelcount or 4;
-                     consume(_ID);
                      pre_body_align:=get_intconst.svalue;
                      if (pre_body_align<1) or
                         ((pre_body_align and (pre_body_align-1))<>0) then
@@ -1478,12 +1532,17 @@ implementation
                    end
                  else { BITALIGN }
                    begin
+                     consume(_ID);
+                     if current_scanner.token in [_COLON,_COMMA,_SEMICOLON] then
+                       begin
+                         composable_pre_consumed_field_name:=pre_body_sorg;
+                         break;
+                       end;
                      if (dummyattrelcount and 8)<>0 then
                        Message1(parser_e_duplicate_modifier,'bitalign');
                      if (dummyattrelcount and 4)<>0 then
                        Message(parser_e_align_bitalign_exclusive);
                      dummyattrelcount:=dummyattrelcount or 8;
-                     consume(_ID);
                      pre_body_bitalign:=get_intconst.svalue;
                      if pre_body_bitalign<1 then
                        begin
