@@ -40,6 +40,15 @@ interface
 
     procedure read_record_fields(options:Tvar_dec_options; reorderlist: TFPObjectList; variantdesc: ppvariantrecdesc;out had_generic:boolean; out attr_element_count : integer);
 
+    { composablerecords: bridge for the pre-body modifier parsers
+      (record_dec in ptype.pas and the union pre-body loop here) to feed
+      the first field's already-consumed name into read_record_fields
+      when a token that looked like a modifier turned out to be a field
+      name (`record size: integer; end;` etc.). cleared by the read loop
+      on first use. }
+    var
+      composable_pre_consumed_field_name: string = '';
+
     procedure read_public_and_external(vs: tabstractvarsym);
 
     procedure try_consume_sectiondirective(var asection: ansistring);
@@ -2208,7 +2217,8 @@ implementation
          if not (current_scanner.token in [_ID,_CASE,_END]) and
             not((vd_record in options) and
                 (m_composable_records in current_settings.modeswitches) and
-                (current_scanner.token in [_RECORD,_PACKED,_BITPACKED])) then
+                (current_scanner.token in [_RECORD,_PACKED,_BITPACKED])) and
+            (composable_pre_consumed_field_name='') then
            consume(_ID);
          { read vars }
          sc:=TFPObjectList.create(false);
@@ -2219,7 +2229,11 @@ implementation
          while ((current_scanner.token=_ID) or
                 ((vd_record in options) and
                  (m_composable_records in current_settings.modeswitches) and
-                 (current_scanner.token in [_RECORD,_PACKED,_BITPACKED]))) and
+                 (current_scanner.token in [_RECORD,_PACKED,_BITPACKED])) or
+                { pre-body modifier parser fed us a first field name whose id
+                  was already consumed - kick the loop even though the current
+                  token is `:` / `,` / `;` rather than _ID }
+                (composable_pre_consumed_field_name<>'')) and
             not(((vd_object in options) or
                  ((vd_record in options) and (m_advanced_records in current_settings.modeswitches))) and
                 ((current_scanner.idtoken in [_PUBLIC,_PRIVATE,_PUBLISHED,_PROTECTED,_STRICT]) or
@@ -2276,6 +2290,16 @@ implementation
                `union` as a field name (e.g. jwawinuser.pas: `union: record`). }
              primed_first_field:=false;
              primed_first_sorg:='';
+             { pre-body modifier parsers (record_dec, union pre-body loop) hand
+               off here when a SIZE/BITSIZE/ALIGN/BITALIGN id turned out to be
+               a field name. inject it as the first field and clear the bridge. }
+             if composable_pre_consumed_field_name<>'' then
+               begin
+                 primed_first_field:=true;
+                 primed_first_sorg:=composable_pre_consumed_field_name;
+                 composable_pre_consumed_field_name:='';
+               end
+             else
              if (vd_record in options) and
                 (m_composable_records in current_settings.modeswitches) and
                 (current_scanner.pattern='UNION') then
@@ -2344,14 +2368,27 @@ implementation
                      seen_bitalign:=false;
                      while current_scanner.token=_ID do
                        begin
+                         { same lookahead as record_dec pre-body: an id matching
+                           a modifier name might actually be the first variant's
+                           field name (`union size: integer; end;`). save it,
+                           consume, peek next token, hand off as pre-consumed if
+                           the next token is `:` / `,` / `;` - bail out before
+                           the mutex / dup checks (which apply to real modifiers
+                           only, not to field names). }
+                         sorg:=current_scanner.orgpattern;
                          if current_scanner.pattern='SIZE' then
                            begin
+                             consume(_ID);
+                             if current_scanner.token in [_COLON,_COMMA,_SEMICOLON] then
+                               begin
+                                 composable_pre_consumed_field_name:=sorg;
+                                 break;
+                               end;
                              if primed_first_field then
                                Message1(parser_e_duplicate_modifier,'size');
                              if hadgendummy then
                                Message(parser_e_size_bitsize_exclusive);
                              primed_first_field:=true;
-                             consume(_ID);
                              parsed_custom_size:=get_intconst.svalue;
                              if parsed_custom_size<0 then
                                begin
@@ -2361,12 +2398,17 @@ implementation
                            end
                          else if current_scanner.pattern='BITSIZE' then
                            begin
+                             consume(_ID);
+                             if current_scanner.token in [_COLON,_COMMA,_SEMICOLON] then
+                               begin
+                                 composable_pre_consumed_field_name:=sorg;
+                                 break;
+                               end;
                              if hadgendummy then
                                Message1(parser_e_duplicate_modifier,'bitsize');
                              if primed_first_field then
                                Message(parser_e_size_bitsize_exclusive);
                              hadgendummy:=true;
-                             consume(_ID);
                              parsed_custom_bitsize:=get_intconst.svalue;
                              parsed_custom_size:=-1;
                              if parsed_custom_bitsize<1 then
@@ -2377,12 +2419,17 @@ implementation
                            end
                          else if current_scanner.pattern='ALIGN' then
                            begin
+                             consume(_ID);
+                             if current_scanner.token in [_COLON,_COMMA,_SEMICOLON] then
+                               begin
+                                 composable_pre_consumed_field_name:=sorg;
+                                 break;
+                               end;
                              if semicoloneaten then
                                Message1(parser_e_duplicate_modifier,'align');
                              if seen_bitalign then
                                Message(parser_e_align_bitalign_exclusive);
                              semicoloneaten:=true;
-                             consume(_ID);
                              parsed_custom_align:=get_intconst.svalue;
                              if (parsed_custom_align<1) or
                                 ((parsed_custom_align and (parsed_custom_align-1))<>0) then
@@ -2393,12 +2440,17 @@ implementation
                            end
                          else if current_scanner.pattern='BITALIGN' then
                            begin
+                             consume(_ID);
+                             if current_scanner.token in [_COLON,_COMMA,_SEMICOLON] then
+                               begin
+                                 composable_pre_consumed_field_name:=sorg;
+                                 break;
+                               end;
                              if seen_bitalign then
                                Message1(parser_e_duplicate_modifier,'bitalign');
                              if semicoloneaten then
                                Message(parser_e_align_bitalign_exclusive);
                              seen_bitalign:=true;
-                             consume(_ID);
                              parsed_union_bitalign:=get_intconst.svalue;
                              if parsed_union_bitalign<1 then
                                begin
