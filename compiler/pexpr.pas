@@ -36,12 +36,20 @@ interface
         ef_accept_equal,
         ef_type_only,
         ef_had_specialize,
-        ef_check_attr_suffix
+        ef_check_attr_suffix,
+        { opt-in for the lazy-label creation path: when set, an unknown
+          identifier followed by `:` is auto-registered as a label sym
+          (used by the unleashed lazy-label feature in statement context).
+          Default OFF so that expression parsers (case patterns, match
+          patterns, format spec, array index const, named params, ...) get
+          a proper "Identifier not found" instead of a silently created
+          label that swallows the `:` and confuses the parser }
+        ef_allow_lazy_label
       );
       texprflags = set of texprflag;
 
-    { reads a whole expression }
-    function expr(dotypecheck:boolean) : tnode;
+    { reads a whole expression; `flags` are forwarded to sub_expr }
+    function expr(dotypecheck:boolean; flags:texprflags = []) : tnode;
 
     { reads an expression without assignments and .. }
     function comp_expr(flags:texprflags):tnode;
@@ -4439,6 +4447,7 @@ implementation
                    not (sp_explicitrename in srsym.symoptions) then
                  begin
                    if not assigned(srsym) and
+                      (ef_allow_lazy_label in flags) and
                       (
                         ((current_scanner.token=_COLON) and
                          get_or_create_labelsym(orgstoredpattern,labsym,srsymtable)) or
@@ -6342,7 +6351,7 @@ implementation
       end;
 
 
-    function expr(dotypecheck : boolean) : tnode;
+    function expr(dotypecheck : boolean; flags : texprflags = []) : tnode;
 
       var
          p1,p2 : tnode;
@@ -6353,7 +6362,7 @@ implementation
          autofree_active : boolean;
       begin
          oldafterassignment:=afterassignment;
-         p1:=sub_expr(opcompare,[ef_accept_equal],nil);
+         p1:=sub_expr(opcompare,flags + [ef_accept_equal],nil);
          { get the resultdef for this expression }
          if not assigned(p1.resultdef) and
             dotypecheck then
