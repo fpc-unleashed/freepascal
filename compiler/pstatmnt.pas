@@ -228,6 +228,9 @@ implementation
                 lv:=0;
                 hv:=1;
               end
+            else if is_string(casenode.left.resultdef) then
+              { strings have no enumerable range, full coverage is impossible }
+              exit(true)
             else
               getrange(casenode.left.resultdef,lv,hv);
             Result:=casenode.labelcoverage<hv-lv;
