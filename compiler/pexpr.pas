@@ -3936,33 +3936,27 @@ implementation
              intrinsic raises parser_e_offsetof_subbyte_field. bitoffsetof
              always returns bits regardless of the record layout.
 
-             accumulation always happens in bits internally; each hop checks
-             its owning symtable to convert fieldoffset (which is in bits for
-             bitpacked records, in bytes elsewhere) to a uniform bit total. }
+             field walking + bit accumulation lives in
+             defutil.walk_field_path_bits so the preprocessor `$if`
+             evaluator can reuse it. }
            var
              cursym : tsym;
              cursymtable : tsymtable;
-             chain : tfplist;
              cur_def : tabstractrecorddef;
              bit_total : asizeint;
+             last_field : tsym;
              haderr : boolean;
-             ci : longint;
+             fail_at : longint;
+             path : array of TIDString;
+             orgnames : array of string;
              last_field_name : string;
-
-           procedure add_field_to_total(fs: tfieldvarsym);
-             begin
-               if tabstractrecordsymtable(fs.owner).is_packed then
-                 bit_total:=bit_total+fs.fieldoffset
-               else
-                 bit_total:=bit_total+fs.fieldoffset*8;
-             end;
-
            begin
              consume(_ID); { eat OFFSETOF or BITOFFSETOF }
              consume(_LKLAMMER);
              haderr:=false;
              bit_total:=0;
              cur_def:=nil;
+             last_field:=nil;
              last_field_name:='';
              if current_scanner.token<>_ID then
                begin
@@ -3980,8 +3974,11 @@ implementation
              else
                cur_def:=tabstractrecorddef(ttypesym(cursym).typedef);
              consume(_ID);
-             { accept either Pascal-style `Type.field` or C-style `Type, field`
-               separators; mixing within the same call is allowed too }
+             { collect dot/comma-separated field names into a path array,
+               then walk it via the shared helper. accept either
+               Pascal-style `Type.field` or C-style `Type, field` separators }
+             path:=nil;
+             orgnames:=nil;
              while not haderr and (try_to_consume(_POINT) or try_to_consume(_COMMA)) do
                begin
                  if current_scanner.token<>_ID then
@@ -3990,34 +3987,21 @@ implementation
                      haderr:=true;
                      break;
                    end;
-                 cursym:=tsym(cur_def.symtable.find(upper(current_scanner.pattern)));
-                 chain:=nil;
-                 if not assigned(cursym) and
-                    (m_composable_records in current_settings.modeswitches) then
-                   lookup_in_composition(cur_def,current_scanner.pattern,cursym,cursymtable,chain);
-                 if not assigned(cursym) or (cursym.typ<>fieldvarsym) then
-                   begin
-                     Message1(sym_e_id_no_member,current_scanner.orgpattern);
-                     consume(_ID);
-                     haderr:=true;
-                     if assigned(chain) then chain.free;
-                     break;
-                   end;
-                 if assigned(chain) then
-                   begin
-                     for ci:=0 to chain.count-1 do
-                       add_field_to_total(tfieldvarsym(chain[ci]));
-                     chain.free;
-                   end;
-                 add_field_to_total(tfieldvarsym(cursym));
-                 last_field_name:=current_scanner.orgpattern;
+                 Insert(current_scanner.pattern,path,Length(path));
+                 Insert(current_scanner.orgpattern,orgnames,Length(orgnames));
                  consume(_ID);
-                 if tfieldvarsym(cursym).vardef.typ in [recorddef,objectdef] then
-                   cur_def:=tabstractrecorddef(tfieldvarsym(cursym).vardef)
-                 else
-                   cur_def:=nil;
                end;
              consume(_RKLAMMER);
+             if not haderr and (Length(path)>0) then
+               begin
+                 if not walk_field_path_bits(cur_def,path,bit_total,last_field,fail_at) then
+                   begin
+                     Message1(sym_e_id_no_member,orgnames[fail_at]);
+                     haderr:=true;
+                   end
+                 else if assigned(last_field) then
+                   last_field_name:=orgnames[High(orgnames)];
+               end;
              if haderr then
                result:=cerrornode.create
              else if in_bits then
@@ -4039,15 +4023,19 @@ implementation
              is the type's natural alignment. For a field reference the
              value honours per-field `align N` / `bitalign N` overrides,
              falling back to the field type's alignment when no override
-             is present. }
+             is present. The field-path walk delegates to the shared
+             defutil.walk_field_path_bits helper. }
            var
              cursym : tsym;
              cursymtable : tsymtable;
-             chain : tfplist;
              cur_def : tabstractrecorddef;
              type_align : asizeint;
-             found_field : tfieldvarsym;
+             found_field : tsym;
              haderr : boolean;
+             bit_total_unused : asizeint;
+             fail_at : longint;
+             path : array of TIDString;
+             orgnames : array of string;
            begin
              consume(_ID); { eat ALIGNOF or BITALIGNOF }
              consume(_LKLAMMER);
@@ -4087,7 +4075,9 @@ implementation
                  haderr:=true;
                end;
              consume(_ID);
-             { optional `.field` or `,field` chain for field reference }
+             { collect optional `.field` / `,field` chain }
+             path:=nil;
+             orgnames:=nil;
              while not haderr and (try_to_consume(_POINT) or try_to_consume(_COMMA)) do
                begin
                  if current_scanner.token<>_ID then
@@ -4096,54 +4086,43 @@ implementation
                      haderr:=true;
                      break;
                    end;
-                 if not assigned(cur_def) then
-                   begin
-                     Message1(sym_e_id_no_member,current_scanner.orgpattern);
-                     consume(_ID);
-                     haderr:=true;
-                     break;
-                   end;
-                 cursym:=tsym(cur_def.symtable.find(upper(current_scanner.pattern)));
-                 chain:=nil;
-                 if not assigned(cursym) and
-                    (m_composable_records in current_settings.modeswitches) then
-                   lookup_in_composition(cur_def,current_scanner.pattern,cursym,cursymtable,chain);
-                 if not assigned(cursym) or (cursym.typ<>fieldvarsym) then
-                   begin
-                     Message1(sym_e_id_no_member,current_scanner.orgpattern);
-                     consume(_ID);
-                     haderr:=true;
-                     if assigned(chain) then chain.free;
-                     break;
-                   end;
-                 if assigned(chain) then chain.free;
-                 found_field:=tfieldvarsym(cursym);
+                 Insert(current_scanner.pattern,path,Length(path));
+                 Insert(current_scanner.orgpattern,orgnames,Length(orgnames));
                  consume(_ID);
-                 if tfieldvarsym(cursym).vardef.typ in [recorddef,objectdef] then
-                   cur_def:=tabstractrecorddef(tfieldvarsym(cursym).vardef)
-                 else
-                   cur_def:=nil;
                end;
              consume(_RKLAMMER);
+             if not haderr and (Length(path)>0) then
+               begin
+                 if cur_def=nil then
+                   begin
+                     Message1(sym_e_id_no_member,orgnames[0]);
+                     haderr:=true;
+                   end
+                 else if not walk_field_path_bits(cur_def,path,bit_total_unused,found_field,fail_at) then
+                   begin
+                     Message1(sym_e_id_no_member,orgnames[fail_at]);
+                     haderr:=true;
+                   end;
+               end;
              if haderr then
                exit(cerrornode.create);
              if assigned(found_field) then
                begin
                  if in_bits then
                    begin
-                     if found_field.custom_bitalign>0 then
-                       result:=cordconstnode.create(found_field.custom_bitalign,sizeuinttype,true)
-                     else if found_field.custom_align>0 then
-                       result:=cordconstnode.create(found_field.custom_align*8,sizeuinttype,true)
+                     if tfieldvarsym(found_field).custom_bitalign>0 then
+                       result:=cordconstnode.create(tfieldvarsym(found_field).custom_bitalign,sizeuinttype,true)
+                     else if tfieldvarsym(found_field).custom_align>0 then
+                       result:=cordconstnode.create(tfieldvarsym(found_field).custom_align*8,sizeuinttype,true)
                      else
-                       result:=cordconstnode.create(found_field.vardef.alignment*8,sizeuinttype,true);
+                       result:=cordconstnode.create(tfieldvarsym(found_field).vardef.alignment*8,sizeuinttype,true);
                    end
                  else
                    begin
-                     if found_field.custom_align>0 then
-                       result:=cordconstnode.create(found_field.custom_align,sizeuinttype,true)
+                     if tfieldvarsym(found_field).custom_align>0 then
+                       result:=cordconstnode.create(tfieldvarsym(found_field).custom_align,sizeuinttype,true)
                      else
-                       result:=cordconstnode.create(found_field.vardef.alignment,sizeuinttype,true);
+                       result:=cordconstnode.create(tfieldvarsym(found_field).vardef.alignment,sizeuinttype,true);
                    end;
                end
              else

@@ -1917,6 +1917,11 @@ type
            fs,path,name: tpathstr;
            foundfile: TCmdStr;
            found: boolean;
+           ofs_start_def : tabstractrecorddef;
+           ofs_path : array of TIDString;
+           ofs_bit_total : asizeint;
+           ofs_last_field : tsym;
+           ofs_fail_at : longint;
         begin
           result:=nil;
           hasKlammer:=false;
@@ -2094,6 +2099,152 @@ type
                                 end;
                               else
                                 Message(scan_e_error_in_preproc_expr);
+                            end;
+                          result:=texprvalue.create_int(l);
+                        end
+                      else
+                        Message1(sym_e_id_not_found,storedpattern);
+
+                    if current_scanner.preproc_token =_RKLAMMER then
+                      preproc_consume(_RKLAMMER)
+                    else
+                      Message(scan_e_preproc_syntax_error);
+                  end
+                else
+                if (current_scanner.preproc_pattern='ALIGNOF') or
+                   (current_scanner.preproc_pattern='BITSIZEOF') or
+                   (current_scanner.preproc_pattern='BITALIGNOF') then
+                  begin
+                    { alignof / bitsizeof / bitalignof - same shape as sizeof,
+                      single typename or var arg, returns the type's
+                      alignment-in-bytes / size-in-bits / alignment-in-bits }
+                    hs:=current_scanner.preproc_pattern;
+                    preproc_consume(_ID);
+                    current_scanner.skipspace;
+                    if current_scanner.preproc_token =_LKLAMMER then
+                      begin
+                        preproc_consume(_LKLAMMER);
+                        current_scanner.skipspace;
+                      end
+                    else
+                      Message(scan_e_preproc_syntax_error);
+
+                    storedpattern:=current_scanner.preproc_pattern;
+                    preproc_consume(_ID);
+                    current_scanner.skipspace;
+
+                    if eval then
+                      if searchsym(storedpattern,srsym,srsymtable) then
+                        begin
+                          try_consume_nestedsym(srsym,srsymtable);
+                          l:=0;
+                          if assigned(srsym) then
+                            case srsym.typ of
+                              staticvarsym,
+                              localvarsym,
+                              paravarsym :
+                                begin
+                                  if hs='ALIGNOF' then
+                                    l:=tabstractvarsym(srsym).vardef.alignment
+                                  else if hs='BITSIZEOF' then
+                                    l:=tabstractvarsym(srsym).getsize*8
+                                  else { BITALIGNOF }
+                                    l:=tabstractvarsym(srsym).vardef.alignment*8;
+                                  MarkSymbolAsUsed(srsym);
+                                end;
+                              typesym:
+                                begin
+                                  if ttypesym(srsym).typedef.typ in [errordef,abstractdef,forwarddef] then
+                                    Message(parser_e_illegal_expression);
+                                  if hs='ALIGNOF' then
+                                    l:=ttypesym(srsym).typedef.alignment
+                                  else if hs='BITSIZEOF' then
+                                    l:=ttypesym(srsym).typedef.size*8
+                                  else { BITALIGNOF }
+                                    l:=ttypesym(srsym).typedef.alignment*8;
+                                  MarkSymbolAsUsed(srsym);
+                                end;
+                              else
+                                Message(scan_e_error_in_preproc_expr);
+                            end;
+                          result:=texprvalue.create_int(l);
+                        end
+                      else
+                        Message1(sym_e_id_not_found,storedpattern);
+
+                    if current_scanner.preproc_token =_RKLAMMER then
+                      preproc_consume(_RKLAMMER)
+                    else
+                      Message(scan_e_preproc_syntax_error);
+                  end
+                else
+                if (current_scanner.preproc_pattern='OFFSETOF') or
+                   (current_scanner.preproc_pattern='BITOFFSETOF') then
+                  begin
+                    { offsetof / bitoffsetof - typename.field[.subfield...]
+                      or typename,field[,subfield...]. delegates the path
+                      walk to defutil.walk_field_path_bits so behaviour
+                      matches the main parser intrinsic exactly, including
+                      composable-records composition flatten paths. }
+                    hs:=current_scanner.preproc_pattern;
+                    preproc_consume(_ID);
+                    current_scanner.skipspace;
+                    if current_scanner.preproc_token =_LKLAMMER then
+                      begin
+                        preproc_consume(_LKLAMMER);
+                        current_scanner.skipspace;
+                      end
+                    else
+                      Message(scan_e_preproc_syntax_error);
+
+                    storedpattern:=current_scanner.preproc_pattern;
+                    preproc_consume(_ID);
+                    current_scanner.skipspace;
+
+                    if eval then
+                      if searchsym(storedpattern,srsym,srsymtable) then
+                        begin
+                          { do NOT call try_consume_nestedsym here - it would
+                            greedily eat the `.field` path tokens via
+                            searchsym_in_record, leaving nothing for the
+                            manual walk below }
+                          ofs_start_def:=nil;
+                          if assigned(srsym) and (srsym.typ=typesym) and
+                             (ttypesym(srsym).typedef.typ in [recorddef,objectdef]) then
+                            ofs_start_def:=tabstractrecorddef(ttypesym(srsym).typedef)
+                          else
+                            Message1(sym_e_id_no_member,storedpattern);
+                          { collect path elements }
+                          ofs_path:=nil;
+                          while (current_scanner.preproc_token=_POINT) or
+                                (current_scanner.preproc_token=_COMMA) do
+                            begin
+                              if current_scanner.preproc_token=_POINT then
+                                preproc_consume(_POINT)
+                              else
+                                preproc_consume(_COMMA);
+                              current_scanner.skipspace;
+                              if current_scanner.preproc_token<>_ID then
+                                begin
+                                  Message(scan_e_preproc_syntax_error);
+                                  break;
+                                end;
+                              Insert(current_scanner.preproc_pattern,ofs_path,Length(ofs_path));
+                              preproc_consume(_ID);
+                              current_scanner.skipspace;
+                            end;
+                          l:=0;
+                          if (ofs_start_def<>nil) and (Length(ofs_path)>0) then
+                            begin
+                              if not walk_field_path_bits(ofs_start_def,ofs_path,
+                                                         ofs_bit_total,ofs_last_field,ofs_fail_at) then
+                                Message1(sym_e_id_no_member,ofs_path[ofs_fail_at])
+                              else if hs='BITOFFSETOF' then
+                                l:=ofs_bit_total
+                              else if (ofs_bit_total mod 8)<>0 then
+                                Message1(parser_e_offsetof_subbyte_field,ofs_path[High(ofs_path)])
+                              else
+                                l:=ofs_bit_total div 8;
                             end;
                           result:=texprvalue.create_int(l);
                         end
