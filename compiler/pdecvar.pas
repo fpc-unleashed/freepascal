@@ -2145,6 +2145,13 @@ implementation
            `name: N` is a bitfield, `name: N..M` is a subrange type }
          parsed_potential_low,
          parsed_potential_high : tconstexprint;
+         { per-field post-suffix uniqueness flags (separate from the pre-body
+           reuse pattern - per-field path runs after `maybe_parse_proc_directives`
+           which already touches semicoloneaten/hadgendummy for procvar fields) }
+         pf_seen_size,
+         pf_seen_bitsize,
+         pf_seen_align,
+         pf_seen_bitalign : boolean;
          { union pre-body `bitalign N` modifier (4th flag - the other 3
            reuse pre-existing locals as seen_size/seen_bitsize/seen_align) }
          seen_bitalign : boolean;
@@ -2882,56 +2889,85 @@ implementation
                applied uniformly to every identifier in sc[]. parser only
                here; layout integration is in addfield. defaults were set
                before read_anon_type to allow the C-style `name: N` syntax
-               to pre-populate parsed_custom_bitsize. }
+               to pre-populate parsed_custom_bitsize. same uniqueness and
+               mutual-exclusion rules as the pre-body modifier set: each
+               modifier at most once, `size`/`bitsize` and `align`/`bitalign`
+               are exclusive pairs. }
              if m_composable_records in current_settings.modeswitches then
-               while (current_scanner.token=_ID) and
-                     ((current_scanner.pattern='ALIGN') or
-                      (current_scanner.pattern='BITALIGN') or
-                      (current_scanner.pattern='SIZE') or
-                      (current_scanner.pattern='BITSIZE')) do
-                 begin
-                   if current_scanner.pattern='ALIGN' then
-                     begin
-                       consume(_ID);
-                       parsed_custom_align:=get_intconst.svalue;
-                       if (parsed_custom_align<1) or
-                          ((parsed_custom_align and (parsed_custom_align-1))<>0) then
-                         begin
-                           Message(scanner_e_illegal_alignment_directive);
-                           parsed_custom_align:=0;
-                         end;
-                     end
-                   else if current_scanner.pattern='BITALIGN' then
-                     begin
-                       consume(_ID);
-                       parsed_custom_bitalign:=get_intconst.svalue;
-                       if parsed_custom_bitalign<1 then
-                         begin
-                           Message(scanner_e_illegal_alignment_directive);
-                           parsed_custom_bitalign:=0;
-                         end;
-                     end
-                   else if current_scanner.pattern='SIZE' then
-                     begin
-                       consume(_ID);
-                       parsed_custom_size:=get_intconst.svalue;
-                       if parsed_custom_size<1 then
-                         begin
-                           Message(scanner_e_illegal_alignment_directive);
-                           parsed_custom_size:=-1;
-                         end;
-                     end
-                   else { BITSIZE }
-                     begin
-                       consume(_ID);
-                       parsed_custom_bitsize:=get_intconst.svalue;
-                       if parsed_custom_bitsize<1 then
-                         begin
-                           Message(scanner_e_illegal_alignment_directive);
-                           parsed_custom_bitsize:=-1;
-                         end;
-                     end;
-                 end;
+               begin
+                 pf_seen_size:=false;
+                 pf_seen_bitsize:=false;
+                 pf_seen_align:=false;
+                 pf_seen_bitalign:=false;
+                 while (current_scanner.token=_ID) and
+                       ((current_scanner.pattern='ALIGN') or
+                        (current_scanner.pattern='BITALIGN') or
+                        (current_scanner.pattern='SIZE') or
+                        (current_scanner.pattern='BITSIZE')) do
+                   begin
+                     if current_scanner.pattern='ALIGN' then
+                       begin
+                         if pf_seen_align then
+                           Message1(parser_e_duplicate_modifier,'align');
+                         if pf_seen_bitalign then
+                           Message(parser_e_align_bitalign_exclusive);
+                         pf_seen_align:=true;
+                         consume(_ID);
+                         parsed_custom_align:=get_intconst.svalue;
+                         if (parsed_custom_align<1) or
+                            ((parsed_custom_align and (parsed_custom_align-1))<>0) then
+                           begin
+                             Message(scanner_e_illegal_alignment_directive);
+                             parsed_custom_align:=0;
+                           end;
+                       end
+                     else if current_scanner.pattern='BITALIGN' then
+                       begin
+                         if pf_seen_bitalign then
+                           Message1(parser_e_duplicate_modifier,'bitalign');
+                         if pf_seen_align then
+                           Message(parser_e_align_bitalign_exclusive);
+                         pf_seen_bitalign:=true;
+                         consume(_ID);
+                         parsed_custom_bitalign:=get_intconst.svalue;
+                         if parsed_custom_bitalign<1 then
+                           begin
+                             Message(scanner_e_illegal_alignment_directive);
+                             parsed_custom_bitalign:=0;
+                           end;
+                       end
+                     else if current_scanner.pattern='SIZE' then
+                       begin
+                         if pf_seen_size then
+                           Message1(parser_e_duplicate_modifier,'size');
+                         if pf_seen_bitsize then
+                           Message(parser_e_size_bitsize_exclusive);
+                         pf_seen_size:=true;
+                         consume(_ID);
+                         parsed_custom_size:=get_intconst.svalue;
+                         if parsed_custom_size<1 then
+                           begin
+                             Message(scanner_e_illegal_alignment_directive);
+                             parsed_custom_size:=-1;
+                           end;
+                       end
+                     else { BITSIZE }
+                       begin
+                         if pf_seen_bitsize then
+                           Message1(parser_e_duplicate_modifier,'bitsize');
+                         if pf_seen_size then
+                           Message(parser_e_size_bitsize_exclusive);
+                         pf_seen_bitsize:=true;
+                         consume(_ID);
+                         parsed_custom_bitsize:=get_intconst.svalue;
+                         if parsed_custom_bitsize<1 then
+                           begin
+                             Message(scanner_e_illegal_alignment_directive);
+                             parsed_custom_bitsize:=-1;
+                           end;
+                       end;
+                   end;
+               end;
 
              { try to parse the hint directives }
              hintsymoptions:=[];
