@@ -57,6 +57,17 @@ end;
 
 Multiple values separated by commas are OR'd together.
 
+`_` may also appear as the LAST element of a comma list; the whole branch then collapses to catch-all (semantically equivalent to a standalone `_:` branch). Explicit values before the `_` are accepted purely for documentation:
+
+```pas
+match s of
+  'x': WriteLn('hit x');
+  'w', 'a', _: WriteLn('w, a, or anything else');
+end;
+```
+
+This avoids forcing the `_` branch onto its own line when an enumerated set of "interesting" values shares the same body as the fallback. `_` in any other position (at the start of the comma list or in the middle) is rejected, because the explicit values would be unreachable: `_` already covers everything.
+
 ## Condition-based matching (no `of`)
 
 ```pas

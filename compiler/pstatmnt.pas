@@ -461,9 +461,11 @@ implementation
             end;
         end;
 
-      function parse_branch_cond(has_subject:boolean;subject:tnode) : tnode;
+      function parse_branch_cond(has_subject:boolean;subject:tnode;out is_catchall:boolean) : tnode;
         { Parse pattern(s) for a branch. Subject mode supports comma-separated
-          patterns (OR'd) and tuple patterns with _ wildcards. }
+          patterns (OR'd) and tuple patterns with _ wildcards. A bare `_`
+          alone or anywhere in the comma list flips `is_catchall` and the
+          caller treats the whole branch as `else`. }
 
         { equality check, or range check if `..` follows }
         function build_match_cond(subj,lo:tnode):tnode;
@@ -489,6 +491,7 @@ implementation
           sym : tsym;
           recdef : trecorddef;
         begin
+          is_catchall:=false;
           { tuple pattern with potential _ wildcards }
           if has_subject and (current_scanner.token=_LKLAMMER) and
              assigned(subject.resultdef) and (subject.resultdef.typ=recorddef) and
@@ -552,7 +555,19 @@ implementation
             end
           else
             begin
-              { normal pattern with optional comma-separated OR }
+              { bare _ at branch start: standalone catch-all, but must be
+                the LAST pattern in the branch - reject `_,...` }
+              if is_wildcard_underscore then
+                begin
+                  is_catchall:=true;
+                  consume(_ID);
+                  if current_scanner.token=_COMMA then
+                    Comment(V_Error,'`_` must be the last pattern in a `match` branch');
+                  result:=nil;
+                  exit;
+                end;
+              { normal pattern with optional comma-separated OR; `_` is only
+                allowed as the FINAL element of the comma list }
               pat:=comp_expr([ef_accept_equal]);
               do_typecheckpass(pat);
               if has_subject then
@@ -560,6 +575,16 @@ implementation
                   result:=build_match_cond(subject,pat);
                   while try_to_consume(_COMMA) do
                     begin
+                      if is_wildcard_underscore then
+                        begin
+                          is_catchall:=true;
+                          consume(_ID);
+                          if current_scanner.token=_COMMA then
+                            Comment(V_Error,'`_` must be the last pattern in a `match` branch');
+                          result.free;
+                          result:=nil;
+                          exit;
+                        end;
                       pat:=comp_expr([ef_accept_equal]);
                       do_typecheckpass(pat);
                       result:=caddnode.create(orn,result,
@@ -573,7 +598,7 @@ implementation
 
       var
         subject,cond,stmt,ifchain,firstcond,walknode,stmtblock : tnode;
-        fallthrough,has_subject,has_catchall : boolean;
+        fallthrough,has_subject,has_catchall,branch_catchall : boolean;
         stmts,exprstatements : tstatementnode;
         resultdef : tdef;
         resultvar : ttempcreatenode;
@@ -614,23 +639,22 @@ implementation
             { fallthrough: independent if-statements in repeat..until true }
             stmtblock:=internalstatements(stmts);
             repeat
-              if is_wildcard_underscore then
+              if firstcond<>nil then
                 begin
-                  consume(_ID);
-                  consume(_COLON);
+                  cond:=firstcond;
+                  firstcond:=nil;
+                  branch_catchall:=false;
+                end
+              else
+                cond:=parse_branch_cond(has_subject,subject,branch_catchall);
+              consume(_COLON);
+              if branch_catchall then
+                begin
                   addstatement(stmts,statement);
                   if not(current_scanner.token in [_END]) then
                     consume(_SEMICOLON);
                   break;
                 end;
-              if firstcond<>nil then
-                begin
-                  cond:=firstcond;
-                  firstcond:=nil;
-                end
-              else
-                cond:=parse_branch_cond(has_subject,subject);
-              consume(_COLON);
               addstatement(stmts,cifnode.create(cond,statement,nil));
               if not(current_scanner.token in [_ELSE,_OTHERWISE,_END]) then
                 consume(_SEMICOLON);
@@ -652,30 +676,14 @@ implementation
             has_catchall:=false;
             ifchain:=nil;
             repeat
-              if is_wildcard_underscore then
-                begin
-                  has_catchall:=true;
-                  consume(_ID);
-                  consume(_COLON);
-                  if is_expr then
-                    begin
-                      stmt:=expr(true);
-                      resultdef:=branch_type(resultdef,stmt.resultdef);
-                    end
-                  else
-                    stmt:=statement;
-                  append_else(ifchain,stmt);
-                  if not(current_scanner.token in [_END]) then
-                    consume(_SEMICOLON);
-                  break;
-                end;
               if firstcond<>nil then
                 begin
                   cond:=firstcond;
                   firstcond:=nil;
+                  branch_catchall:=false;
                 end
               else
-                cond:=parse_branch_cond(has_subject,subject);
+                cond:=parse_branch_cond(has_subject,subject,branch_catchall);
               consume(_COLON);
               if is_expr then
                 begin
@@ -684,6 +692,14 @@ implementation
                 end
               else
                 stmt:=statement;
+              if branch_catchall then
+                begin
+                  has_catchall:=true;
+                  append_else(ifchain,stmt);
+                  if not(current_scanner.token in [_END]) then
+                    consume(_SEMICOLON);
+                  break;
+                end;
               stmt:=cifnode.create(cond,stmt,nil);
               append_else(ifchain,stmt);
               if not(current_scanner.token in [_ELSE,_OTHERWISE,_END]) then
