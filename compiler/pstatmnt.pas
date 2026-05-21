@@ -4001,8 +4001,10 @@ implementation
                end;
              { don't typecheck yet, because that will also simplify, which may
                result in not detecting certain kinds of syntax errors --
-               see mantis #15594 }
-             p:=expr(false);
+               see mantis #15594. allow lazy-label creation here because we
+               are at statement start, where `IDENT:` and `IDENT[i]:` legally
+               declare a new label }
+             p:=expr(false,[ef_allow_lazy_label]);
              { save the current_scanner.pattern here for latter usage, the label could be "000",
                even if we read an expression, the current_scanner.pattern is still valid if it's really
                a label (FK)
