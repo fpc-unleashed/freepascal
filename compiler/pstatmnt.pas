@@ -470,18 +470,51 @@ implementation
           alone or anywhere in the comma list flips `is_catchall` and the
           caller treats the whole branch as `else`. }
 
-        { equality check, or range check if `..` follows }
+        { equality check, or range check if `..` follows. when an ordinal
+          subject's range bound sits exactly at the type's natural minimum
+          (or maximum), the corresponding `>=`/`<=` check is always true
+          and only triggers `comparison might be always true` warnings;
+          drop the redundant half }
         function build_match_cond(subj,lo:tnode):tnode;
           var
             hi : tnode;
+            type_lo,type_hi : TConstExprInt;
+            skip_lower,skip_upper : boolean;
           begin
             if try_to_consume(_POINTPOINT) then
               begin
                 hi:=comp_expr([ef_accept_equal]);
                 do_typecheckpass(hi);
-                result:=caddnode.create(andn,
-                  caddnode.create(gten,subj.getcopy,lo),
-                  caddnode.create(lten,subj.getcopy,hi));
+                skip_lower:=false;
+                skip_upper:=false;
+                if is_ordinal(subj.resultdef) then
+                  begin
+                    getrange(subj.resultdef,type_lo,type_hi);
+                    if (lo.nodetype=ordconstn) and (tordconstnode(lo).value=type_lo) then
+                      skip_lower:=true;
+                    if (hi.nodetype=ordconstn) and (tordconstnode(hi).value=type_hi) then
+                      skip_upper:=true;
+                  end;
+                if skip_lower and skip_upper then
+                  begin
+                    lo.free;
+                    hi.free;
+                    result:=cordconstnode.create(1,pasbool1type,false);
+                  end
+                else if skip_lower then
+                  begin
+                    lo.free;
+                    result:=caddnode.create(lten,subj.getcopy,hi);
+                  end
+                else if skip_upper then
+                  begin
+                    hi.free;
+                    result:=caddnode.create(gten,subj.getcopy,lo);
+                  end
+                else
+                  result:=caddnode.create(andn,
+                    caddnode.create(gten,subj.getcopy,lo),
+                    caddnode.create(lten,subj.getcopy,hi));
               end
             else
               result:=caddnode.create(equaln,subj.getcopy,lo);
