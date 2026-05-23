@@ -1674,6 +1674,9 @@ implementation
         oldpackrecords : longint;
         defpos,storepos : tfileposinfo;
         name: TIDString;
+        { composablerecords: `(kA, kB, kC) of T` anonymous-enum storage type }
+        storage_def : tdef;
+        storage_lo, storage_hi : tconstexprint;
 
         procedure expr_type;
         var
@@ -2453,6 +2456,31 @@ implementation
                 until not try_to_consume(_COMMA);
                 def:=aktenumdef;
                 consume(_RKLAMMER);
+                { composablerecords: optional `of T` storage type for the
+                  anonymous enum. shrinks (or grows) the enum's savesize to
+                  match T, after validating that every declared enum value
+                  fits in T's ordinal range. analogue of `union of T` and
+                  `bitpacked record of T`. }
+                if (m_composable_records in current_settings.modeswitches) and
+                   (current_scanner.token=_OF) then
+                  begin
+                    consume(_OF);
+                    single_type(storage_def,[stoAllowSpecialization]);
+                    if not is_ordinal(storage_def) then
+                      Message1(parser_e_enum_storage_not_ordinal,storage_def.typename)
+                    else
+                      begin
+                        getrange(storage_def,storage_lo,storage_hi);
+                        if (aktenumdef.min<storage_lo) or
+                           (aktenumdef.max>storage_hi) then
+                          Message3(parser_e_enum_value_out_of_storage,
+                                   tostr(aktenumdef.max),
+                                   storage_def.typename,
+                                   tostr(storage_hi))
+                        else
+                          aktenumdef.calcsavesize(storage_def.size);
+                      end;
+                  end;
 {$ifdef jvm}
                 jvm_maybe_create_enum_class(name,def);
 {$endif}

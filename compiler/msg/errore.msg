@@ -1841,12 +1841,28 @@ parser_e_align_bitalign_exclusive=03406_E_"align" and "bitalign" are mutually ex
 % The `align N` and `bitalign N` pre-body modifiers both express
 % alignment in different units. Specifying both is ambiguous: pick
 % bytes (align) or bits (bitalign), not both.
+parser_e_enum_storage_not_ordinal=03407_E_Anonymous enum storage type must be ordinal, got "$1"
+% The `(...) of T` shorthand on an anonymous enum needs an ordinal type
+% (Byte, Word, Integer, Int64, etc.) for the storage. Non-ordinal types
+% have no fixed bit pattern to back the enum values.
+parser_e_enum_value_out_of_storage=03408_E_Enum value $1 does not fit in storage type "$2" (range up to $3)
+% An anonymous enum declared with `(...) of T` has a value that exceeds
+% T's ordinal range. Pick a wider storage type or drop the value.
+parser_e_field_size_not_allowed_on_enum=03409_E_"size N" is not allowed on enum field of type "$1" - use `(...) of T` to set the storage type
+% Per-field `size N` does not change the codegen load/store width on
+% an enum field, so a smaller slot would silently corrupt adjacent
+% fields and a larger slot is just padding around an unchanged enum.
+% Control enum storage via the `(...) of T` clause instead.
+parser_e_field_bitsize_not_allowed_on_enum=03410_E_"bitsize N" is not allowed on enum field of type "$1" - use `(...) of T` to set the storage type
+% Per-field `bitsize N` has the same truncation hazard on an enum
+% field as `size N`. Use `(...) of T` to pick a narrower storage
+% type for the enum itself.
 %
 % \end{description}
 %
 # Type Checking
 #
-# 03406 is the last used parser one
+# 03410 is the last used parser one
 #
 # 04136 is the last used one
 #
