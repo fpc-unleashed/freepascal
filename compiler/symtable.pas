@@ -1988,7 +1988,23 @@ implementation
           begin
             sym:=TSym(unionst.SymList[i]);
             if not is_normal_fieldvarsym(sym) then
-              internalerror(200601272);
+              begin
+                { non-field syms inside a union body are anonymous-enum
+                  constants, anonymous type defs etc. they have no layout
+                  contribution but must move to the parent symtable so the
+                  outer record can see them (e.g. `kAudio` from
+                  `kind: (kAudio, kVideo, kCtrl);` declared inside a union) }
+                if sym.typ in [enumsym,typesym,constsym] then
+                  begin
+                    insertsym(sym);
+                    continue;
+                  end;
+                { malformed union body left some other kind of sym -
+                  bail out if a real diagnostic was already emitted }
+                if ErrorCount>0 then
+                  exit;
+                internalerror(200601272);
+              end;
             if tfieldvarsym(sym).fieldoffset=0 then
               include(tfieldvarsym(sym).varoptions,vo_is_first_field);
 
