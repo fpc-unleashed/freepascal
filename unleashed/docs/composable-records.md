@@ -468,6 +468,42 @@ Two records with the same enumerator names do not clash because each set lives i
 
 In stock FPC the same code leaks the enumerators into the surrounding unit scope; that path is suppressed in `composablerecords` mode by skipping the redirect in `tabstractrecordsymtable.insertdef` for `enumdef` and adding the dot-access path for `enumsym` in `factor_read_id`. Named enum types declared at the record level follow the same rule.
 
+### Storage size for anonymous enums
+
+By default an anonymous enum follows the unit's `{$packenum N}` setting (4 bytes if unset). For tightly-packed structs (WinAPI, network protocols, hardware register maps) you usually want 1 or 2 bytes. Two ways:
+
+```pas
+type
+  TPacket = record
+    kind: (kAudio, kVideo, kCtrl) of Byte;        // 1-byte storage
+    code: (cOk, cWarn, cFail) of Word;            // 2-byte storage
+  end;
+```
+
+`(kA, kB, kC) of T` shrinks the anonymous enum's storage type to `T`. `T` must be ordinal (`Byte`, `Word`, `LongWord`, `Int64`, `ShortInt`, etc.). The compiler validates that every declared enumerator fits in `T`'s ordinal range:
+
+```pas
+type
+  TBad = record
+    kind: (k0 = 0, k_huge = 300) of Byte;         // Error: Enum value 300 does not fit in storage type "Byte" (range up to 255)
+  end;
+```
+
+Same syntax pattern as `union of T` and `bitpacked record of T` - `of T` everywhere means "anchor the layout / storage on T".
+
+Per-field `size N` / `bitsize N` modifiers are **rejected** on enum fields - the codegen still emits a full-width load/store, so neither shrinking (truncation hazard, would corrupt adjacent fields) nor widening (just dead padding around an unchanged enum) carry any meaningful semantics. Use `(...) of T` to control the enum's storage width. Per-field `align N` / `bitalign N` keep working on enum fields - alignment only ever bumps up, no truncation hazard.
+
+```pas
+type
+  TKind = (kA, kB, kC);
+  TBad = record
+    kind: TKind size 4;     // Error: "size N" is not allowed on enum field of type "TKind" - use `(...) of T` to set the storage type
+  end;
+  TOk = record
+    kind: TKind align 64;   // OK - alignment is independent of storage width
+  end;
+```
+
 ### Discriminator + union pattern
 
 This is the modern replacement for the Pascal-tagged `case TAG: TYPE of`:
@@ -757,6 +793,8 @@ Four post-suffix modifiers attach to a single field declaration, between the typ
 | `bitsize N`   | bits  | declare a bit-packed field of exactly N bits (C-style bitfield)        |
 
 `align N` requires N to be a positive power of two. `bitsize N` and `bitalign N` force the containing record into bit-packed alignment, so they only make sense inside an inline record (typically inside a `union` variant) where the bit packing won't interfere with adjacent byte fields.
+
+`size N` and `bitsize N` are **not allowed on enum fields** - the codegen always emits a full-width load/store for the enum's natural type, so a sized slot would either truncate (corrupt adjacent fields) or pad (around an unchanged enum). Use `(...) of T` to control an enum's storage width instead (see [Storage size for anonymous enums](#storage-size-for-anonymous-enums)). `align N` / `bitalign N` keep working on enum fields.
 
 ```pas
 type
