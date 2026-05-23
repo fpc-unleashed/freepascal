@@ -349,8 +349,8 @@ interface
          field_deref    : tderef;
          custom_bitsize : longint;
          custom_size    : longint;
-         custom_align   : shortint;
-         custom_bitalign: shortint;
+         custom_align   : longword;
+         custom_bitalign: longword;
        end;
 
        tabstractrecorddef= class(tstoreddef)
@@ -4930,8 +4930,8 @@ implementation
                 ppufile.getderef(fse^.field_deref);
                 fse^.custom_bitsize:=ppufile.getlongint;
                 fse^.custom_size:=ppufile.getlongint;
-                fse^.custom_align:=shortint(ppufile.getbyte);
-                fse^.custom_bitalign:=shortint(ppufile.getbyte);
+                fse^.custom_align:=ppufile.getlongint;
+                fse^.custom_bitalign:=ppufile.getlongint;
                 ffield_sizing_loaded.add(fse);
               end;
           end;
@@ -4997,8 +4997,8 @@ implementation
                     ppufile.putderef(fderef);
                     ppufile.putlongint(tfieldvarsym(fsym).custom_bitsize);
                     ppufile.putlongint(tfieldvarsym(fsym).custom_size);
-                    ppufile.putbyte(byte(tfieldvarsym(fsym).custom_align));
-                    ppufile.putbyte(byte(tfieldvarsym(fsym).custom_bitalign));
+                    ppufile.putlongint(longint(tfieldvarsym(fsym).custom_align));
+                    ppufile.putlongint(longint(tfieldvarsym(fsym).custom_bitalign));
                   end;
               end;
           end;
