@@ -1364,7 +1364,19 @@ implementation
         l:=sym.getsize;
         vardef:=sym.vardef;
         varalign:=vardef.structalignment;
-        { composablerecords: per-field overrides from post-suffix modifiers }
+        { composablerecords: per-field overrides from post-suffix modifiers.
+          enum fields reject `size N` / `bitsize N` outright - the storage
+          width of an enum is controlled via the `(...) of T` clause, which
+          is the only path that gives the codegen a matching load/store
+          width. `align N` / `bitalign N` keep working - alignment only
+          ever bumps up, no truncation hazard. }
+        if (vardef.typ=enumdef) then
+          begin
+            if sym.custom_size<>-1 then
+              Message1(parser_e_field_size_not_allowed_on_enum,vardef.typename);
+            if sym.custom_bitsize<>-1 then
+              Message1(parser_e_field_bitsize_not_allowed_on_enum,vardef.typename);
+          end;
         if sym.custom_align<>0 then
           varalign:=sym.custom_align;
         if sym.custom_size<>-1 then
@@ -1878,7 +1890,8 @@ implementation
         l:=sym.getsize;
         vardef:=sym.vardef;
         varalign:=vardef.structalignment;
-        { composablerecords: per-field overrides from post-suffix modifiers }
+        { composablerecords: per-field overrides from post-suffix modifiers.
+          validation lives in addfield - this is just the layout-side reader. }
         if sym.custom_align<>0 then
           varalign:=sym.custom_align;
         if sym.custom_size<>-1 then
