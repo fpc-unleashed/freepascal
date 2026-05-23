@@ -1931,7 +1931,7 @@ implementation
       records but with no tag selector. }
     procedure parse_modern_union(recst: tabstractrecordsymtable;
                                  target_size: asizeint;
-                                 target_align: shortint;
+                                 target_align: longword;
                                  target_bitsize: longint;
                                  target_bitalign: longint);
       { target_size = -1 means "no explicit size", otherwise force the union
@@ -2037,21 +2037,36 @@ implementation
         if target_bitalign>0 then
           begin
             i:=(target_bitalign+7) div 8;
-            if i>target_align then
-              target_align:=i;
+            if longword(i)>target_align then
+              target_align:=longword(i);
           end;
         if target_align>0 then
           begin
-            if target_align>unionsymtable.recordalignment then
-              unionsymtable.recordalignment:=target_align;
-            if target_align>unionsymtable.explicitrecordalignment then
-              unionsymtable.explicitrecordalignment:=target_align;
+            { recordalignment / explicitrecordalignment are shortint -
+              cap composable records-driven alignments that overflow
+              the stock infrastructure's range }
+            if target_align>high(shortint) then
+              begin
+                unionsymtable.recordalignment:=high(shortint);
+                unionsymtable.explicitrecordalignment:=high(shortint);
+              end
+            else
+              begin
+                if shortint(target_align)>unionsymtable.recordalignment then
+                  unionsymtable.recordalignment:=shortint(target_align);
+                if shortint(target_align)>unionsymtable.explicitrecordalignment then
+                  unionsymtable.explicitrecordalignment:=shortint(target_align);
+              end;
           end;
 
         if target_align>0 then
           { explicit `union align N` bypasses the recordalignmax clamp -
-            user asked for N, give them N }
-          usedalign:=target_align
+            user asked for N, give them N (capped at shortint range for
+            the usedalign locale that drives field placement) }
+          if target_align>high(shortint) then
+            usedalign:=high(shortint)
+          else
+            usedalign:=shortint(target_align)
         else
           case recst.usefieldalignment of
             0,
@@ -2138,7 +2153,7 @@ implementation
          { composablerecords per-field sizing/alignment overrides parsed off
            the post-suffix `align N` / `bitalign N` / `size N` / `bitsize N` }
          parsed_custom_align,
-         parsed_custom_bitalign : shortint;
+         parsed_custom_bitalign : longword;
          parsed_custom_size,
          parsed_custom_bitsize : longint;
          { temporaries for subrange-vs-C-style disambiguation:

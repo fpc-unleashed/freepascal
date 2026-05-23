@@ -243,8 +243,8 @@ interface
               custom_bitalign = bit alignment               ( 0 = unset) }
           custom_bitsize : longint;
           custom_size    : longint;
-          custom_align   : shortint;
-          custom_bitalign: shortint;
+          custom_align   : longword;
+          custom_bitalign: longword;
 {$ifdef llvm}
           { the llvm version of the record does not support variants,   }
           { so the llvm equivalent field may not be at the exact same   }

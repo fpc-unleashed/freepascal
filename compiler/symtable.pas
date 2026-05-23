@@ -124,7 +124,7 @@ interface
           destructor destroy;override;
           procedure ppuload(ppufile:tcompilerppufile);override;
           procedure ppuwrite(ppufile:tcompilerppufile);override;
-          procedure alignrecord(fieldoffset:asizeint;varalign:shortint);
+          procedure alignrecord(fieldoffset:asizeint;varalign:longint);
           procedure addfield(sym:tfieldvarsym;vis:tvisibility);
           procedure addfieldlist(list: tfpobjectlist; maybereorder: boolean);
           { returns the field closest to this offset (may not be exact because
@@ -1326,9 +1326,9 @@ implementation
           result:=1;
       end;
 
-    procedure tabstractrecordsymtable.alignrecord(fieldoffset:asizeint;varalign:shortint);
+    procedure tabstractrecordsymtable.alignrecord(fieldoffset:asizeint;varalign:longint);
       var
-        varalignrecord: shortint;
+        varalignrecord: longint;
       begin
         case usefieldalignment of
           C_alignment:
@@ -1338,13 +1338,18 @@ implementation
           else
             varalignrecord:=field2recordalignment(fieldoffset,varalign);
         end;
-        recordalignment:=max(recordalignment,varalignrecord);
+        { recordalignment field is shortint - cap when composable records
+          push the alignment past the stock infrastructure's shortint range }
+        if varalignrecord>high(shortint) then
+          recordalignment:=high(shortint)
+        else
+          recordalignment:=max(recordalignment,shortint(varalignrecord));
       end;
 
     procedure tabstractrecordsymtable.addfield(sym:tfieldvarsym;vis:tvisibility);
       var
         l      : asizeint;
-        varalign : shortint;
+        varalign : longint;
         vardef : tdef;
       begin
         if (sym.owner<>self) then
@@ -1411,7 +1416,12 @@ implementation
                 end;
               if varalign=0 then
                 varalign:=size_2_align(l);
-              recordalignment:=max(recordalignment,field2recordalignment(databitsize mod 8,varalign));
+              { recordalignment is shortint - cap composable records-driven
+                alignments that overflow the stock infrastructure's range }
+              if field2recordalignment(databitsize mod 8,varalign)>high(shortint) then
+                recordalignment:=high(shortint)
+              else
+                recordalignment:=max(recordalignment,shortint(field2recordalignment(databitsize mod 8,varalign)));
               { bit packed records are limited to high(aint) bits }
               { instead of bytes to avoid double precision        }
               { arithmetic in offset calculations                 }
@@ -1883,7 +1893,7 @@ implementation
       var
         l      : asizeint;
         varalignfield,
-        varalign : shortint;
+        varalign : longint;
         vardef : tdef;
       begin
         { Calculate field offset }
@@ -2072,7 +2082,12 @@ implementation
             { update alignment of this record }
             if (usefieldalignment<>C_alignment) and
                (usefieldalignment<>mac68k_alignment) then
-              recordalignment:=max(recordalignment,varalignrecord);
+              { cap composable records-driven alignments at the stock
+                recordalignment field's shortint range }
+              if varalignrecord>high(shortint) then
+                recordalignment:=high(shortint)
+              else
+                recordalignment:=max(recordalignment,shortint(varalignrecord));
           end;
         { update alignment for C records }
         if (usefieldalignment=C_alignment) and
