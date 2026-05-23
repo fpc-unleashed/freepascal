@@ -779,7 +779,20 @@ type
   end;
 ```
 
-`BitSizeOf(TBitfield.flags)` returns **3** (the override), not 32 (the declared `integer`'s natural width). `SizeOf` continues to report the declared type's byte size (4 for `integer`) - if you need the byte slot the field occupies, use `(BitSizeOf(T.field) + 7) div 8`.
+`BitSizeOf(TBitfield.flags)` returns **3** (the override), not 32 (the declared `integer`'s natural width). `SizeOf(record.field)` honours per-field overrides the same way: a `size N` modifier makes `SizeOf(record.field)` return `N`, matching the actual slot the field occupies (and the delta you would compute from `OffsetOf` of the next field). Pure type queries (`SizeOf(TypeName)`, `SizeOf(EnumConstant)`) are unchanged - they report the type's natural size.
+
+```pas
+type
+  TR = record
+    a: integer size 32;     // slot padded to 32 bytes
+    b: byte;
+  end;
+
+// SizeOf(TR.a)        = 32   (slot, per-field override applied)
+// BitSizeOf(TR.a)     = 256  (32 * 8)
+// SizeOf(integer)     = 4    (pure type, unchanged)
+// OffsetOf(TR.b)      = 32   (matches the slot above)
+```
 
 ## Per-field sizing and alignment
 

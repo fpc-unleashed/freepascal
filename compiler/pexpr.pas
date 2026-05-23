@@ -595,7 +595,16 @@ implementation
                      not((p1.nodetype = subscriptn) and
                          is_packed_record_or_object(tsubscriptnode(p1).left.resultdef))) then
                    begin
-                     statement_syssym:=genintconstnode(p1.resultdef.size,sizesinttype);
+                     { composablerecords: a field with an explicit `size N`
+                       override occupies exactly N bytes in the surrounding
+                       record, regardless of the declared type's natural size.
+                       `SizeOf(record.field)` now reflects the slot, matching
+                       what `OffsetOf` of the next field implies. }
+                     if (p1.nodetype = subscriptn) and
+                        (tsubscriptnode(p1).vs.custom_size <> -1) then
+                       statement_syssym:=genintconstnode(tsubscriptnode(p1).vs.custom_size,sizesinttype)
+                     else
+                       statement_syssym:=genintconstnode(p1.resultdef.size,sizesinttype);
                      if (l = in_bitsizeof_x) then
                        statement_syssym:=caddnode.create(muln,statement_syssym,cordconstnode.create(8,sizesinttype,true));
                    end
