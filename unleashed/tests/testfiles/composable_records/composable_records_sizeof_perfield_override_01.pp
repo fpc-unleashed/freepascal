@@ -14,7 +14,7 @@ type
     c: integer;                            { 4-byte type, 4-byte slot }
   end;
   TE = record
-    kind: (kA, kB, kC) of Byte size 16;    { 1-byte type, 16-byte slot }
+    kind: (kA, kB, kC) of Byte;            { enum stored as Byte (no size override allowed) }
     tail: byte;
   end;
 
@@ -24,8 +24,8 @@ begin
   if SizeOf(TR.c) <> 4 then halt(3);                    { natural }
   if BitSizeOf(TR.c) div 8 <> 4 then halt(4);           { natural }
   if SizeOf(integer) <> 4 then halt(5);                 { pure type, no field }
-  if SizeOf(TE.kind) <> 16 then halt(6);                { override }
+  if SizeOf(TE.kind) <> 1 then halt(6);                 { enum-of-Byte = 1 }
   if SizeOf(TE.kA) <> 1 then halt(7);                   { enum constant - type only }
   if OffsetOf(TR.b) <> 32 then halt(8);                 { slot really is 32 }
-  if OffsetOf(TE.tail) <> 16 then halt(9);              { slot really is 16 }
+  if OffsetOf(TE.tail) <> 1 then halt(9);               { enum slot = 1 byte }
 end.
