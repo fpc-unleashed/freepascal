@@ -3,7 +3,7 @@ program composable_records_generic_named_subfield_01;
 {$mode unleashed}
 
 type
-  generic TBox<T> = record
+  TBox<T> = record
     item: T;
     weight: Single;
   end;
@@ -13,7 +13,7 @@ type
   end;
 
 var
-  b: specialize TBox<TVec>;
+  b: TBox<TVec>;
 begin
   b.item.x := 1;
   b.item.y := 2;

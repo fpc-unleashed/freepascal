@@ -9,13 +9,13 @@ type
 
   { generic record can compose - the embed target is a concrete type,
     not the generic parameter, which is fine }
-  generic TFramed<T> = record
+  TFramed<T> = record
     embed THeader;
     payload: T;
   end;
 
 var
-  f: specialize TFramed<LongInt>;
+  f: TFramed<LongInt>;
 begin
   f.magic := $CAFEBABE;
   f.payload := 99;

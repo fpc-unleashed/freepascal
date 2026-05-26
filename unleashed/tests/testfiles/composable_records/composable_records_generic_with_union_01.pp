@@ -3,7 +3,7 @@ program composable_records_generic_with_union_01;
 {$mode unleashed}
 
 type
-  generic TPair<T> = record
+  TPair<T> = record
     first: T;
     union
       raw: array[0..7] of Byte;
@@ -14,7 +14,7 @@ type
   end;
 
 var
-  p: specialize TPair<Byte>;
+  p: TPair<Byte>;
 begin
   p.first := 7;
   p.lo := $11223344;

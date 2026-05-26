@@ -6,7 +6,7 @@ type
   { inline anonymous record AS A UNION VARIANT inside a generic record
     - same crash path as the top-of-body case, exercises the spec hint
     flowing through the union variant path }
-  generic TPacket<T> = record
+  TPacket<T> = record
     header: T;
     union
       raw: LongWord;
@@ -18,7 +18,7 @@ type
   end;
 
 var
-  p: specialize TPacket<Byte>;
+  p: TPacket<Byte>;
 begin
   p.header := $AA;
   p.cmd := $11;

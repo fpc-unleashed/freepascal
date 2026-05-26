@@ -3,12 +3,12 @@ program composable_records_generic_packed_specialize_01;
 {$mode unleashed}
 
 type
-  generic TVec3<T> = packed record
+  TVec3<T> = packed record
     x, y, z: T;
   end;
 
-  TVec3I = specialize TVec3<LongInt>;
-  TVec3B = specialize TVec3<Byte>;
+  TVec3I = TVec3<LongInt>;
+  TVec3B = TVec3<Byte>;
 
 var
   vi: TVec3I;
