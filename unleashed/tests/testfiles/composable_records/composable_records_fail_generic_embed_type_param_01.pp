@@ -8,7 +8,7 @@ type
     the declaration site - the parser sees a non-record typesym and
     raises the "Record type expected after embed" diagnostic.
     Workaround: use a named subfield `item: T` instead. }
-  generic TBad<T> = record
+  TBad<T> = record
     embed T;
   end;
 

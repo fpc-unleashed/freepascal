@@ -3,13 +3,13 @@ program composable_records_generic_two_specializations_01;
 {$mode unleashed}
 
 type
-  generic TBox<T> = record
+  TBox<T> = record
     item: T;
     tag: Word;
   end;
 
-  TBoxByte = specialize TBox<Byte>;
-  TBoxLong = specialize TBox<LongWord>;
+  TBoxByte = TBox<Byte>;
+  TBoxLong = TBox<LongWord>;
 
 var
   bb: TBoxByte;

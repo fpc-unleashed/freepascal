@@ -6,7 +6,7 @@ type
   { inline anonymous record at top of a generic record body - the
     specialisation pass needs the matching composition entry from the
     generic def as a hint, otherwise the nested record_dec crashes }
-  generic TBox<T> = record
+  TBox<T> = record
     item: T;
     record
       a, b: Byte;
@@ -14,7 +14,7 @@ type
   end;
 
 var
-  b: specialize TBox<LongWord>;
+  b: TBox<LongWord>;
 begin
   b.item := $DEADBEEF;
   b.a := 1;
