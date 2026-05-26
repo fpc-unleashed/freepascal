@@ -1676,8 +1676,12 @@ implementation
           stay reachable unqualified. In composablerecords mode the
           enumerators stay scoped to the record - the unit's symbol
           table stays clean. Qualified access (`TRec.kVal`) still works
-          through the record symtable. }
+          through the record symtable.
+          During PPU load defowner is still nil (trecorddef.ppuload sets
+          it only after the inner symtable has finished loading); skip
+          the redirect then and let the def land where the PPU stored it. }
         if (def.typ=enumdef) and
+           assigned(defowner) and
            not (m_composable_records in current_settings.modeswitches) then
           defowner.owner.insertdef(def)
         else
