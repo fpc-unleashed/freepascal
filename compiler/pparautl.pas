@@ -815,9 +815,33 @@ implementation
         end;
 
       function equal_signature(fwpd,currpd:tprocdef;out sameparas,sameret:boolean):boolean;
+        var
+          j: longint;
+          pvs: tparavarsym;
         begin
           sameparas:=compare_paras(fwpd.paras,currpd.paras,cp_none,[cpo_ignorehidden,cpo_openequalisexact,cpo_ignoreuniv])=te_exact;
           sameret:=compare_rettype(fwpd.returndef,currpd.returndef)=te_exact;
+          { anon return type on both sides (no typesym): two distinct tdef
+            instances of the same shape. re-point currpd's returndef + its
+            hidden funcret paravarsym to the forward's def so the strict
+            te_exact compares downstream see identical pointers }
+          if not sameret and
+             (m_unleashed in current_settings.modeswitches) and
+             assigned(fwpd.returndef) and assigned(currpd.returndef) and
+             (fwpd.returndef.typesym=nil) and (currpd.returndef.typesym=nil) and
+             (compare_rettype(fwpd.returndef,currpd.returndef)>=te_equal) then
+            begin
+              for j:=0 to currpd.parast.SymList.Count-1 do
+                begin
+                  if tsym(currpd.parast.SymList[j]).typ<>paravarsym then continue;
+                  pvs:=tparavarsym(currpd.parast.SymList[j]);
+                  if (vo_is_funcret in pvs.varoptions) and
+                     (pvs.vardef=currpd.returndef) then
+                    pvs.vardef:=fwpd.returndef;
+                end;
+              currpd.returndef:=fwpd.returndef;
+              sameret:=true;
+            end;
           result:=sameparas and sameret;
         end;
 
