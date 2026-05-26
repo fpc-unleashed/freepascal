@@ -118,7 +118,7 @@ end.
 
 Stock FPC accepts Delphi-style generic syntax (no `generic` / `specialize` keywords, plain `<T>` in declarations and specializations) only in `{$mode delphi}`. The recognition rules for these keywords and for `<T>` were hard-coded against `m_delphi`, so even if you only wanted that one piece of Delphi syntax you had to switch the entire mode.
 
-Unleashed splits that recognition out into its own modeswitch, `implicitgenerics`. It is on by default in `delphi` (no behavior change there) and can be turned on in any other mode - `objfpc`, `tp`, `unleashed`, etc. - with `{$modeswitch implicitgenerics}`:
+Unleashed splits that recognition out into its own modeswitch, `implicitgenerics`. It is on by default in `delphi` (no behavior change there) and `unleashed`, and can be turned on in any other mode - `objfpc`, `tp`, etc. - with `{$modeswitch implicitgenerics}`:
 
 ```pas
 {$mode objfpc}{$H+}
@@ -222,9 +222,9 @@ Same dedicated messages as for compound assignment, plus a type check:
 | Modeswitch          | Default in `unleashed` | Purpose                                                 |
 |---------------------|-----------------------|----------------------------------------------------------|
 | `stringordcast`     | on                    | String-literal typecast to ordinal                       |
-| `typehelpers`       | off                   | `type helper for T` on any named type                    |
-| `multihelpers`      | off                   | Multiple helpers for the same type visible in one scope  |
-| `implicitgenerics`  | off                   | Delphi-style implicit `generic` / `specialize` / `<T>`   |
+| `typehelpers`       | on                    | `type helper for T` on any named type                    |
+| `multihelpers`      | on                    | Multiple helpers for the same type visible in one scope  |
+| `implicitgenerics`  | on                    | Delphi-style implicit `generic` / `specialize` / `<T>`   |
 
 To enable in another mode:
 
