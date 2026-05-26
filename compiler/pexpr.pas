@@ -4696,18 +4696,10 @@ implementation
              buildp:=carrayconstructornode.create(nil,buildp)
            else
             repeat
-              if (m_tuples in current_settings.modeswitches) and
-                 (current_scanner.token=_LKLAMMER) then
-                begin
-                  consume(_LKLAMMER);
-                  p1:=comp_expr([ef_accept_equal]);
-                  if current_scanner.token=_COMMA then
-                    p1:=tuple_lit_as_tempref(p1)
-                  else
-                    consume(_RKLAMMER);
-                end
-              else
-                p1:=comp_expr([ef_accept_equal]);
+              { tuple literal as array element is recognised by factor's own
+                _LKLAMMER path, which leaves the parser in the right state to
+                continue the surrounding expression (e.g. `(1)/100`) }
+              p1:=comp_expr([ef_accept_equal]);
               if try_to_consume(_POINTPOINT) then
                 begin
                   p2:=comp_expr([ef_accept_equal]);
