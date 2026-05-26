@@ -11,6 +11,14 @@ Feature gated by modeswitch `STRIPRTTI`, **off by default** in `{$mode unleashed
 
 The modeswitch works **per-unit**: enable it in the units you want to harden, leave it off in units that need RTTI to function (forms, code that walks RTTI, units passed to `application.createform(...)`).
 
+For a whole-project switch independent of per-unit modeswitches and immune to the modeswitch reset that a `{$mode X}` directive performs, pass the CLI flag `--striprtti`. The flag is checked by the same RTTI-emit path alongside the modeswitch (`rtti_string` short-circuits if either is active), so units that already opt-in via the modeswitch are unaffected and units that do not get hardened too.
+
+```
+fpc --striprtti -Tlinux app.pas
+```
+
+`--striprtti` has no effect on whitelisting: `expose`, `{$rttiexpose}` and `--rttiexpose=` keep working unchanged.
+
 ## Why
 
 RTTI carries plain ASCII type names so that runtime introspection (`object.ClassName`, `Application.CreateForm(TForm1, ...)`, serializers, RPC frameworks, etc.) can find a type by string. Those strings are visible to anyone running `strings binary.exe`. For some programs that is a leak you would rather not give away - the most obvious example being security-sensitive software where embedding type names like `TGameAimbot` or `TLicenseChecker` in the binary tells a reverse engineer where to start.
