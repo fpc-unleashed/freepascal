@@ -130,7 +130,8 @@ implementation
     function rtti_string(const s: shortstring; def: tdef = nil; parent_def: tdef = nil): shortstring;
       begin
         result := s;
-        if not (m_strip_rtti in current_settings.modeswitches) then exit;
+        if not (m_strip_rtti in current_settings.modeswitches) and
+           not force_striprtti_cli then exit;
         if assigned(def) and (df_expose_rtti in tstoreddef(def).defoptions) then exit;
         if assigned(parent_def) and (df_expose_rtti in tstoreddef(parent_def).defoptions) then exit;
         result := '';

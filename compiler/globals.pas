@@ -398,6 +398,12 @@ Const
        binary_os_version_override : ansistring;  // PE optional header MajorOperatingSystemVersion.Minor
        binary_signature_override_set : boolean;  // true when --fpcsignature=<anything> was passed
 
+       { --striprtti CLI flag: forces m_strip_rtti behaviour globally and
+         survives the modeswitch reset that any `$mode X` directive
+         performs (mode-from-source would otherwise drop the modeswitch).
+         Read by ncgrtti.rtti_string alongside the modeswitch check. }
+       force_striprtti_cli : boolean;
+
        { linking }
        usewindowapi  : boolean;
        description   : string;

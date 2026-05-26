@@ -1601,6 +1601,10 @@ begin
     binary_os_version_override := copy(opt, length('--osversion=')+1);
     exit;
   end;
+  if opt='--striprtti' then begin
+    force_striprtti_cli:=true;
+    exit;
+  end;
 
   { only parse define,undef,target,verbosity,link etc options the firsttime
     -Us must now also be first-passed to avoid rejection of -Sf options
