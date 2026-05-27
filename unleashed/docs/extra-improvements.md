@@ -217,6 +217,37 @@ Same dedicated messages as for compound assignment, plus a type check:
 - Read-only properties report `Property "X" has no write accessor`.
 - Property type must be ordinal, enum, pointer, or currency. Anything else reports `inc/dec property "X" must be ordinal, enum, pointer, or currency, not "T"`. For string properties use compound assignment (`prop += '...'`) instead.
 
+## `array[N]` size shorthand
+
+Standard Pascal spells a fixed array of 10 integers `array[0..9] of integer` - one literal up, one literal down, a range operator, and the reader has to subtract to figure out the element count. In `unleashed` mode a bare positive integer constant inside the brackets is the element count itself:
+
+```pas
+{$mode unleashed}
+
+var
+  a: array[10] of integer;       // 0..9, ten elements
+  m: array[3, 4] of integer;     // 0..2 by 0..3, twelve elements
+  b: array[BUF] of byte;         // BUF = 8 - same as array[0..7] of byte
+```
+
+Multi-dim works through the same comma loop the long form uses, so shortcut indices freely mix with explicit ranges and type-indexed dimensions:
+
+```pas
+var
+  k: array[5, 'a'..'c'] of integer;  // 0..4 by 'a'..'c'
+  e: array[TEnum, 4] of integer;     // TEnum by 0..3
+```
+
+Memory layout is identical to the explicit form: a single contiguous block, row-major. `Move`, `FillChar`, `SizeOf`, `BlockRead/Write` see one flat span exactly as they do for `array[1..N, 1..M]`. Dynamic arrays (`array of array of T`) are a separate construct and remain heap-scattered.
+
+`N` must be a positive integer constant expression - `array[0]` and `array[-5]` are rejected with `Upper bound of range is less than lower bound`, the same diagnostic stock FPC emits for `array[5..0]`.
+
+The shortcut sits next to the existing forms, not in place of them. Ranges (`array[1..10]`, `array[-5..5]`), type-indexed (`array[TEnum]`, `array[Boolean]`, `array['a'..'z']`), dynamic (`array of T`), open (`array of const` parameters), and FAM (`array[] of T` under `flexiblearrays`) are unchanged.
+
+`string[N]` is **not** affected: it keeps its classic meaning of "shortstring with max length N" because the `string[...]` syntax goes through a different parser path entirely. The new shortcut only fires inside `array[...]`.
+
+Available only in `unleashed` mode, no dedicated modeswitch.
+
 ## Modeswitch
 
 | Modeswitch          | Default in `unleashed` | Purpose                                                 |
