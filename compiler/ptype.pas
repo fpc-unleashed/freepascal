@@ -2134,6 +2134,28 @@ implementation
                                  { we need a valid range for debug information }
                                  range_to_type(lowval,highval,indexdef);
                            end
+                         else if (m_unleashed in current_settings.modeswitches) and
+                                 (pt.nodetype=ordconstn) and
+                                 is_integer(pt.resultdef) then
+                           begin
+                             { array[N] is shorthand for array[0..N-1] }
+                             highval:=tordconstnode(pt).value;
+                             if highval<1 then
+                               begin
+                                 Message(parser_e_array_lower_less_than_upper_bound);
+                                 highval:=1;
+                               end;
+                             lowval:=0;
+                             highval:=highval-1;
+                             if (lowval<int64(low(asizeint))) or
+                                (highval>high(asizeint)) then
+                               begin
+                                 Message(parser_e_array_range_out_of_bounds);
+                                 lowval:=0;
+                                 highval:=0;
+                               end;
+                             range_to_type(lowval,highval,indexdef);
+                           end
                          else
                            Message(sym_e_error_in_type_def)
                        end;
