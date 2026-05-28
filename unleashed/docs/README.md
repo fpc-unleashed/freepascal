@@ -74,7 +74,7 @@ Small semantic adjustments that make standard Pascal constructs behave the way m
 
 ## [Extra Improvements](extra-improvements.md)
 
-Catch-all page for smaller, targeted improvements that unlock Pascal patterns standard FPC modes reject - e.g. string-to-ordinal typecast in constant expressions (`dword('RIFF')`), or Delphi-style implicit `generic` / `specialize` syntax made available in any mode via `{$modeswitch implicitgenerics}`. Some entries are gated on their own modeswitch (and enabled by default in `unleashed`), others are `unleashed`-only with no separate switch; each entry on the page states which.
+Catch-all page for smaller, targeted improvements that unlock Pascal patterns standard FPC modes reject - e.g. string-to-ordinal typecast in constant expressions (`dword('RIFF')`), Delphi-style implicit `generic` / `specialize` syntax made available in any mode via `{$modeswitch implicitgenerics}`, or the `array[N] of T` shorthand for `array[0..N-1] of T`. Some entries are gated on their own modeswitch (and enabled by default in `unleashed`), others are `unleashed`-only with no separate switch; each entry on the page states which.
 
 ## [Multiline Strings](multiline-strings.md)
 

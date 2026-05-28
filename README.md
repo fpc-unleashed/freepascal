@@ -1029,14 +1029,19 @@ See [unleashed/docs/binary-metadata.md](unleashed/docs/binary-metadata.md) for f
 
 ### Extra Improvements
 
-Smaller, targeted improvements that unlock Pascal patterns standard FPC modes reject. Each is gated on its own modeswitch (some are on by default in `unleashed`, others must be opted into):
+Smaller, targeted improvements that unlock Pascal patterns standard FPC modes reject. Modeswitch entries are on by default in `unleashed` and can be opted into elsewhere via `{$modeswitch name}`; unleashed-only entries have no separate switch.
 
-- **`stringordcast`** - cast a string literal to an ordinal type at compile time, e.g. `dword('RIFF')` or `word('MZ')`. Useful for signature checks. *On by default in unleashed.*
-- **`typehelpers`** - `type helper for T` on any named type, not just classes and records.
-- **`multihelpers`** - several helpers for the same type visible in one scope (instead of "last one wins").
-- **`implicitgenerics`** - Delphi-style implicit `generic` / `specialize` syntax (`TList<T>` without keywords). Stock FPC locks this to `{$mode delphi}`; the modeswitch makes it usable in any mode.
+| Improvement                  | What it does                                                       | Example                                          | Enable                              |
+|------------------------------|--------------------------------------------------------------------|--------------------------------------------------|-------------------------------------|
+| String-to-ordinal cast       | Cast string literal to integer at compile time                     | `dword('RIFF')`                                  | `stringordcast` (on in unleashed)   |
+| Type helpers anywhere        | `type helper for T` on any named type, not just classes/records    | `type helper for integer`                        | `typehelpers` (on in unleashed)     |
+| Multi-helpers                | Several helpers for one type visible at once (no "last wins")      | two `helper for integer`, both methods callable  | `multihelpers` (on in unleashed)    |
+| Implicit generics            | Delphi-style `<T>` without `generic` / `specialize` keywords       | `TList<integer>`                                 | `implicitgenerics` (on in unleashed)|
+| `array[N] of T` shorthand    | `array[N]` = `array[0..N-1]`; multi-dim and ranges mix freely      | `array[10] of integer`, `array[3, 'a'..'z']`     | unleashed-only                      |
+| Compound `+=` on properties  | `prop += x` (stock rejects with "Variable identifier expected")    | `f.Count += 5`                                   | unleashed-only                      |
+| `inc` / `dec` on properties  | `inc(prop, n)` rewritten to getter + setter                        | `inc(c.N, 5)`                                    | unleashed-only                      |
 
-Full descriptions and examples in [unleashed/docs/extra-improvements.md](unleashed/docs/extra-improvements.md).
+Full descriptions, edge cases, and limitations in [unleashed/docs/extra-improvements.md](unleashed/docs/extra-improvements.md).
 
 ---
 
