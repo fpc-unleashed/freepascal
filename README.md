@@ -1051,7 +1051,18 @@ Each feature has a dedicated reference page in [unleashed/docs/](unleashed/docs/
 
 ## Installation
 
-### Option 1: Fresh install (FPC + Lazarus via fpcupdeluxe)
+### Option 1: Official installer (recommended)
+
+Self-contained GUI installer for Windows and Linux that downloads sources, builds the compiler and Lazarus IDE into a directory of your choice, optionally installs cross compilers, and drops a desktop shortcut to the IDE. No PATH changes, no registry side effects, no overwriting of an existing FPC. Re-runs are idempotent - ticking a new cross target or addon does just that surgical change.
+
+- Repo: [fpc-unleashed/installer](https://github.com/fpc-unleashed/installer)
+- Downloads: [installer/releases](https://github.com/fpc-unleashed/installer/releases) - tagged stable releases cut on every breaking change, plus a rolling `nightly` that tracks `main`
+  - `installer_win64_x86_64.exe` - Windows host
+  - `installer_linux_x86_64` / `installer_linux_x86_64.AppImage` - Linux host
+
+Pick the binary for your host, run it, choose an install directory, tick the cross targets you want, click Install. Default install path is `C:\fpcunleashed\` on Windows and `$HOME/fpcunleashed/` on Linux.
+
+### Option 2: Fresh install (FPC + Lazarus via fpcupdeluxe)
 
 1. Download [fpcupdeluxe](https://github.com/LongDirtyAnimAlf/fpcupdeluxe) and run it once to generate the `fpcup.ini` file.
 2. Edit `fpcup.ini` and add the following under `[ALIASfpcURL]`:
@@ -1076,7 +1087,7 @@ unleashed.git=https://github.com/fpc-unleashed/lazarus.git
 5. Click **Install/update FPC+Lazarus**.
 6. Optionally install cross-compilers via the `Cross` tab.
 
-### Option 2: Upgrade an existing fpcupdeluxe setup
+### Option 3: Upgrade an existing fpcupdeluxe setup
 
 1. Make sure your existing FPC + Lazarus installation was created with **fpcupdeluxe**.
 2. In your installation directory, delete or rename the `fpcsrc` folder.
