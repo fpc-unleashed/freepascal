@@ -4027,6 +4027,126 @@ implementation
       end;
 
 
+    // wrap classref / class / record / advanced record / type-helper ToString
+    // through `expr.ClassName` or `expr.ToString`, falling back to a compile-
+    // time string literal with the typename.
+    function build_interp_type_dispatch(p:tnode):tnode;
+      var
+        sym : tsym;
+        symt : tsymtable;
+        tn : ansistring;
+      begin
+        result:=p;
+        if p.resultdef.typ=classrefdef then
+          begin
+            result:=ccallnode.createinternmethod(p,'CLASSNAME',nil);
+            exit;
+          end;
+        if p.resultdef.typ in [objectdef,recorddef] then
+          begin
+            sym:=search_struct_member(tabstractrecorddef(p.resultdef),'TOSTRING');
+            if assigned(sym) and (sym.typ=procsym) then
+              begin
+                result:=ccallnode.create(nil,tprocsym(sym),sym.owner,p,[],nil);
+                exit;
+              end;
+          end
+        else
+          if search_objectpascal_helper(p.resultdef,nil,'TOSTRING',sym,symt) and
+             (sym.typ=procsym) then
+            begin
+              result:=ccallnode.create(nil,tprocsym(sym),symt,p,[],nil);
+              exit;
+            end;
+        tn:=p.resultdef.typename;
+        if tn<>'' then
+          begin
+            p.free;
+            result:=cstringconstnode.createstr(tn);
+            exit;
+          end;
+        Message1(parser_e_interp_fmt_bad_type,'anonymous type');
+      end;
+
+
+    // flatten `{expr}` into one or more fragments appended to interp_paras.
+    // scalars pass through unchanged (WriteStr handles them at the outer
+    // interp block). arrays are unrolled into `'[', e0, ', ', e1, ..., ']'`.
+    // class / record / object go through type dispatch which yields a string.
+    procedure handle_interp_elem(p:tnode;var interp_paras:tnode;var interp_count:longint);
+
+        procedure add_frag(f:tnode);
+        begin
+          interp_paras:=ccallparanode.create(f,interp_paras);
+          inc(interp_count);
+        end;
+
+      var
+        arrdef : tarraydef;
+        ac,nextac : tarrayconstructornode;
+        cnt,i,lo : sizeint;
+        elem : tnode;
+        first : boolean;
+      begin
+        if p.nodetype=arrayconstructorn then
+          begin
+            add_frag(cstringconstnode.createstr('['));
+            ac:=tarrayconstructornode(p);
+            first:=true;
+            while assigned(ac) do
+              begin
+                elem:=ac.left;
+                if not assigned(elem) then break;
+                ac.left:=nil;
+                if not first then
+                  add_frag(cstringconstnode.createstr(', '));
+                handle_interp_elem(elem,interp_paras,interp_count);
+                first:=false;
+                nextac:=tarrayconstructornode(ac.right);
+                ac:=nextac;
+              end;
+            add_frag(cstringconstnode.createstr(']'));
+            p.free;
+            exit;
+          end;
+        if not assigned(p.resultdef) then
+          do_typecheckpass(p);
+        if not assigned(p.resultdef) then
+          begin
+            add_frag(p);
+            exit;
+          end;
+        if is_ordinal(p.resultdef) or is_real(p.resultdef) or is_stringlike(p.resultdef) then
+          begin
+            add_frag(p);
+            exit;
+          end;
+        if (p.resultdef.typ=arraydef) and
+           not is_conststring_array(p.resultdef) and
+           (is_normal_array(p.resultdef) or is_array_constructor(p.resultdef) or
+            is_open_array(p.resultdef)) then
+          begin
+            add_frag(cstringconstnode.createstr('['));
+            arrdef:=tarraydef(p.resultdef);
+            cnt:=arrdef.elecount;
+            lo:=arrdef.lowrange;
+            for i:=0 to cnt-1 do
+              begin
+                if i>0 then
+                  add_frag(cstringconstnode.createstr(', '));
+                elem:=cvecnode.create(
+                  p.getcopy,
+                  cordconstnode.create(lo+i,s32inttype,false));
+                handle_interp_elem(elem,interp_paras,interp_count);
+              end;
+            add_frag(cstringconstnode.createstr(']'));
+            p.free;
+            exit;
+          end;
+        add_frag(build_interp_type_dispatch(p));
+      end;
+
+
     function factor(getaddr:boolean;flags:texprflags) : tnode;
 
          {---------------------------------------------
@@ -5347,9 +5467,13 @@ implementation
                          // format mask: `{expr:mask}` - everything after the
                          // first `:` up to the closing `}` is the raw mask
                          if current_scanner.token=_COLON then
-                           p1:=handle_interp_format(p1,current_scanner.read_interp_mask);
-                         interp_paras:=ccallparanode.create(p1,interp_paras);
-                         inc(interp_count);
+                           begin
+                             p1:=handle_interp_format(p1,current_scanner.read_interp_mask);
+                             interp_paras:=ccallparanode.create(p1,interp_paras);
+                             inc(interp_count);
+                           end
+                         else
+                           handle_interp_elem(p1,interp_paras,interp_count);
                          consume(_INTERP_EXPR_END);
                          continue;
                        end;
