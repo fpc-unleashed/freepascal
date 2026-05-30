@@ -3911,23 +3911,31 @@ implementation
 
     { build a runtime call for an interpolation format spec: expr as 'mask'.
       dispatches to Format / FormatDateTime / FormatFloat / IntToHex
-      based on expr type and mask shape. emits an error pointing at the
-      required unit when the function is not in scope. }
-    function handle_interp_format(p:tnode;const mask:ansistring):tnode;
+      based on expr type and mask shape. by default uses locale-invariant
+      settings (`.` decimal, `,` thousand, English names); prefix `L` in
+      the mask opts into the system locale via DefaultFormatSettings. }
+    function handle_interp_format(p:tnode;const inmask:ansistring):tnode;
       var
         funcname,unitname,tname : string;
-        srsym : tsym;
-        srsymtable : tsymtable;
-        paras,arrp : tnode;
+        srsym,fssym : tsym;
+        srsymtable,fsst : tsymtable;
+        paras,arrp,fsnode : tnode;
         digits : longint;
         code : integer;
-        is_datetime : boolean;
+        is_datetime,use_locale : boolean;
+        mask : ansistring;
       begin
         result:=p;
         if not assigned(p.resultdef) then
           do_typecheckpass(p);
         if not assigned(p.resultdef) then
           exit;
+
+        mask:=inmask;
+        // 'L' prefix = opt into DefaultFormatSettings (locale-aware)
+        use_locale:=(length(mask)>=1) and (mask[1]='L');
+        if use_locale then
+          delete(mask,1,1);
 
         // TDateTime/TDate/TTime are `type Double` aliases in `system`;
         // route them to FormatDateTime regardless of mask shape
@@ -3970,6 +3978,17 @@ implementation
             exit;
           end;
 
+        { build TFormatSettings.Invariant call node if we need the invariant
+          overload (IntToHex has no locale arg) }
+        fsnode:=nil;
+        if (not use_locale) and (funcname<>'INTTOHEX') then
+          begin
+            if searchsym('TFORMATSETTINGS',fssym,fsst) and (fssym.typ=typesym) then
+              fsnode:=ccallnode.createinternmethod(
+                ctypenode.create(ttypesym(fssym).typedef),
+                'INVARIANT',nil);
+          end;
+
         { parameters prepended in source order: arg1 first, arg2 second, ...
           the chain ends up reversed and reverseparameters flips it back
           when building the call }
@@ -3985,20 +4004,23 @@ implementation
           end
         else if funcname='FORMAT' then
           begin
-            { Format(mask, [expr]) - build arg2 (array) separately so arg1
-              (mask) stays the first prepend }
+            { Format(mask, [expr][, fs]) }
             arrp:=carrayconstructornode.create(p,nil);
             include(tarrayconstructornode(arrp).arrayconstructornodeflags,acnf_allow_array_constructor);
             paras:=nil;
             paras:=ccallparanode.create(cstringconstnode.createstr(mask),paras);
             paras:=ccallparanode.create(arrp,paras);
+            if assigned(fsnode) then
+              paras:=ccallparanode.create(fsnode,paras);
           end
         else
           begin
-            { FormatDateTime(mask, dt) or FormatFloat(mask, val) }
+            { FormatDateTime(mask, dt[, fs]) or FormatFloat(mask, val[, fs]) }
             paras:=nil;
             paras:=ccallparanode.create(cstringconstnode.createstr(mask),paras);
             paras:=ccallparanode.create(p,paras);
+            if assigned(fsnode) then
+              paras:=ccallparanode.create(fsnode,paras);
           end;
 
         result:=ccallnode.create(paras,tprocsym(srsym),srsymtable,nil,[],nil);
