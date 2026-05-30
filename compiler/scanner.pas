@@ -305,6 +305,10 @@ interface
           procedure skipdelphicomment;
           procedure skipoldtpcomment(read_first_char:boolean);
           procedure readtoken(allowrecordtoken:boolean);
+          // read raw mask text after `:` inside `{expr:mask}` up to the
+          // terminating `}`. consumes the `}` and sets the current token
+          // to _INTERP_EXPR_END so the parser can resume normally
+          function read_interp_mask:ansistring;
           function  readpreproc:ttoken;
           function  readpreprocint(var value:int64;const place:string):boolean;
           function  readpreprocset(conform_to:tsetdef;var value:tnormalset;const place:string):boolean;
@@ -6396,6 +6400,27 @@ type
 {****************************************************************************
                                Token Scanner
 ****************************************************************************}
+
+    function tscannerfile.read_interp_mask:ansistring;
+      begin
+        result:='';
+        // c is the first char of mask (right after the `:`); stop at the
+        // matching `}`, end-of-line or EOF. line breaks inside a mask are
+        // rejected to keep error messages local
+        while not (c in ['}',#0,#10,#13,#26]) do
+          begin
+            result:=result+c;
+            readchar;
+          end;
+        if c<>'}' then
+          Message(scan_f_string_exceeds_line);
+        // consume the closing `}` and synthesize _INTERP_EXPR_END so the
+        // parser can call consume(_INTERP_EXPR_END) right after this
+        readchar;
+        interp_mode:=im_string;
+        token:=_INTERP_EXPR_END;
+      end;
+
 
     procedure tscannerfile.readtoken(allowrecordtoken:boolean);
       var
