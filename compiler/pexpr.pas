@@ -5305,11 +5305,11 @@ implementation
                  interp_has_expr:=false;
                  while current_scanner.token<>_INTERP_END do
                    begin
-                     if current_scanner.token=_CSTRING then
+                     if current_scanner.token=_INTERP_FRAG then
                        begin
                          p1:=cstringconstnode.createpchar(pchar(current_scanner.cstringpattern),
                            length(current_scanner.cstringpattern),nil);
-                         consume(_CSTRING);
+                         consume(_INTERP_FRAG);
                        end
                      else
                        begin
