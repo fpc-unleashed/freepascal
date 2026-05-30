@@ -17,6 +17,7 @@ For each entry the table gives the signature in compact form, a one-line descrip
 | `AlignOf` | `AlignOf(T)` / `AlignOf(T.field): SizeInt` | intrinsic | `{$modeswitch composablerecords}` (default in `unleashed`) | [composable-records.md](composable-records.md) |
 | `BitAlignOf` | `BitAlignOf(T)` / `BitAlignOf(T.field): SizeInt` | intrinsic | `{$modeswitch composablerecords}` (default in `unleashed`) | [composable-records.md](composable-records.md) |
 | `BitSizeOf` (extended) | `BitSizeOf(T)` / `BitSizeOf(T.field): SizeInt` | intrinsic | always available; new behavior under `composablerecords` | [composable-records.md](composable-records.md) |
+| `SwapValues` | `procedure SwapValues(var a, b: T)` | intrinsic | `{$mode unleashed}` | [swapvalues.md](swapvalues.md) |
 | `GetMemAligned` | `function GetMemAligned(size, alignment: PtrUInt): Pointer` | RTL `system` | always available | [composable-records.md](composable-records.md) |
 | `AllocMemAligned` | `function AllocMemAligned(size, alignment: PtrUInt): Pointer` | RTL `system` | always available | [composable-records.md](composable-records.md) |
 | `ReAllocMemAligned` | `function ReAllocMemAligned(var p: Pointer; new_size, alignment: PtrUInt): Pointer` | RTL `system` | always available | [composable-records.md](composable-records.md) |
@@ -43,6 +44,10 @@ Same surface as `OffsetOf`: pattern-detected, usable in `{$if}` and any constant
 ### `BitSizeOf` (extended)
 
 Stock FPC already ships `BitSizeOf`, returning the storage bits a field actually occupies in a bitpacked context. Under `composablerecords` the same intrinsic also honours the per-field `bitsize N` modifier, so a wide type narrowed by `bitsize N` reports `N` rather than the type's natural bit width. Behavior outside `composablerecords` is unchanged.
+
+### `SwapValues`
+
+Builtin that swaps two same-typed assignable variables with a bitwise move, no `uses` required. For managed types (string, dynamic array, interface, `Variant`) it swaps only the reference words, with no `incr_ref` / `decr_ref` calls; ordinals and pointer-sized operands lower to a register swap, larger types to a raw byte exchange. An operand with a side-effecting address is evaluated once. Pattern-detected in `factor_read_id` in `{$mode unleashed}`, but only when no `SwapValues` symbol is in scope, so a user-declared `SwapValues` keeps resolving normally and shadows the builtin.
 
 ### `GetMemAligned` / `AllocMemAligned` / `ReAllocMemAligned` / `FreeMemAligned`
 

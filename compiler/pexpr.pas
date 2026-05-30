@@ -4220,6 +4220,22 @@ implementation
                exit;
              end;
 
+           { the two-argument SwapValues(a,b) is a bitwise swap builtin that needs no
+             unit beyond System. only intercept when no SwapValues symbol is in scope,
+             so a user-declared SwapValues keeps resolving normally. }
+           if (current_scanner.token=_ID) and
+              (m_unleashed in current_settings.modeswitches) and
+              (current_scanner.pattern='SWAPVALUES') then
+             begin
+               searchsym(current_scanner.pattern,srsym,srsymtable);
+               if not assigned(srsym) then
+                 begin
+                   p1:=inline_swapvalues;
+                   again:=false;
+                   exit;
+                 end;
+             end;
+
            { first check for identifier }
            if current_scanner.token<>_ID then
              begin

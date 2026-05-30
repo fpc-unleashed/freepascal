@@ -132,6 +132,7 @@ interface
           function handle_insert:tnode;
           function handle_delete:tnode;
           function handle_concat:tnode;
+          function first_swapvalues:tnode;
        end;
        tinlinenodeclass = class of tinlinenode;
 
@@ -3771,6 +3772,40 @@ implementation
                     end;
                 end;
 
+              in_swapvalues:
+                begin
+                  resultdef:=voidtype;
+                  if not(df_generic in current_procinfo.procdef.defoptions) then
+                    begin
+                      { exactly two parameters }
+                      if not assigned(left) or (left.nodetype<>callparan) or
+                         not assigned(tcallparanode(left).right) or
+                         (tcallparanode(left).right.nodetype<>callparan) or
+                         assigned(tcallparanode(tcallparanode(left).right).right) then
+                        begin
+                          CGMessage1(parser_e_wrong_parameter_size,'SwapValues');
+                          result:=cerrornode.create;
+                        end
+                      { both operands must be assignable and of the same type }
+                      else if not valid_for_var(tcallparanode(left).left,true) then
+                        result:=cerrornode.create
+                      else if not valid_for_var(tcallparanode(tcallparanode(left).right).left,true) then
+                        result:=cerrornode.create
+                      else if not equal_defs(tcallparanode(left).left.resultdef,
+                                             tcallparanode(tcallparanode(left).right).left.resultdef) then
+                        begin
+                          CGMessage(type_e_mismatch);
+                          result:=cerrornode.create;
+                        end
+                      else
+                        begin
+                          { both are read and written by the swap }
+                          set_varstate(tcallparanode(left).left,vs_readwritten,[vsf_must_be_valid]);
+                          set_varstate(tcallparanode(tcallparanode(left).right).left,vs_readwritten,[vsf_must_be_valid]);
+                        end;
+                    end;
+                end;
+
               in_and_assign_x_y,
               in_or_assign_x_y,
               in_xor_assign_x_y,
@@ -4560,6 +4595,9 @@ implementation
               result:=first_IncDec;
             end;
 
+          in_swapvalues:
+            result:=first_swapvalues;
+
           in_and_assign_x_y,
           in_or_assign_x_y,
           in_xor_assign_x_y,
@@ -5188,6 +5226,111 @@ implementation
             then
              { convert to simple add (JM) }
              result:=getaddsub_for_incdec
+       end;
+
+
+     { lower SwapValues(a,b) into a bitwise swap:
+         tmp := RawT(a);  RawT(a) := RawT(b);  RawT(b) := tmp;
+       RawT is a same-sized integer for 1/2/4/8 byte operands, so the temp lands
+       in a register and the swap is the optimal load/load/store/store; for other
+       sizes it is a byte array. reinterpreting the operands as raw words swaps
+       managed types (string/interface/dynarray) by their reference word alone,
+       with no incr/decr_ref churn. }
+     function tinlinenode.first_swapvalues: tnode;
+       var
+         para1,para2 : tcallparanode;
+         aread,awrite,bread,bwrite : tnode;
+         ptra,ptrb,tmpnode : ttempcreatenode;
+         newstatement : tstatementnode;
+         newblock : tblocknode;
+         rawdef : tdef;
+         elemsize : asizeint;
+         ordinaltmp : boolean;
+       begin
+         expectloc:=LOC_VOID;
+         result:=nil;
+         para1:=tcallparanode(left);
+         para2:=tcallparanode(para1.right);
+         elemsize:=para1.left.resultdef.size;
+         { empty type (e.g. empty record): nothing to swap }
+         if elemsize=0 then
+           begin
+             result:=cnothingnode.create;
+             exit;
+           end;
+         { register-sized operands swap through an integer temp; the rest
+           through a byte array (a plain memory exchange) }
+         ordinaltmp:=true;
+         case elemsize of
+           1: rawdef:=u8inttype;
+           2: rawdef:=u16inttype;
+           4: rawdef:=u32inttype;
+           8: rawdef:=u64inttype;
+         else
+           begin
+             rawdef:=carraydef.getreusable(u8inttype,elemsize);
+             ordinaltmp:=false;
+           end;
+         end;
+
+         newblock:=internalstatements(newstatement);
+         ptra:=nil;
+         ptrb:=nil;
+
+         { for a side-effecting operand take its address once, otherwise refer
+           to it directly so a simple local folds into the optimal load/store }
+         if node_complexity(para1.left)>3 then
+           begin
+             ptra:=ctempcreatenode.create(voidpointertype,voidpointertype.size,tt_persistent,true);
+             addstatement(newstatement,ptra);
+             addstatement(newstatement,cassignmentnode.create(ctemprefnode.create(ptra),
+               caddrnode.create_internal(para1.left.getcopy)));
+             aread:=cderefnode.create(ctemprefnode.create(ptra));
+             inserttypeconv_internal(aread,para1.left.resultdef);
+             awrite:=cderefnode.create(ctemprefnode.create(ptra));
+             inserttypeconv_internal(awrite,para1.left.resultdef);
+           end
+         else
+           begin
+             aread:=para1.left.getcopy;
+             awrite:=para1.left.getcopy;
+           end;
+         if node_complexity(para2.left)>3 then
+           begin
+             ptrb:=ctempcreatenode.create(voidpointertype,voidpointertype.size,tt_persistent,true);
+             addstatement(newstatement,ptrb);
+             addstatement(newstatement,cassignmentnode.create(ctemprefnode.create(ptrb),
+               caddrnode.create_internal(para2.left.getcopy)));
+             bread:=cderefnode.create(ctemprefnode.create(ptrb));
+             inserttypeconv_internal(bread,para2.left.resultdef);
+             bwrite:=cderefnode.create(ctemprefnode.create(ptrb));
+             inserttypeconv_internal(bwrite,para2.left.resultdef);
+           end
+         else
+           begin
+             bread:=para2.left.getcopy;
+             bwrite:=para2.left.getcopy;
+           end;
+
+         tmpnode:=ctempcreatenode.create(rawdef,rawdef.size,tt_persistent,ordinaltmp);
+         addstatement(newstatement,tmpnode);
+         addstatement(newstatement,cassignmentnode.create(ctemprefnode.create(tmpnode),
+           ctypeconvnode.create_explicit(aread,rawdef)));
+         addstatement(newstatement,cassignmentnode.create(
+           ctypeconvnode.create_explicit(awrite,rawdef),
+           ctypeconvnode.create_explicit(bread,rawdef)));
+         addstatement(newstatement,cassignmentnode.create(
+           ctypeconvnode.create_explicit(bwrite,rawdef),
+           ctemprefnode.create(tmpnode)));
+
+         addstatement(newstatement,ctempdeletenode.create(tmpnode));
+         if assigned(ptrb) then
+           addstatement(newstatement,ctempdeletenode.create(ptrb));
+         if assigned(ptra) then
+           addstatement(newstatement,ctempdeletenode.create(ptra));
+
+         firstpass(tnode(newblock));
+         result:=newblock;
        end;
 
 
@@ -6070,6 +6213,7 @@ implementation
      function tinlinenode.may_have_sideeffect_norecurse: boolean;
        begin
          result:=
+          (inlinenumber = in_swapvalues) or
           (inlinenumber in [in_write_x,in_writeln_x,in_read_x,in_readln_x,in_str_x_string,
            in_val_x,in_reset_x,in_rewrite_x,in_reset_typedfile,in_rewrite_typedfile,
            in_reset_typedfile_name,in_rewrite_typedfile_name,in_settextbuf_file_x,
