@@ -6497,6 +6497,16 @@ type
                 '''':
                   begin
                     readchar;
+                    // doubled '' is a literal apostrophe, not end-of-string
+                    if c='''' then
+                      begin
+                        inc(interp_len);
+                        if interp_len>length(cstringpattern) then
+                          setlength(cstringpattern,length(cstringpattern)+256);
+                        cstringpattern[interp_len]:='''';
+                        readchar;
+                        continue;
+                      end;
                     if interp_len>0 then
                       begin
                         setlength(cstringpattern,interp_len);
