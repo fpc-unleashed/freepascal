@@ -6510,7 +6510,7 @@ type
                     if interp_len>0 then
                       begin
                         setlength(cstringpattern,interp_len);
-                        token:=_CSTRING;
+                        token:=_INTERP_FRAG;
                         interp_mode:=im_returning_end;
                       end
                     else
@@ -6537,7 +6537,7 @@ type
                         if interp_len>0 then
                           begin
                             setlength(cstringpattern,interp_len);
-                            token:=_CSTRING;
+                            token:=_INTERP_FRAG;
                             goto exit_label;
                           end;
                         break;
