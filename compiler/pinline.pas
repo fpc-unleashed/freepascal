@@ -41,6 +41,7 @@ interface
     function inline_insert : tnode;
     function inline_delete : tnode;
     function inline_concat : tnode;
+    function inline_swapvalues : tnode;
 
 
 implementation
@@ -713,6 +714,26 @@ implementation
     function inline_concat: tnode;
       begin
         result:=inline_copy_insert_delete(in_concat_x,'Concat',false);
+      end;
+
+
+    { SwapValues(a,b) is the two-variable bitwise swap builtin; the parser only reaches
+      it when no user symbol named SwapValues is in scope. }
+    function inline_swapvalues : tnode;
+      var
+        paras: tnode;
+      begin
+        consume(_ID); { eat SWAPVALUES }
+        consume(_LKLAMMER);
+        paras:=parse_paras(false,false,_RKLAMMER);
+        consume(_RKLAMMER);
+        if not assigned(paras) then
+         begin
+           result:=cerrornode.create;
+           CGMessage1(parser_e_wrong_parameter_size,'SwapValues');
+           exit;
+         end;
+        result:=cinlinenode.create(in_swapvalues,false,paras);
       end;
 
 
