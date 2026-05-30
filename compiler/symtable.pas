@@ -2995,10 +2995,23 @@ implementation
         blockparentst:=aparentst;
         dbg_begin_label:=nil;
         dbg_end_label:=nil;
-        { Inherit the nesting level from the enclosing symtable so that
-          loop-counter validity checks (which compare symtablelevel against
-          the current procedure level) still pass for inline for-loop vars. }
-        symtablelevel:=aparentst.symtablelevel;
+        { Anchor both symtablelevel and defowner at the enclosing procedure
+          rather than copying from aparentst - the immediate parent may be a
+          with-record fieldset or an `on E` exceptsymtable whose levels and
+          defowners are unrelated to the surrounding procedure. With the
+          procedure-anchored values, block-scoped inline vars look like
+          ordinary locals to capture-detection, parent-fp loading and the
+          loop-counter validity check (otherwise a closure reading such a
+          var captures it on its own frame as garbage). The unleashed fallback
+          to aparentst.symtablelevel handles the rare construction paths that
+          run without a current_procinfo. }
+        if assigned(current_procinfo) then
+          begin
+            symtablelevel:=current_procinfo.procdef.parast.symtablelevel;
+            defowner:=current_procinfo.procdef;
+          end
+        else
+          symtablelevel:=aparentst.symtablelevel;
       end;
 
 

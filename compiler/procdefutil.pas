@@ -606,8 +606,13 @@ implementation
           while i<symstodo.count do
             begin
               sym:=tsym(symstodo[i]);
+              { block-scoped inline vars sit in a blocksymtable whose
+                defowner was inherited from the enclosing localst, so
+                they belong to curpd just like ordinary locals }
               if (sym.owner=curpd.localst) or
-                  (sym.owner=curpd.parast) then
+                  (sym.owner=curpd.parast) or
+                  ((sym.owner.symtabletype=blocksymtable) and
+                   (sym.owner.defowner=curpd)) then
                 begin
                   {$ifdef DEBUG_CAPTURER}writeln('Symbol ',sym.name,' captured from ',curpd.procsym.name);{$endif}
                   { the symbol belongs to the current procdef, so add a field to
@@ -732,7 +737,7 @@ implementation
       if n.nodetype<>loadn then
         exit;
       sym:=tsym(tloadnode(n).symtableentry);
-      if not (sym.owner.symtabletype in [parasymtable,localsymtable]) then
+      if not (sym.owner.symtabletype in [parasymtable,localsymtable,blocksymtable]) then
         exit;
       if sym.owner.symtablelevel>normal_function_level then begin
         pd.add_captured_sym(sym,tloadnode(n).resultdef,n.fileinfo);
@@ -1574,7 +1579,7 @@ implementation
       end;
 
     var
-      i: longint;
+      i, blk_i: longint;
       capturer : tobjectdef;
       tocapture,
       capturedsyms : tfplist;
@@ -1692,6 +1697,22 @@ implementation
                 if capturedsyms.indexof(sym)<0 then
                   tocapture.add(sym);
             end;
+
+          { block-scoped inline vars live in pd.blocklocalsymtables, not in
+            pd.localst - include them so writes in the outer (`c2 := 0`,
+            `c2 += 1`) are remapped to the same capturer field that the
+            closure reads }
+          if assigned(pd.blocklocalsymtables) then
+            for blk_i:=0 to pd.blocklocalsymtables.count-1 do
+              for i:=0 to TSymtable(pd.blocklocalsymtables[blk_i]).symlist.count-1 do
+                begin
+                  sym:=tsym(TSymtable(pd.blocklocalsymtables[blk_i]).symlist[i]);
+                  if sym.typ<>localvarsym then
+                    continue;
+                  if assigned(tabstractnormalvarsym(sym).capture_sym) then
+                    if capturedsyms.indexof(sym)<0 then
+                      tocapture.add(sym);
+                end;
 
           for i:=0 to pd.parast.symlist.count-1 do
             begin

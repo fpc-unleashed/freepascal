@@ -400,9 +400,11 @@ implementation
                tabstractvarsym(symtableentry).IncRefCountBy(1);
                resultdef:=tabstractvarsym(symtableentry).vardef;
                { Nested variable? The we need to load the framepointer of
-                 the parent procedure }
+                 the parent procedure. blocksymtable covers block-scoped
+                 inline vars - they inherit the enclosing procedure as
+                 defowner so the parentfp/capture logic below works }
                if assigned(current_procinfo) and
-                  (symtable.symtabletype in [localsymtable,parasymtable]) and
+                  (symtable.symtabletype in [localsymtable,parasymtable,blocksymtable]) and
                   (symtable.symtablelevel<>current_procinfo.procdef.parast.symtablelevel) then
                  begin
                    if assigned(left) then
