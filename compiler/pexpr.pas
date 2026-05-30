@@ -4780,6 +4780,13 @@ implementation
          nodechanged  : boolean;
          oldprocvardef : tprocvardef;
          oldfuncrefdef : tobjectdef;
+         interp_paras : tnode;
+         interp_count : longint;
+         interp_has_expr : boolean;
+         interp_stmt : tstatementnode;
+         interp_temp : ttempcreatenode;
+         interp_last : tnode;
+         interp_inl : tinlinenode;
       begin
         { can't keep a copy of p1 and compare pointers afterwards, because
           p1 may be freed and reallocated in the same place!  }
@@ -5192,6 +5199,83 @@ implementation
                   begin
                     p1:=ctypenode.create(hdef);
                   end;
+               end;
+
+             _INTERP_START :
+               begin
+                 consume(_INTERP_START);
+                 interp_paras:=nil;
+                 interp_count:=0;
+                 interp_has_expr:=false;
+                 while current_scanner.token<>_INTERP_END do
+                   begin
+                     if current_scanner.token=_CSTRING then
+                       begin
+                         p1:=cstringconstnode.createpchar(pchar(current_scanner.cstringpattern),
+                           length(current_scanner.cstringpattern),nil);
+                         consume(_CSTRING);
+                       end
+                     else
+                       begin
+                         interp_has_expr:=true;
+                         if current_scanner.token=_INTERP_EXPR_END then
+                           begin
+                             { empty interpolation braces - report error, skip }
+                             Message(parser_e_illegal_expression);
+                             consume(_INTERP_EXPR_END);
+                             continue;
+                           end;
+                         p1:=comp_expr([ef_accept_equal]);
+                         interp_paras:=ccallparanode.create(p1,interp_paras);
+                         inc(interp_count);
+                         consume(_INTERP_EXPR_END);
+                         continue;
+                       end;
+                     interp_paras:=ccallparanode.create(p1,interp_paras);
+                     inc(interp_count);
+                   end;
+                 consume(_INTERP_END);
+                 if interp_count=0 then
+                   p1:=cstringconstnode.createpchar(pchar(''),0,nil)
+                 else if not interp_has_expr then
+                   begin
+                     { all literals - use Concat or return single string }
+                     if interp_count=1 then
+                       begin
+                         p1:=tcallparanode(interp_paras).left;
+                         tcallparanode(interp_paras).left:=nil;
+                         interp_paras.free;
+                       end
+                     else
+                       p1:=cinlinenode.create(in_concat_x,false,interp_paras);
+                   end
+                 else
+                   begin
+                     { has expressions - generate WriteStr(temp, fragments...) }
+                     interp_temp:=ctempcreatenode.create(cansistringtype,
+                       cansistringtype.size,tt_persistent,true);
+                     { append temp destination at end of chain (reverseparameters
+                       in handle_read_write will move it to front) }
+                     interp_last:=interp_paras;
+                     while assigned(tcallparanode(interp_last).right) do
+                       interp_last:=tcallparanode(interp_last).right;
+                     tcallparanode(interp_last).right:=ccallparanode.create(
+                       ctemprefnode.create(interp_temp),nil);
+                     p1:=internalstatements(interp_stmt);
+                     addstatement(interp_stmt,interp_temp);
+                     interp_inl:=cinlinenode.create(
+                       in_writestr_x,false,interp_paras);
+                     include(interp_inl.inlinenodeflags,inf_from_interpolation);
+                     addstatement(interp_stmt,interp_inl);
+                     addstatement(interp_stmt,ctempdeletenode.create_normal_temp(
+                       interp_temp));
+                     addstatement(interp_stmt,ctemprefnode.create(interp_temp));
+                   end;
+                 if current_scanner.token in postfixoperator_tokens then
+                   begin
+                     again:=true;
+                     postfixoperators(p1,again,getaddr);
+                   end;
                end;
 
              _CSTRING :

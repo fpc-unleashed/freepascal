@@ -215,6 +215,9 @@ interface
 
           current_commentstyle : tcommentstyle; { needed to use read_comment from directives }
 
+          { string interpolation state }
+          interp_mode : (im_none, im_string, im_expr, im_returning_end);
+
           constructor Create(const fn:string; is_macro: boolean = false);
           destructor Destroy;override;
         { File buffer things }
@@ -6401,6 +6404,7 @@ type
         firstdigitread: boolean;
         had_newline,first_multiline : boolean;
         trimcount : word;
+        interp_len : longint;
        label
          exit_label;
       begin
@@ -6426,6 +6430,96 @@ type
            setnexttoken;
            goto exit_label;
          end;
+
+      { string interpolation state machine }
+        if interp_mode=im_returning_end then
+          begin
+            token:=_INTERP_END;
+            interp_mode:=im_none;
+            goto exit_label;
+          end;
+        if interp_mode=im_string then
+          begin
+            interp_len:=0;
+            cstringpattern:='';
+            repeat
+              case c of
+                '''':
+                  begin
+                    readchar;
+                    if interp_len>0 then
+                      begin
+                        setlength(cstringpattern,interp_len);
+                        token:=_CSTRING;
+                        interp_mode:=im_returning_end;
+                      end
+                    else
+                      begin
+                        token:=_INTERP_END;
+                        interp_mode:=im_none;
+                      end;
+                    goto exit_label;
+                  end;
+                '{':
+                  begin
+                    readchar;
+                    if c='{' then
+                      begin
+                        inc(interp_len);
+                        if interp_len>length(cstringpattern) then
+                          setlength(cstringpattern,length(cstringpattern)+256);
+                        cstringpattern[interp_len]:='{';
+                        readchar;
+                      end
+                    else
+                      begin
+                        interp_mode:=im_expr;
+                        if interp_len>0 then
+                          begin
+                            setlength(cstringpattern,interp_len);
+                            token:=_CSTRING;
+                            goto exit_label;
+                          end;
+                        break;
+                      end;
+                  end;
+                '}':
+                  begin
+                    readchar;
+                    if c='}' then
+                      begin
+                        inc(interp_len);
+                        if interp_len>length(cstringpattern) then
+                          setlength(cstringpattern,length(cstringpattern)+256);
+                        cstringpattern[interp_len]:='}';
+                        readchar;
+                      end
+                    else
+                      begin
+                        Message(scan_f_string_exceeds_line);
+                        interp_mode:=im_none;
+                        token:=_INTERP_END;
+                        goto exit_label;
+                      end;
+                  end;
+                #10,#13,#26:
+                  begin
+                    Message(scan_f_string_exceeds_line);
+                    interp_mode:=im_none;
+                    token:=_INTERP_END;
+                    goto exit_label;
+                  end;
+                else
+                  begin
+                    inc(interp_len);
+                    if interp_len>length(cstringpattern) then
+                      setlength(cstringpattern,length(cstringpattern)+256);
+                    cstringpattern[interp_len]:=c;
+                    readchar;
+                  end;
+              end;
+            until false;
+          end;
 
       { Skip all spaces and comments }
         repeat
@@ -6459,6 +6553,15 @@ type
       { Save current token position, for EOF its already loaded }
         if c<>#26 then
           gettokenpos;
+
+      { close interpolation expression on right brace }
+        if (interp_mode=im_expr) and (c='}') then
+          begin
+            readchar;
+            interp_mode:=im_string;
+            token:=_INTERP_EXPR_END;
+            goto exit_label;
+          end;
 
       { Check first for a identifier/keyword, this is 20+% faster (PFV) }
         if c in ['A'..'Z','a'..'z','_'] then
@@ -6579,6 +6682,16 @@ type
 
              '$' :
                begin
+                 if (m_interpolated_strings in current_settings.modeswitches) and
+                    (interp_mode=im_none) and
+                    ({$ifdef CHECK_INPUTPOINTER_LIMITS}get_inputpointer_char{$else}inputpointer^{$endif}='''') then
+                   begin
+                     readchar; { consume $, c is now ' }
+                     readchar; { consume ', c is now first string char }
+                     interp_mode:=im_string;
+                     token:=_INTERP_START;
+                     goto exit_label;
+                   end;
                  readnumber;
                  token:=_INTCONST;
                  goto exit_label;
