@@ -681,6 +681,24 @@ implementation
              end;
 {$endif i386 or i8086}
 
+{$if defined(i386) or defined(i8086) or defined(x86_64)}
+           // default to intel assembler in unleashed mode on x86 family
+           if m_unleashed in current_settings.modeswitches then
+             begin
+{$ifdef i8086}
+               current_settings.asmmode:=asmmode_i8086_intel;
+{$endif i8086}
+{$ifdef i386}
+               current_settings.asmmode:=asmmode_i386_intel;
+{$endif i386}
+{$ifdef x86_64}
+               current_settings.asmmode:=asmmode_x86_64_intel;
+{$endif x86_64}
+               if changeinit then
+                 init_settings.asmmode:=current_settings.asmmode;
+             end;
+{$endif i386 or i8086 or x86_64}
+
            { Exception support explicitly turned on (mainly for macpas, to }
            { compensate for lack of interprocedural goto support)          }
            if (cs_support_exceptions in current_settings.globalswitches) then
