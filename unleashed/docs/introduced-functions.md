@@ -1,0 +1,60 @@
+# Introduced Functions, Procedures and Intrinsics
+
+Catalogue of identifiers that FPC Unleashed adds on top of stock FPC and that you can call from user code without any extra `uses` clause. Three categories:
+
+- **Intrinsic** - recognised by the compiler itself, no symbol in any unit. Compile-time fold where possible, no overhead. Often gated on a modeswitch (typically `composablerecords`, default-on in `{$mode unleashed}`).
+- **RTL `system`** - real routines living in the `system` unit. Available globally just like `GetMem` or `WriteLn`; no `uses` needed because `system` is implicit.
+- **RTL other unit** - routines living in a non-implicit RTL unit; the relevant `uses` is noted next to the entry.
+
+For each entry the table gives the signature in compact form, a one-line description, the category, and which feature page documents the surrounding context.
+
+## Quick reference
+
+| Name | Signature (compact) | Category | Gating | Documented in |
+|---|---|---|---|---|
+| `OffsetOf` | `OffsetOf(T.field)` / `OffsetOf(T, field): SizeInt` | intrinsic | `{$modeswitch composablerecords}` (default in `unleashed`) | [composable-records.md](composable-records.md) |
+| `BitOffsetOf` | `BitOffsetOf(T.field)` / `BitOffsetOf(T, field): SizeInt` | intrinsic | `{$modeswitch composablerecords}` (default in `unleashed`) | [composable-records.md](composable-records.md) |
+| `AlignOf` | `AlignOf(T)` / `AlignOf(T.field): SizeInt` | intrinsic | `{$modeswitch composablerecords}` (default in `unleashed`) | [composable-records.md](composable-records.md) |
+| `BitAlignOf` | `BitAlignOf(T)` / `BitAlignOf(T.field): SizeInt` | intrinsic | `{$modeswitch composablerecords}` (default in `unleashed`) | [composable-records.md](composable-records.md) |
+| `BitSizeOf` (extended) | `BitSizeOf(T)` / `BitSizeOf(T.field): SizeInt` | intrinsic | always available; new behavior under `composablerecords` | [composable-records.md](composable-records.md) |
+| `GetMemAligned` | `function GetMemAligned(size, alignment: PtrUInt): Pointer` | RTL `system` | always available | [composable-records.md](composable-records.md) |
+| `AllocMemAligned` | `function AllocMemAligned(size, alignment: PtrUInt): Pointer` | RTL `system` | always available | [composable-records.md](composable-records.md) |
+| `ReAllocMemAligned` | `function ReAllocMemAligned(var p: Pointer; new_size, alignment: PtrUInt): Pointer` | RTL `system` | always available | [composable-records.md](composable-records.md) |
+| `FreeMemAligned` | `procedure FreeMemAligned(p: Pointer)` | RTL `system` | always available | [composable-records.md](composable-records.md) |
+
+## Notes per entry
+
+### `OffsetOf` / `BitOffsetOf`
+
+Compile-time intrinsics that return the position of a field inside a record. Both accept Pascal-style `OffsetOf(T.field)` and C-style `OffsetOf(T, field)` separators and can mix them inside one call. The path is composition-aware: hops through `embed` carriers and through union variants accumulate the carrier offset along the chain.
+
+`OffsetOf` returns a byte offset. On a sub-byte field inside a bitpacked record where the bit position is not a multiple of 8 the compiler emits `OffsetOf("name") is not on a byte boundary - use BitOffsetOf instead`. `BitOffsetOf` returns the bit offset and is always well-defined.
+
+Pattern-detected in `factor_read_id`, no `system` symbol. Both can be used in `{$if}` conditionals, `const` sections, typed constants, inline `var` initializers - anywhere a constant is expected.
+
+### `AlignOf` / `BitAlignOf`
+
+Compile-time intrinsics that return the alignment requirement of a type or field. `AlignOf` in bytes, `BitAlignOf` in bits (`= AlignOf * 8` for plain types).
+
+For a field reference both honour per-field overrides: `align N` for `AlignOf`, `bitalign N` for `BitAlignOf`. Without an override the result falls back to the field type's natural alignment. For a record / object / class type the value is the record-level alignment (max of field alignments).
+
+Same surface as `OffsetOf`: pattern-detected, usable in `{$if}` and any constant context.
+
+### `BitSizeOf` (extended)
+
+Stock FPC already ships `BitSizeOf`, returning the storage bits a field actually occupies in a bitpacked context. Under `composablerecords` the same intrinsic also honours the per-field `bitsize N` modifier, so a wide type narrowed by `bitsize N` reports `N` rather than the type's natural bit width. Behavior outside `composablerecords` is unchanged.
+
+### `GetMemAligned` / `AllocMemAligned` / `ReAllocMemAligned` / `FreeMemAligned`
+
+Aligned heap allocator added to the `system` unit. The allocation carries a small preamble with the unaligned base pointer and the requested size, so the free path can recover the original block without bookkeeping on the caller side.
+
+- `GetMemAligned(size, alignment)` allocates `size` bytes aligned to a power-of-two `alignment` (at least `SizeOf(Pointer)`). Contents undefined.
+- `AllocMemAligned(size, alignment)` same as above but zero-filled.
+- `ReAllocMemAligned(var p, new_size, alignment)` resizes while keeping the alignment guarantee. `p = nil` acts as alloc, `new_size = 0` acts as free.
+- `FreeMemAligned(p)` releases an aligned block; tolerates `p = nil`.
+
+The allocator is independent of the heap manager that backs `GetMem` / `FreeMem` and uses it underneath, so any custom memory manager set via `SetMemoryManager` is respected.
+
+Important: do not mix the families. A pointer returned by `GetMemAligned` / `AllocMemAligned` must be freed with `FreeMemAligned`, and a pointer returned by `GetMem` / `AllocMem` must not be passed to `FreeMemAligned`.
+
+Implementation lives in `rtl/inc/alignmem.inc`, included from `rtl/inc/system.inc` after the heap implementation; forwards sit in `rtl/inc/heaph.inc` next to `GetMem` / `AllocMem`.
