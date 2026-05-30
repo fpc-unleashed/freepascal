@@ -3909,6 +3909,102 @@ implementation
       end;
 
 
+    { build a runtime call for an interpolation format spec: expr as 'mask'.
+      dispatches to Format / FormatDateTime / FormatFloat / IntToHex
+      based on expr type and mask shape. emits an error pointing at the
+      required unit when the function is not in scope. }
+    function handle_interp_format(p:tnode;const mask:ansistring):tnode;
+      var
+        funcname,unitname,tname : string;
+        srsym : tsym;
+        srsymtable : tsymtable;
+        paras,arrp : tnode;
+        digits : longint;
+        code : integer;
+        is_datetime : boolean;
+      begin
+        result:=p;
+        if not assigned(p.resultdef) then
+          do_typecheckpass(p);
+        if not assigned(p.resultdef) then
+          exit;
+
+        // TDateTime/TDate/TTime are `type Double` aliases in `system`;
+        // route them to FormatDateTime regardless of mask shape
+        is_datetime:=false;
+        if (p.resultdef.typ=floatdef) and assigned(p.resultdef.typesym) then
+          begin
+            tname:=upper(p.resultdef.typesym.realname);
+            is_datetime:=(tname='TDATETIME') or (tname='TDATE') or (tname='TTIME');
+          end;
+
+        { pick function by mask shape and expr type }
+        if (length(mask)>0) and (mask[1]='%') then
+          funcname:='FORMAT'
+        else if is_datetime then
+          funcname:='FORMATDATETIME'
+        else if is_real(p.resultdef) then
+          funcname:='FORMATFLOAT'
+        else if is_ordinal(p.resultdef) and (length(mask)>=1) and
+                (mask[1] in ['x','X']) then
+          funcname:='INTTOHEX'
+        else if is_stringlike(p.resultdef) and (length(mask)>0) and
+                (mask[1]='%') then
+          funcname:='FORMAT'
+        else
+          begin
+            Message1(parser_e_interp_fmt_bad_type,mask);
+            exit;
+          end;
+
+        { map known format functions to their canonical unit for the hint }
+        if (funcname='FORMATDATETIME') or (funcname='FORMATFLOAT') or
+           (funcname='INTTOHEX') or (funcname='FORMAT') then
+          unitname:='SYSUTILS'
+        else
+          unitname:='';
+
+        if not searchsym(funcname,srsym,srsymtable) or (srsym.typ<>procsym) then
+          begin
+            Message2(parser_e_interp_fmt_unit,funcname,unitname);
+            exit;
+          end;
+
+        { parameters prepended in source order: arg1 first, arg2 second, ...
+          the chain ends up reversed and reverseparameters flips it back
+          when building the call }
+        if funcname='INTTOHEX' then
+          begin
+            { IntToHex(value, digits) - digits from mask[2..] }
+            val(copy(mask,2,length(mask)-1),digits,code);
+            if (code<>0) or (digits<0) then
+              digits:=0;
+            paras:=nil;
+            paras:=ccallparanode.create(p,paras);
+            paras:=ccallparanode.create(cordconstnode.create(digits,s32inttype,false),paras);
+          end
+        else if funcname='FORMAT' then
+          begin
+            { Format(mask, [expr]) - build arg2 (array) separately so arg1
+              (mask) stays the first prepend }
+            arrp:=carrayconstructornode.create(p,nil);
+            include(tarrayconstructornode(arrp).arrayconstructornodeflags,acnf_allow_array_constructor);
+            paras:=nil;
+            paras:=ccallparanode.create(cstringconstnode.createstr(mask),paras);
+            paras:=ccallparanode.create(arrp,paras);
+          end
+        else
+          begin
+            { FormatDateTime(mask, dt) or FormatFloat(mask, val) }
+            paras:=nil;
+            paras:=ccallparanode.create(cstringconstnode.createstr(mask),paras);
+            paras:=ccallparanode.create(p,paras);
+          end;
+
+        result:=ccallnode.create(paras,tprocsym(srsym),srsymtable,nil,[],nil);
+      end;
+
+
     function factor(getaddr:boolean;flags:texprflags) : tnode;
 
          {---------------------------------------------
@@ -5226,6 +5322,10 @@ implementation
                              continue;
                            end;
                          p1:=comp_expr([ef_accept_equal]);
+                         // format mask: `{expr:mask}` - everything after the
+                         // first `:` up to the closing `}` is the raw mask
+                         if current_scanner.token=_COLON then
+                           p1:=handle_interp_format(p1,current_scanner.read_interp_mask);
                          interp_paras:=ccallparanode.create(p1,interp_paras);
                          inc(interp_count);
                          consume(_INTERP_EXPR_END);
