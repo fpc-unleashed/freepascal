@@ -56,6 +56,12 @@ Word-based modify-and-assign operators that the standard set is missing: `div=`,
 
 Always available in every mode; no modeswitch and independent of `{$coperators on}`.
 
+## [SwapValues Intrinsic](swapvalues.md)
+
+Builtin `SwapValues(a, b)` that swaps two same-typed assignable variables with a bitwise move, callable with no `uses` beyond the implicit `System` unit. For managed types (string, dynamic array, interface, Variant) it swaps the reference words with zero `incr_ref` / `decr_ref` churn; ordinals and pointer-sized operands lower to a register swap, larger types to a raw byte exchange. The point is to swap without dragging in SysUtils (`Swap<T>` / `Exchange<T>`) and its exception and handler setup. `SwapValues` is a fresh name with no RTL clash, and a user-declared `SwapValues` symbol shadows the builtin, so it never breaks existing code.
+
+Unleashed-mode only; no separate modeswitch.
+
 ## [Indexed Labels & Lazy Labels](indexed-labels.md)
 
 Declare arrays of labels with numeric ranges (`label state[0..4]`) or string keys (`label action['start', 'stop']`) and jump to them by index. Useful for dispatch tables and state machines.
