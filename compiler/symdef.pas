@@ -358,6 +358,7 @@ interface
           rttistring     : string;
           fcompositions  : tfplist; { lazy; entries are pcomposition_entry }
           ffield_sizing_loaded : tfplist; { transient, ppu load -> derefimpl }
+          ffield_sizing_write  : tfplist; { transient, buildderefimpl -> ppuwrite }
 {$ifdef DEBUG_NODE_XML}
        protected
           procedure XMLPrintDefData(var T: Text; Sym: TSym); override;
@@ -4942,9 +4943,7 @@ implementation
         ro: trtti_option;
         i : longint;
         e : pcomposition_entry;
-        fsym : tsym;
-        fcount : longint;
-        fderef : tderef;
+        fse : pfield_sizing_entry;
       begin
         inherited ppuwrite(ppufile);
         ppufile.putstring(objrealname^);
@@ -4968,39 +4967,27 @@ implementation
                 ppufile.putderef(e^.carrier_deref);
               end;
           end;
-        { composablerecords: per-field sizing/alignment overrides -- same gate }
+        { composablerecords: per-field sizing/alignment overrides -- same gate.
+          the derefs were already registered in buildderefimpl (so they live in
+          the serialized derefdata block); here we only emit the pre-built
+          indices and the snapshotted values. }
         if oo_has_field_sizing in objectoptions then
           begin
-            { count first }
-            fcount:=0;
-            for i:=0 to symtable.SymList.Count-1 do
+            if assigned(ffield_sizing_write) then
               begin
-                fsym:=tsym(symtable.SymList[i]);
-                if (fsym.typ=fieldvarsym) and
-                   ((tfieldvarsym(fsym).custom_align<>0) or
-                    (tfieldvarsym(fsym).custom_bitalign<>0) or
-                    (tfieldvarsym(fsym).custom_size<>-1) or
-                    (tfieldvarsym(fsym).custom_bitsize<>-1)) then
-                  inc(fcount);
-              end;
-            ppufile.putlongint(fcount);
-            for i:=0 to symtable.SymList.Count-1 do
-              begin
-                fsym:=tsym(symtable.SymList[i]);
-                if (fsym.typ=fieldvarsym) and
-                   ((tfieldvarsym(fsym).custom_align<>0) or
-                    (tfieldvarsym(fsym).custom_bitalign<>0) or
-                    (tfieldvarsym(fsym).custom_size<>-1) or
-                    (tfieldvarsym(fsym).custom_bitsize<>-1)) then
+                ppufile.putlongint(ffield_sizing_write.count);
+                for i:=0 to ffield_sizing_write.count-1 do
                   begin
-                    fderef.build(fsym);
-                    ppufile.putderef(fderef);
-                    ppufile.putlongint(tfieldvarsym(fsym).custom_bitsize);
-                    ppufile.putlongint(tfieldvarsym(fsym).custom_size);
-                    ppufile.putlongint(longint(tfieldvarsym(fsym).custom_align));
-                    ppufile.putlongint(longint(tfieldvarsym(fsym).custom_bitalign));
+                    fse:=pfield_sizing_entry(ffield_sizing_write[i]);
+                    ppufile.putderef(fse^.field_deref);
+                    ppufile.putlongint(fse^.custom_bitsize);
+                    ppufile.putlongint(fse^.custom_size);
+                    ppufile.putlongint(longint(fse^.custom_align));
+                    ppufile.putlongint(longint(fse^.custom_bitalign));
                   end;
-              end;
+              end
+            else
+              ppufile.putlongint(0);
           end;
       end;
 
@@ -5029,6 +5016,16 @@ implementation
               end;
             ffield_sizing_loaded.free;
             ffield_sizing_loaded:=nil;
+          end;
+        if assigned(ffield_sizing_write) then
+          begin
+            for i:=0 to ffield_sizing_write.count-1 do
+              begin
+                fse:=pfield_sizing_entry(ffield_sizing_write[i]);
+                dispose(fse);
+              end;
+            ffield_sizing_write.free;
+            ffield_sizing_write:=nil;
           end;
         stringdispose(objname);
         stringdispose(objrealname);
@@ -5076,6 +5073,8 @@ implementation
       var
         i : longint;
         e : pcomposition_entry;
+        fse : pfield_sizing_entry;
+        fsym : tsym;
       begin
          inherited buildderefimpl;
          if not (df_copied_def in defoptions) then
@@ -5084,6 +5083,42 @@ implementation
            begin
              e:=composition_at(i);
              e^.carrier_deref.build(tsym(e^.carrier));
+           end;
+         { composablerecords: build the derefs for per-field sizing/alignment
+           overrides here, while derefdata is still being assembled. ppuwrite
+           runs after the derefdata block has already been serialized, so a
+           tderef.build() done there registers data the reader never sees ->
+           IE 200310221 on load. Snapshot the values alongside the deref and
+           let ppuwrite emit the pre-registered indices. }
+         if assigned(ffield_sizing_write) then
+           begin
+             for i:=0 to ffield_sizing_write.count-1 do
+               dispose(pfield_sizing_entry(ffield_sizing_write[i]));
+             ffield_sizing_write.clear;
+           end;
+         if oo_has_field_sizing in objectoptions then
+           begin
+             if not assigned(ffield_sizing_write) then
+               ffield_sizing_write:=tfplist.create;
+             for i:=0 to symtable.SymList.Count-1 do
+               begin
+                 fsym:=tsym(symtable.SymList[i]);
+                 if (fsym.typ=fieldvarsym) and
+                    ((tfieldvarsym(fsym).custom_align<>0) or
+                     (tfieldvarsym(fsym).custom_bitalign<>0) or
+                     (tfieldvarsym(fsym).custom_size<>-1) or
+                     (tfieldvarsym(fsym).custom_bitsize<>-1)) then
+                   begin
+                     new(fse);
+                     fse^.field_deref.reset;
+                     fse^.field_deref.build(fsym);
+                     fse^.custom_bitsize :=tfieldvarsym(fsym).custom_bitsize;
+                     fse^.custom_size    :=tfieldvarsym(fsym).custom_size;
+                     fse^.custom_align   :=tfieldvarsym(fsym).custom_align;
+                     fse^.custom_bitalign:=tfieldvarsym(fsym).custom_bitalign;
+                     ffield_sizing_write.add(fse);
+                   end;
+               end;
            end;
       end;
 
