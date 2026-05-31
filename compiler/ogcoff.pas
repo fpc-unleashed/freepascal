@@ -4076,7 +4076,7 @@ const pemagic : array[0..3] of byte = (
             idtxt  : 'PECOFF';
             asmbin : '';
             asmcmd : '';
-            supported_targets : [system_x86_64_win64];
+            supported_targets : [system_x86_64_win64,system_x86_64_nativent];
             flags : [af_outputbinary,af_smartlink_sections];
             labelprefix : '.L';
             labelmaxlen : -1;

@@ -91,4 +91,11 @@ initialization
 //  RegisterRes(res_gnu_windres_info,TWinLikeResourceFile);
   RegisterTarget(system_i386_nativent_info);
 {$endif i386}
+{$ifdef x86_64}
+  { NativeNT }
+  RegisterLinker(ld_int_nativent,TInternalLinkerNativeNT);
+  RegisterImport(system_x86_64_nativent,TImportLibNativeNT);
+  RegisterExport(system_x86_64_nativent,TExportLibNativeNT);
+  RegisterTarget(system_x86_64_nativent_info);
+{$endif x86_64}
 end.
