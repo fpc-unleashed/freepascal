@@ -408,7 +408,7 @@ interface
        { all systems that use the PE+ header in the PE/COFF file
          Note: this is here and not in ogcoff, because it's required in other
                units as well }
-       systems_peoptplus = [system_x86_64_win64,system_aarch64_win64];
+       systems_peoptplus = [system_x86_64_win64,system_aarch64_win64,system_x86_64_nativent];
 
        { all systems that use garbage collection for reference-counted types }
        systems_garbage_collected_managed_types = [
