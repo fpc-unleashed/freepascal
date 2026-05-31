@@ -542,6 +542,7 @@ implementation
          system_i386_win32,
          system_x86_64_win64,
          system_i386_nativent,
+         system_x86_64_nativent,
          system_i386_wince,
          system_arm_wince,
          system_aarch64_win64:

@@ -351,7 +351,7 @@ interface
        systems_amigalike = [system_m68k_amiga,system_powerpc_morphos,system_powerpc_amiga]+systems_aros;
 
        { all native nt systems }
-       systems_nativent = [system_i386_nativent];
+       systems_nativent = [system_i386_nativent,system_x86_64_nativent];
 
        { Default to i80846 instead of pentium2 for all old i386 systems for which
          some newer instructions (like CMOVcc or PREFECTXXX) lead to troubles,
@@ -381,7 +381,7 @@ interface
                                          system_aarch64_win64]+systems_linux+systems_android+systems_wasm;
 
        { all systems that reference symbols in other binaries using indirect imports }
-       systems_indirect_var_imports = systems_all_windows+[system_i386_nativent];
+       systems_indirect_var_imports = systems_all_windows+[system_i386_nativent,system_x86_64_nativent];
 
        { all systems that support indirect entry information }
        systems_indirect_entry_information = systems_darwin+
