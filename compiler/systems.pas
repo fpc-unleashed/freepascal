@@ -410,6 +410,11 @@ interface
                units as well }
        systems_peoptplus = [system_x86_64_win64,system_aarch64_win64,system_x86_64_nativent];
 
+       { x86_64 targets that use the Microsoft x64 ABI (RCX/RDX/R8/R9 + 32-byte
+         shadow space) for the default calling convention; everything else
+         defaults to the SysV x86_64 ABI (RDI/RSI/RDX/RCX/R8/R9, no shadow). }
+       systems_x86_64_ms_abi = [system_x86_64_win64,system_x86_64_nativent];
+
        { all systems that use garbage collection for reference-counted types }
        systems_garbage_collected_managed_types = [
          system_jvm_java32,

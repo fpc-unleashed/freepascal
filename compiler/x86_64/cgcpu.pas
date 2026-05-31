@@ -135,7 +135,7 @@ unit cgcpu;
         regs_to_save_mm: tcpuregisterarray;
       begin
         result:=0;
-        if (target_info.system<>system_x86_64_win64) or
+        if (not (target_info.system in systems_x86_64_ms_abi)) or
            (not uses_registers(R_MMREGISTER)) then
           exit;
         regs_to_save_mm:=paramanager.get_saved_registers_mm(current_procinfo.procdef.proccalloption);
@@ -165,7 +165,7 @@ unit cgcpu;
       procedure push_one_reg(reg: tregister);
         begin
           list.concat(taicpu.op_reg(A_PUSH,tcgsize2opsize[OS_ADDR],reg));
-          if (target_info.system=system_x86_64_win64) then
+          if (target_info.system in systems_x86_64_ms_abi) then
             begin
               list.concat(cai_seh_directive.create_reg(ash_pushreg,reg));
               include(current_procinfo.flags,pi_has_unwind_info);
@@ -270,7 +270,7 @@ unit cgcpu;
                 if current_procinfo.framepointer=NR_STACK_POINTER_REG then
                   current_asmdata.asmcfi.cfa_def_cfa_offset(list,regsize+localsize+sizeof(pint));
                 current_procinfo.final_localsize:=localsize;
-                if (target_info.system=system_x86_64_win64) then
+                if (target_info.system in systems_x86_64_ms_abi) then
                   begin
                     if localsize<>0 then
                       list.concat(cai_seh_directive.create_offset(ash_stackalloc,localsize));
@@ -410,7 +410,7 @@ unit cgcpu;
                       list.concat(Taicpu.op_reg(A_POP,tcgsize2opsize[OS_ADDR],NR_FRAME_POINTER_REG));
                     current_asmdata.asmcfi.cfa_def_cfa_offset(list,sizeof(pint));
                   end
-                else if (target_info.system=system_x86_64_win64) then
+                else if (target_info.system in systems_x86_64_ms_abi) then
                   begin
                     { Comply with Win64 unwinding mechanism, which only recognizes
                       'add $constant,%rsp' and 'lea offset(FPREG),%rsp' as belonging to
@@ -462,7 +462,7 @@ unit cgcpu;
         href: treference;
         pd: tprocdef;
       begin
-        if (target_info.system<>system_x86_64_win64) then
+        if (not (target_info.system in systems_x86_64_ms_abi)) then
           begin
             inherited g_local_unwind(list,l);
             exit;
@@ -549,7 +549,7 @@ unit cgcpu;
         if assigned(current_procinfo) then
           use_ms_abi:=x86_64_use_ms_abi(current_procinfo.procdef.proccalloption)
         else
-          use_ms_abi:=target_info.system=system_x86_64_win64;
+          use_ms_abi:=target_info.system in systems_x86_64_ms_abi;
       end;
 
 
