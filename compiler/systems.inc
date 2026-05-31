@@ -218,7 +218,8 @@
              system_mipsel_ps1,         { 123 }
              system_wasm32_wasip1threads,{ 124 }
              system_wasm32_wasip2,      { 125 }
-             system_powerpc64_freebsd   { 126 }
+             system_powerpc64_freebsd,  { 126 }
+             system_x86_64_nativent     { 127 }
        );
 
      type

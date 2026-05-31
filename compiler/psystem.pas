@@ -323,7 +323,7 @@ implementation
  {$ifdef x86}
         create_fpu_types;
 {$ifndef FPC_SUPPORT_X87_TYPES_ON_WIN64}
-        if target_info.system=system_x86_64_win64 then
+        if target_info.system in [system_x86_64_win64,system_x86_64_nativent] then
           begin
             s64currencytype:=corddef.create(scurrency,low(int64),high(int64),true);
             pbestrealtype:=@s64floattype;
@@ -493,7 +493,7 @@ implementation
           end;
 {$ifdef x86}
 {$ifndef FPC_SUPPORT_X87_TYPES_ON_WIN64}
-        if target_info.system<>system_x86_64_win64 then
+        if not(target_info.system in [system_x86_64_win64,system_x86_64_nativent]) then
 {$endif FPC_SUPPORT_X87_TYPES_ON_WIN64}
           addtype('Comp',cfloatdef.create(s64comp,true));
 {$endif x86}
@@ -714,7 +714,7 @@ implementation
         pvmt_name : shortstring;
       begin
 {$ifndef FPC_SUPPORT_X87_TYPES_ON_WIN64}
-        if target_info.system=system_x86_64_win64 then
+        if target_info.system in [system_x86_64_win64,system_x86_64_nativent] then
           pbestrealtype:=@s64floattype;
 {$endif FPC_SUPPORT_X87_TYPES_ON_WIN64}
 

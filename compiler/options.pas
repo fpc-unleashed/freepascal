@@ -2205,7 +2205,8 @@ begin
       target_unsup_features:=[f_dynlibs];
     system_arm_nds:
       target_unsup_features:=[f_threading,f_commandargs,f_fileio,f_textio,f_consoleio,f_dynlibs];
-    system_i386_nativent:
+    system_i386_nativent,
+    system_x86_64_nativent:
       // until these features are implemented, they are disabled in the compiler
       target_unsup_features:=[f_stackcheck];
     system_i8086_msdos:
@@ -5862,8 +5863,8 @@ begin
 {$endif}
 {$ifdef x86_64}
 {$ifndef FPC_SUPPORT_X87_TYPES_ON_WIN64}
-      { normally, win64 doesn't support the legacy fpu }
-      if target_info.system=system_x86_64_win64 then
+      { normally, win64 doesn't support the legacy fpu - applies to nativent on x86_64 too }
+      if target_info.system in [system_x86_64_win64,system_x86_64_nativent] then
         undef_system_macro('FPC_HAS_TYPE_EXTENDED')
       else
 {$endif FPC_SUPPORT_X87_TYPES_ON_WIN64}
