@@ -105,12 +105,13 @@ unit i_nativent;
             system       : system_x86_64_NATIVENT;
             name         : 'Native NT for x86_64';
             shortname    : 'NativeNT';
-            flags        : [tf_files_case_aware,tf_use_function_relative_addresses
-                            ,tf_smartlink_sections{,tf_section_threadvars}{,tf_needs_dwarf_cfi},
+            flags        : [tf_files_case_aware,
+                            tf_smartlink_sections,
                             tf_no_pic_supported,
-                            tf_no_generic_stackcheck{,tf_has_winlike_resources},tf_under_development,
+                            tf_no_generic_stackcheck,
+                            tf_under_development,
                             tf_dwarf_only_local_labels,tf_supports_hidden_symbols,
-                            tf_safecall_exceptions];
+                            tf_safecall_exceptions,tf_no_backquote_support];
             cpu          : cpu_x86_64;
             unit_env     : 'NTUNITS';
             extradefines : 'NATIVENT;FPC_OS_UNICODE';
