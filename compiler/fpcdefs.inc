@@ -435,6 +435,13 @@
 {$endif}
 {$endif}
 
+{ when the host compiler is x86_64 without the legacy fpu (e.g. win64), enable
+  soft x80 emulation so the assembler writer can still emit 80-bit extended
+  constants required by other x86 targets (i386, nativent on x86_64, etc.) }
+{$if defined(x86_64) and not defined(FPC_HAS_TYPE_EXTENDED) and not defined(FPC_SOFT_FPUX80)}
+{$define FPC_SOFT_FPUX80}
+{$endif}
+
 { when compiling with an LLVM-based compiler, default to LLVM unless -dNOLLVM is specified }
 {$if defined(CPULLVM) and not defined(NOLLVM)}
 {$define LLVM}
