@@ -4619,6 +4619,10 @@ var
         if Copy(a,1,3)='-FU' then continue;
         if Copy(a,1,3)='-FE' then continue;
         if Copy(a,1,2)='-o' then continue;
+        { drop `-B` (build all): in the child compile it forces every
+          loaded unit to recompile from source. system has no `-Us` in
+          the dependents, hits `do_recompile` and bombs IE 2026032615. }
+        if (a='-B') or (a='-B+') or (a='-B-') then continue;
         if a=param_file then continue;
         if Pos(' ',a)>0 then
           argline:=argline+' "'+a+'"'
@@ -5361,7 +5365,14 @@ begin
     and param_file is known, so spawned child compiles inherit the
     same target settings. }
   if rtl_path_override<>'' then
-    prebuild_rtl_from_source;
+    begin
+      prebuild_rtl_from_source;
+      { we just produced fresh PPUs for the entire freestanding RTL.
+        if `-B` (build all) was on, leaving it on for the main compile
+        would force system to reload from source without `-Us` and bomb
+        IE 2026032615 in `ttask_handler.finishmodule`. drop it. }
+      do_build:=false;
+    end;
 
   { Add paths specified with parameters to the searchpaths }
   UnitSearchPath.AddList(option.ParaUnitPath,true);
