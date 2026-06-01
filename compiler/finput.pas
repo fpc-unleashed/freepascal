@@ -636,6 +636,11 @@ uses
            begin
              exefilename:=p+OutputFileName;
              sharedlibfilename:=p+OutputFileName;
+             { a shared library / driver without its OS-recognized extension
+               is not loadable (.dll/.so/.dylib/.sys). when `-o` was passed
+               without one, append `sharedlibext` so the artifact stays usable. }
+             if ExtractFileExt(OutputFileName)='' then
+               sharedlibfilename:=sharedlibfilename+target_info.sharedlibext;
              n:=ChangeFileExt(OutputFileName,''); { for mapfilename and dbgfilename }
            end
          else
