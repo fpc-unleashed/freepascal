@@ -177,6 +177,10 @@ var
   fpcdir,
   ppccfg,
   param_file    : string;   { file to compile specified on the commandline }
+  rtl_path_override : string;{ source dir for an `--rtl=<path>` build; the
+                               compiler pre-builds every .pas in that dir
+                               into <path>/lib/<target_full>/ before the
+                               main compile starts }
 
 
 {****************************************************************************
@@ -1603,6 +1607,22 @@ begin
   end;
   if opt='--striprtti' then begin
     force_striprtti_cli:=true;
+    exit;
+  end;
+  { `--rtl=<path>` - point the compiler at a project-local RTL source dir.
+    Drops the default fpc.cfg search paths, then, once `-T`/`-P` are known,
+    spawns child compiler invocations to pre-build every .pas in <path>
+    into <path>/lib/<target_full>/ (system.pas with `-Us`, the rest plain).
+    The build dir is added to the unit search so the main compile picks
+    up the freshly built .ppu/.o instead of bombing on a missing system.ppu. }
+  if opt.StartsWith('--rtl=') then begin
+    more := Copy(opt, Length('--rtl=')+1);
+    if more='' then
+      IllegalPara(opt)
+    else begin
+      disable_configfile:=true;
+      rtl_path_override:=more;
+    end;
     exit;
   end;
 
@@ -4567,6 +4587,168 @@ end;
 
 
 
+procedure prebuild_rtl_from_source;
+{ Walk `<rtl_path_override>` and pre-build every .pas/.pp unit into
+  `<rtl_path>/lib/<target_full_string>/` by spawning child compiler
+  invocations. system.* goes first with `-Us`, the rest follow
+  alphabetically and let the child compiler resolve dependencies
+  by source on the same path. Adds the build dir to the unit search
+  so the main compile picks up the freshly built .ppu/.o. }
+var
+  srcdir, outdir, exe: TCmdStr;
+  searchrec: TRawByteSearchRec;
+  unitlist: array of TCmdStr;
+  i, j, ulen: integer;
+  tmp: TCmdStr;
+
+  procedure run_one(const onesrc: TCmdStr; assys: boolean);
+  var
+    argline: TCmdStr;
+    k: integer;
+    a: TCmdStr;
+    rc: longint;
+  begin
+    argline:='-n';
+    { forward caller's CLI args; drop the ones we want to override or that
+      do not apply when compiling an individual RTL unit }
+    for k:=1 to ParamCount do
+      begin
+        a:=ParamStr(k);
+        if a='' then continue;
+        if Copy(a,1,6)='--rtl=' then continue;
+        if Copy(a,1,3)='-FU' then continue;
+        if Copy(a,1,3)='-FE' then continue;
+        if Copy(a,1,2)='-o' then continue;
+        if a=param_file then continue;
+        if Pos(' ',a)>0 then
+          argline:=argline+' "'+a+'"'
+        else
+          argline:=argline+' '+a;
+      end;
+    { outdir before srcdir: FPC search is per-path (looks for .ppu then
+      .pas in each dir before moving on), so already-built .ppu in outdir
+      must be hit before the .pas in srcdir - otherwise the child tries
+      to recompile system/objpas from source and bombs on `do_recompile`. }
+    argline:=argline+' -Fu"'+outdir+'"';
+    argline:=argline+' -Fu"'+srcdir+'" -Fi"'+srcdir+'"';
+    argline:=argline+' -FU"'+outdir+'" -FE"'+outdir+'"';
+    if assys then
+      argline:=argline+' -Us';
+    argline:=argline+' "'+onesrc+'"';
+    Writeln('[--rtl] ',ExtractFileName(onesrc));
+    rc:=RequotedExecuteProcess(exe,argline);
+    if rc<>0 then
+      begin
+        Writeln('[--rtl] pre-build failed on ',ExtractFileName(onesrc),' (rc=',rc,')');
+        StopOptions(1);
+      end;
+  end;
+
+  function already_listed(const fn: TCmdStr): boolean;
+  var
+    k: integer;
+  begin
+    for k:=0 to ulen-1 do
+      if CompareText(unitlist[k],fn)=0 then
+        exit(true);
+    result:=false;
+  end;
+
+  procedure try_priority(const bn: TCmdStr);
+  var
+    cand: TCmdStr;
+  begin
+    cand:=bn+'.pas';
+    if not FileExists(srcdir+cand) then
+      cand:=bn+'.pp';
+    if FileExists(srcdir+cand) and not already_listed(cand) then
+      begin
+        SetLength(unitlist,ulen+1);
+        unitlist[ulen]:=cand;
+        inc(ulen);
+      end;
+  end;
+
+  procedure collect_rest(const pattern: TCmdStr);
+  var
+    bn: TCmdStr;
+  begin
+    if FindFirst(srcdir+pattern,faAnyFile,searchrec)=0 then
+      try
+        repeat
+          if (faDirectory and searchrec.Attr)<>0 then continue;
+          bn:=ExtractFileName(searchrec.Name);
+          if CompareText(bn,'system.pas')=0 then continue;
+          if CompareText(bn,'system.pp')=0 then continue;
+          if already_listed(bn) then continue;
+          SetLength(unitlist,ulen+1);
+          unitlist[ulen]:=bn;
+          inc(ulen);
+        until FindNext(searchrec)<>0;
+      finally
+        FindClose(searchrec);
+      end;
+  end;
+
+begin
+  srcdir:=IncludeTrailingPathDelimiter(rtl_path_override);
+  { Drop the pre-built .ppu / .o into the same unit output dir the main
+    compile uses (typically `<project>/lib/<target>` driven by `-FU` or
+    the .lpi `<UnitOutputDirectory>`). Falls back to `<inputfile-dir>/lib/<target>/`
+    when `-FU` was not given. }
+  if OutputUnitDir<>'' then
+    outdir:=IncludeTrailingPathDelimiter(OutputUnitDir)
+  else
+    outdir:=IncludeTrailingPathDelimiter(inputfilepath)+'lib'+DirectorySeparator+target_full_string+DirectorySeparator;
+  exe:=ParamStr(0);
+
+  if not ForceDirectories(outdir) then
+    begin
+      Writeln('[--rtl] cannot create ',outdir);
+      StopOptions(1);
+      exit;
+    end;
+
+  Writeln('[--rtl] pre-building "',srcdir,'" -> "',outdir,'"');
+
+  { system unit first, with -Us }
+  if FileExists(srcdir+'system.pas') then
+    run_one(srcdir+'system.pas',true)
+  else if FileExists(srcdir+'system.pp') then
+    run_one(srcdir+'system.pp',true);
+
+  ulen:=0;
+  unitlist:=nil;
+  { dependency-ordered priority: `objpas` is pulled in implicitly by every
+    `$mode objfpc` source, so it must land before anything else; sysinit
+    likewise tends to be referenced by the entry-point glue. After these
+    the rest can go alphabetically - by then their RTL dependencies are
+    already built. }
+  try_priority('objpas');
+  try_priority('sysinit');
+  try_priority('sysinitpas');
+  try_priority('fpintres');
+  collect_rest('*.pas');
+  collect_rest('*.pp');
+  { sort the tail (everything past the priority-ordered prefix) }
+  for i:=4 to ulen-2 do
+    for j:=4 to ulen-2-(i-4) do
+      if unitlist[j]>unitlist[j+1] then
+        begin
+          tmp:=unitlist[j];
+          unitlist[j]:=unitlist[j+1];
+          unitlist[j+1]:=tmp;
+        end;
+  for i:=0 to ulen-1 do
+    run_one(srcdir+unitlist[i],false);
+
+  { wire the pre-built RTL into the main compile's search paths }
+  UnitSearchPath.AddPath(outdir,false);
+  UnitSearchPath.AddPath(srcdir,false);
+  IncludeSearchPath.AddPath(srcdir,false);
+end;
+
+
 procedure read_arguments(cmd:TCmdStr);
 
   procedure def_cpu_macros;
@@ -5174,6 +5356,12 @@ begin
       Message1(general_e_path_does_not_exist,OutputExeDir);
       StopOptions(1);
     end;
+
+  { `--rtl=<path>` pre-build runs here: target_full_string is final
+    and param_file is known, so spawned child compiles inherit the
+    same target settings. }
+  if rtl_path_override<>'' then
+    prebuild_rtl_from_source;
 
   { Add paths specified with parameters to the searchpaths }
   UnitSearchPath.AddList(option.ParaUnitPath,true);
