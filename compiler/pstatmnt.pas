@@ -741,8 +741,19 @@ implementation
               if not(current_scanner.token in [_ELSE,_OTHERWISE,_END]) then
                 consume(_SEMICOLON);
             until current_scanner.token in [_ELSE,_OTHERWISE,_END];
-            if try_to_consume(_ELSE) or try_to_consume(_OTHERWISE) then
+            if has_catchall and (current_scanner.token in [_ELSE,_OTHERWISE]) then
               begin
+                Comment(V_Error,'`_:` already covers unmatched values, drop trailing `else`/`otherwise`');
+                consume(current_scanner.token);
+                if is_expr then
+                  expr(true).free
+                else
+                  statements_til_end.free;
+              end
+            else if try_to_consume(_ELSE) or try_to_consume(_OTHERWISE) then
+              begin
+                { in expr mode `else`/`otherwise <expr>` terminates the match -
+                  no `end` keyword expected, mirroring case-style else }
                 has_catchall:=true;
                 if is_expr then
                   begin
@@ -753,10 +764,12 @@ implementation
                   stmt:=statements_til_end;
                 append_else(ifchain,stmt);
               end
-            else if is_expr and not has_catchall then
-              consume(_ELSE)
             else
-              consume(_END);
+              begin
+                if is_expr and not has_catchall then
+                  Comment(V_Error,'`match` expression needs `_:`, `else` or `otherwise` to cover unmatched values');
+                consume(_END);
+              end;
             if has_subject then
               subject.free;
             if not is_expr then
