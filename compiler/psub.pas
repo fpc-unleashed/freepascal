@@ -1103,7 +1103,7 @@ implementation
                         pi_needs_stackframe]+
                         exception_flags[((target_info.cpu=cpu_i386) and (not paramanager.use_fixed_stack))
 {$ifndef DISABLE_WIN64_SEH}
-                        or (target_info.system=system_x86_64_win64)
+                        or (target_info.system in systems_x86_64_seh)
 {$endif DISABLE_WIN64_SEH}
                         ]))=[])
                )

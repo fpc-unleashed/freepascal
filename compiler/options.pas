@@ -6077,12 +6077,12 @@ begin
 {$endif not DISABLE_TLS_DIRECTORY}
 
 {$ifndef DISABLE_WIN64_SEH}
-    if target_info.system=system_x86_64_win64 then
+    if target_info.system in systems_x86_64_seh then
       def_system_macro('FPC_USE_WIN64_SEH');
 {$endif DISABLE_WIN64_SEH}
 
 {$ifndef DISABLE_WIN32_SEH}
-    if target_info.system=system_i386_win32 then
+    if target_info.system in systems_i386_seh then
       def_system_macro('FPC_USE_WIN32_SEH');
 {$endif not DISABLE_WIN32_SEH}
 
