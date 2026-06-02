@@ -74,7 +74,7 @@ function tx64raisenode.pass_1 : tnode;
     raisenode : tcallnode;
   begin
     { difference from generic code is that address stack is not popped on reraise }
-    if (target_info.system<>system_x86_64_win64) or assigned(left) then
+    if (not (target_info.system in systems_x86_64_seh)) or assigned(left) then
       result:=inherited pass_1
     else
       begin
@@ -91,7 +91,7 @@ procedure tx64onnode.pass_generate_code;
   var
     exceptvarsym : tlocalvarsym;
   begin
-    if (target_info.system<>system_x86_64_win64) then
+    if (not (target_info.system in systems_x86_64_seh)) then
       begin
         inherited pass_generate_code;
         exit;
@@ -159,7 +159,7 @@ function copy_parasize(var n: tnode; arg: pointer): foreachnoderesult;
 constructor tx64tryfinallynode.create(l, r: TNode);
   begin
     inherited create(l,r);
-    if (target_info.system=system_x86_64_win64) and
+    if (target_info.system in systems_x86_64_seh) and
       { Don't create child procedures for generic methods, their nested-like
         behavior causes compilation errors because real nested procedures
         aren't allowed for generics. Not creating them doesn't harm because
@@ -179,7 +179,7 @@ constructor tx64tryfinallynode.create(l, r: TNode);
 constructor tx64tryfinallynode.create_implicit(l, r: TNode);
   begin
     inherited create_implicit(l, r);
-    if (target_info.system=system_x86_64_win64) then
+    if (target_info.system in systems_x86_64_seh) then
       begin
         if df_generic in current_procinfo.procdef.defoptions then
           InternalError(2013012501);
@@ -198,7 +198,7 @@ function tx64tryfinallynode.dogetcopy: tnode;
     n: tx64tryfinallynode;
   begin
     n:=tx64tryfinallynode(inherited dogetcopy);
-    if target_info.system=system_x86_64_win64 then
+    if target_info.system in systems_x86_64_seh then
       begin
         n.finalizepi:=tcgprocinfo(cprocinfo.create(finalizepi.parent));
         n.finalizepi.force_nested;
@@ -223,7 +223,7 @@ function tx64tryfinallynode.dogetcopy: tnode;
 function tx64tryfinallynode.simplify(forinline: boolean): tnode;
   begin
     result:=inherited simplify(forinline);
-    if (target_info.system<>system_x86_64_win64) then
+    if (not (target_info.system in systems_x86_64_seh)) then
       exit;
     if (result=nil) then
       begin
@@ -269,7 +269,7 @@ procedure tx64tryfinallynode.pass_generate_code;
     oldflowcontrol: tflowcontrol;
     catch_frame: boolean;
   begin
-    if (target_info.system<>system_x86_64_win64) then
+    if (not (target_info.system in systems_x86_64_seh)) then
       begin
         inherited pass_generate_code;
         exit;
@@ -413,7 +413,7 @@ procedure tx64tryexceptnode.pass_generate_code;
   label
     errorexit;
   begin
-    if (target_info.system<>system_x86_64_win64) then
+    if (not (target_info.system in systems_x86_64_seh)) then
       begin
         inherited pass_generate_code;
         exit;
