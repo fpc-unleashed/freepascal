@@ -414,10 +414,12 @@ implementation
               else
                 casenode.addelseblock(statements_til_end);
            end
-         else if is_expr and requires_else(casenode) then
-           consume(_ELSE)
          else
-           consume(_END);
+           begin
+             if is_expr and requires_else(casenode) then
+               Comment(V_Error,'`case` expression needs `else` or `otherwise` to cover unmatched values');
+             consume(_END);
+           end;
 
          if not is_expr then
            begin
