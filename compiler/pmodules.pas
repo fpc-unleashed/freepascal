@@ -2613,6 +2613,8 @@ type
         init_procinfo,
         main_procinfo : tcgprocinfo;
         force_init_final : boolean;
+        entry_srsym : tsym;
+        entry_srsymtable : tsymtable;
 
       begin
         result:=true;
@@ -2705,6 +2707,19 @@ type
         main_procinfo.parse_body;
         { save file pos for debuginfo }
         curr.mainfilepos:=main_procinfo.entrypos;
+
+        { `$entrypoint X` declared earlier: resolve X to a real procedure
+          and stash its mangled name for the linker step }
+        if custom_entry_name<>'' then
+          begin
+            custom_entry_mangled:='';
+            if searchsym(upper(custom_entry_name),entry_srsym,entry_srsymtable) and
+               (entry_srsym.typ=procsym) and
+               (tprocsym(entry_srsym).procdeflist.count>0) then
+              custom_entry_mangled:=tprocdef(tprocsym(entry_srsym).procdeflist[0]).mangledname
+            else
+              Message1(sym_e_id_not_found,custom_entry_name);
+          end;
 
         { finalize? }
         if current_scanner.token=_FINALIZATION then
