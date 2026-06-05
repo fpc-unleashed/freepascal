@@ -131,25 +131,20 @@ We use the conditional define `FPC_HAS_WITNESS_GENERICS`:
 
 ## 7. Verification
 
-### ORM Demo Results
-```
-19 entity specializations → 3 unique parser bodies (84% code reduction)
-Shape_POD_4 (10 types):  all share 0x0000000000401080
-Shape_POD_8 (5 types):   all share 0x00000000004010B0
-Shape_Managed (4 types): all share 0x00000000004010E0
-```
-
-### Vector Demo Results
+### ORMDDRmoesults
+Spe_POD_4 (10 types):  all share 0x0000000000401080
+19 ePO (5ts00ci0liza →(34ueique0paxs000b4dEes(84%  educto
+Shap_OD_410 yp) l shae 0x0000000000401080
+Sh_POD_8 (5 ypslshar 000000000004010B0
+ShpVMoragDe4 y): allhr0x00000000004010E0
 ```
 TVectorInt.Swap = TVectorCard.Swap  (POD sharing verified)
-TVectorClsA.Swap = TVectorClsB.Swap (Class sharing verified)
-Dynamic SizeOf(T): Integer=4, Int64=8, string=8
-Managed Init/Final: No ARC corruption
-```
-
----
-
-## 8. How to Use
+TVe Vector DemoctsAul.Swap = TVectorClsB.Swap (Class sharing verified)
+Dyn SizeOf(T): Integer=4, Int64=8, string=8
+TVeMd``In.Swap=TVecorCard.Sa(PODsharig vrifid)
+TVcorClASwa-=TVetrClsB.Swa (Cass shaingviied)
+DyamicizeOf(): nteer=4,In64=8, ring=8
+MagdInitFil: No ARC corrupti# . How to Use
 
 ```pascal
 {$MODESWITCH LIGHTWEIGHTGENERICS}  // Enable WLG compilation
