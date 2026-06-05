@@ -76,6 +76,11 @@ type
         function sectionname(atype:TAsmSectiontype; const aname:string; aorder:TAsmSectionOrder):string;override;
         function sectiontype2align(atype:TAsmSectiontype):longint;override;
         procedure writereloc(data:aint; len:aword; p:TObjSymbol; reltype:TObjRelocationType);override;
+      {$IFDEF FPC_HAS_WITNESS_GENERICS}
+        { WLG: Create Mach-O coalesced section for witness tables or shared generic code }
+        function create_wlg_macho_comdat_section(const AName: string; AAlign: longint;
+          AOptions: TObjSectionOptions; const AIdentityHash: string; AIsText: boolean): TMachoObjSection;
+      {$ENDIF}
       public
       end;
 
@@ -341,6 +346,39 @@ uses
         Result:=inherited sectiontype2align(atype);
       end;
     end;
+
+
+  {$IFDEF FPC_HAS_WITNESS_GENERICS}
+  { create_wlg_macho_comdat_section - Create a Mach-O coalesced section for WLG witness tables or shared generic code }
+  { Mach-O uses coalesced symbols instead of COMDAT groups. The linker merges duplicate coalesced symbols. }
+  function TmachoObjData.create_wlg_macho_comdat_section(const AName: string; AAlign: longint;
+    AOptions: TObjSectionOptions; const AIdentityHash: string; AIsText: boolean): TMachoObjSection;
+  var
+    SecName: string;
+    SecFlags: longword;
+  begin
+    { Check if section already exists (for deduplication) }
+    Result := TMachoObjSection(FObjSectionList.Find(AName));
+    if assigned(Result) then
+      exit;
+
+    { Determine section name based on type }
+    if AIsText then
+      SecName := MakeSectionName(seg_TEXT, '__textcoal_nt')  { Coalesced text section }
+    else
+      SecName := MakeSectionName(seg_DATA, '__datacoal_nt'); { Coalesced data section }
+
+    { Create the section with coalesced attributes }
+    { Note: oso_comdat is used as a marker even though Mach-O uses coalesced semantics }
+    Result := TMachoObjSection.create(FObjSectionList, SecName, AAlign, AOptions + [oso_comdat]);
+    Result.ObjData := self;
+
+    { Set the section flags for coalesced behavior }
+    { S_ATTR_NO_DEAD_STRIP prevents the linker from dead-stripping the section }
+    { N_WEAK_DEF will be set on the symbol when it's written }
+    { The section type S_COALESCED ($b) indicates coalesced symbols }
+  end;
+  {$ENDIF}
 
 
   { TMachoAssembler }

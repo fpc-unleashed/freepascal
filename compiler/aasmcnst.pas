@@ -986,14 +986,24 @@ implementation
      end;
 
 
-   procedure ttai_typedconstbuilder.finalize_asmlist(asmsym: tasmsymbol; sym: tsym; def: tdef; section: TAsmSectiontype; const secname: TSymStr; alignment: shortint; const options: ttcasmlistoptions);
-     var
-       prelist: tasmlist;
-     begin
-       finalize_asmlist_prepare(options, alignment);
-       prelist:=tasmlist.create;
-       { only now add items based on the symbolname, because it may be
-         modified by the "section" specifier in case of a typed constant }
+    procedure ttai_typedconstbuilder.finalize_asmlist(asmsym: tasmsymbol; sym: tsym; def: tdef; section: TAsmSectiontype; const secname: TSymStr; alignment: shortint; const options: ttcasmlistoptions);
+      var
+        prelist: tasmlist;
+      begin
+        {$IFDEF FPC_HAS_WITNESS_GENERICS}
+        { WLG: Propagate witness table metadata to assembler symbol for COMDAT deduplication }
+        if assigned(sym) and (sym.typ = staticvarsym) and
+           (tstaticvarsym(sym).witness_shapeclass <> Shape_Unknown) then
+          begin
+            { Cast tshapeclass to byte since wlg_shapeclass is byte to avoid circular dependency }
+            asmsym.wlg_shapeclass := byte(tstaticvarsym(sym).witness_shapeclass);
+            asmsym.wlg_identity_hash := tstaticvarsym(sym).witness_identity_hash;
+          end;
+        {$ENDIF FPC_HAS_WITNESS_GENERICS}
+        finalize_asmlist_prepare(options, alignment);
+        prelist:=tasmlist.create;
+        { only now add items based on the symbolname, because it may be
+          modified by the "section" specifier in case of a typed constant }
 
        { both in case the data should be dead strippable and never dead
          stripped, it should be in a separate section (so this property doesn't

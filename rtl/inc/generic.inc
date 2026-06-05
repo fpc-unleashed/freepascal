@@ -3694,5 +3694,67 @@ begin
 end;
 {$endif cpu64}
 
+{****************************************************************************
+                    Witness-Based Lightweight Generics (WLG) Helpers
+****************************************************************************}
+{$ifdef FPC_HAS_WITNESS_GENERICS}
+
+{ fpc_witness_copy - Generic memory copy for POD types }
+procedure fpc_witness_copy(Dest, Src: Pointer; Size: SizeInt);
+begin
+  if (Size > 0) and Assigned(Dest) and Assigned(Src) then
+    Move(Src^, Dest^, Size);
+end;
+
+{ fpc_witness_compare - Generic memory comparison for POD types }
+function fpc_witness_compare(A, B: Pointer; Size: SizeInt): Longint;
+begin
+  if Size <= 0 then
+    Result := 0
+  else if not Assigned(A) and not Assigned(B) then
+    Result := 0
+  else if not Assigned(A) then
+    Result := -1
+  else if not Assigned(B) then
+    Result := 1
+  else
+    Result := CompareByte(A^, B^, Size);
+end;
+
+{ fpc_witness_init_noop - No-op initialization for POD types }
+procedure fpc_witness_init_noop(P: Pointer);
+begin
+  { POD types don't need initialization }
+end;
+
+{ fpc_witness_final_noop - No-op finalization for POD types }
+procedure fpc_witness_final_noop(P: Pointer);
+begin
+  { POD types don't need finalization }
+end;
+
+{ fpc_witness_copy_managed - Managed type copy via RTTI }
+procedure fpc_witness_copy_managed(Dest, Src: Pointer; TypeInfo: Pointer);
+begin
+  if Assigned(TypeInfo) and Assigned(Dest) and Assigned(Src) then
+    fpc_copy(Dest, Src, TypeInfo);
+end;
+
+{ fpc_witness_init_managed - Managed type initialization via RTTI }
+procedure fpc_witness_init_managed(P: Pointer; TypeInfo: Pointer);
+begin
+  if Assigned(TypeInfo) and Assigned(P) then
+    fpc_initialize(P, TypeInfo);
+end;
+
+{ fpc_witness_final_managed - Managed type finalization via RTTI }
+procedure fpc_witness_final_managed(P: Pointer; TypeInfo: Pointer);
+begin
+  if Assigned(TypeInfo) and Assigned(P) then
+    fpc_finalize(P, TypeInfo);
+end;
+
+{$endif FPC_HAS_WITNESS_GENERICS}
+
 {$pop}
 {$endif VER3_2}

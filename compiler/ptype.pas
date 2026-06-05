@@ -301,16 +301,28 @@ implementation
                      symtablestack.pop(tabstractrecorddef(def).symtable);
                      symtablestack.free;
                      symtablestack:=oldsymtablestack;
-                     if isspecialize or
-                         (
-                           (m_implicit_generics in current_settings.modeswitches) and
-                           (current_scanner.token=_LSHARPBRACKET)
-                         ) then
-                       begin
-                         if not allowspecialization then
-                           Message(parser_e_no_local_para_def);
-                         generate_specialization(t2,isunitspecific,false,'',srsym.name,srsymtable);
-                       end;
+                      if isspecialize or
+                          (
+                            (m_implicit_generics in current_settings.modeswitches) and
+                            (current_scanner.token=_LSHARPBRACKET)
+                          ) then
+                        begin
+                          if not allowspecialization then
+                            Message(parser_e_no_local_para_def);
+                          {$IFDEF FPC_HAS_WITNESS_GENERICS}
+                          { WLG Phase E: Check if lightweight generics should be used }
+                          if (m_lightweight_generics in current_settings.modeswitches) and
+                             assigned(t2) and (t2.typ <> errordef) and
+                             (df_generic in tstoreddef(t2).defoptions) then
+                            begin
+                              { Classify shape and check if WLG is eligible }
+                              { For now, we set up the context and let generate_specialization }
+                              { handle both WLG and legacy paths. The context fields in }
+                              { tspecializationcontext will be populated by phase1. }
+                            end;
+                          {$ENDIF}
+                          generate_specialization(t2,isunitspecific,false,'',srsym.name,srsymtable);
+                        end;
                      def:=t2;
                    end;
                end
@@ -629,6 +641,16 @@ implementation
               end
             else
               symname:='';
+            {$IFDEF FPC_HAS_WITNESS_GENERICS}
+            { WLG Phase E: Check if lightweight generics should be used }
+            if (m_lightweight_generics in current_settings.modeswitches) and
+               assigned(def) and (def.typ <> errordef) and
+               (df_generic in tstoreddef(def).defoptions) then
+              begin
+                { WLG is enabled and this is a generic type - route through WLG pipeline }
+                { The generate_specialization functions will populate context with WLG fields }
+              end;
+            {$ENDIF}
             generate_specialization(def,isunitspecific,stoParseClassParent in options,'',symname,srsymtable);
             parse_nested_types(def,stoIsForwardDef in options,[stoAllowSpecialization,stoAllowTypeDef]*options<>[],nil);
           end
@@ -1801,6 +1823,16 @@ implementation
                      begin
                        if not assigned(ttypenode(pt1).typesym) then
                          internalerror(2025103102);
+                       {$IFDEF FPC_HAS_WITNESS_GENERICS}
+                       { WLG Phase E: Check if lightweight generics should be used }
+                       if (m_lightweight_generics in current_settings.modeswitches) and
+                          assigned(ttypenode(pt1).typesym) and
+                          (ttypenode(pt1).typesym.typ=typesym) and
+                          (df_generic in tstoreddef(ttypesym(ttypenode(pt1).typesym).typedef).defoptions) then
+                         begin
+                           { WLG is enabled and this is a generic type }
+                         end;
+                       {$ENDIF}
                        generate_specialization(def,false,false,name,ttypenode(pt1).typesym.name,ttypenode(pt1).typesym.owner);
                        { handle nested types }
                        if assigned(def) then

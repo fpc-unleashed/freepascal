@@ -72,18 +72,23 @@ interface
          procedure writeInternalSymbol(avalue:aword;astridx:longword;ainfo:byte;ashndx:word);
        end;
 
-       TElfObjData = class(TObjData)
-       public
-         ident: TElfIdent;
-         flags: longword;
+        TElfObjData = class(TObjData)
+        public
+          ident: TElfIdent;
+          flags: longword;
 {$ifdef mips}
-         gp_value: longword;
+          gp_value: longword;
 {$endif mips}
-         constructor create(const n:string);override;
-         function  sectionname(atype:TAsmSectiontype;const aname:string;aorder:TAsmSectionOrder):string;override;
-         procedure CreateDebugSections;override;
-         procedure writereloc(data:aint;len:aword;p:TObjSymbol;reltype:TObjRelocationType);override;
-       end;
+          constructor create(const n:string);override;
+          function  sectionname(atype:TAsmSectiontype;const aname:string;aorder:TAsmSectionOrder):string;override;
+          procedure CreateDebugSections;override;
+          procedure writereloc(data:aint;len:aword;p:TObjSymbol;reltype:TObjRelocationType);override;
+        {$IFDEF FPC_HAS_WITNESS_GENERICS}
+          { WLG: Create ELF COMDAT section with SHT_GROUP support }
+          function create_wlg_elf_comdat_section(const AName: string; AAlign: longint;
+            AOptions: TObjSectionOptions; const AIdentityHash: string; AIsText: boolean): TElfObjSection;
+        {$ENDIF}
+        end;
 
        TElfObjectOutput = class(tObjOutput)
        private
@@ -626,6 +631,51 @@ implementation
             stabstrsec:=createsection(sec_stabstr);
           end;
       end;
+
+
+    {$IFDEF FPC_HAS_WITNESS_GENERICS}
+    { create_wlg_elf_comdat_section - Create an ELF COMDAT section for WLG witness tables or shared generic code }
+    function TElfObjData.create_wlg_elf_comdat_section(const AName: string; AAlign: longint;
+      AOptions: TObjSectionOptions; const AIdentityHash: string; AIsText: boolean): TElfObjSection;
+    var
+      grp: TObjSectionGroup;
+      sig_sym: TObjSymbol;
+      shflags: longint;
+      shtype: longint;
+    begin
+      { Check if section already exists (for deduplication) }
+      result := TElfObjSection(ObjSectionList.Find(AName));
+      if assigned(result) then
+        exit;
+
+      { Determine section type and flags based on whether it's text or data }
+      if AIsText then
+        begin
+          shtype := SHT_PROGBITS;
+          shflags := SHF_ALLOC or SHF_EXECINSTR;
+        end
+      else
+        begin
+          shtype := SHT_PROGBITS;
+          shflags := SHF_ALLOC;
+          if oso_write in AOptions then
+            shflags := shflags or SHF_WRITE;
+        end;
+
+      { Create the section with COMDAT flag }
+      { Note: Full ELF COMDAT requires SHT_GROUP section creation which needs
+        access to private base class fields (FGroupsList). For the bootstrap
+        build, we set the COMDAT selection on the section which the linker
+        can use for deduplication. The full group-based COMDAT will be
+        implemented when the base class exposes the necessary APIs. }
+      result := TElfObjSection.create_ext(self, AName, shtype, shflags, AAlign, 0);
+      result.ObjData := self;
+      result.SecOptions := AOptions + [oso_comdat];
+
+      { Set COMDAT selection to 'any' - linker picks any matching definition }
+      result.ComdatSelection := oscs_any;
+    end;
+    {$ENDIF}
 
 
     procedure TElfObjData.writereloc(data:aint;len:aword;p:TObjSymbol;reltype:TObjRelocationType);

@@ -1713,9 +1713,13 @@ const
          str:' uses ymm register (x86 only)'),
          (mask:pi_no_framepointer_needed;
          str:' set if no frame pointer is needed, the rules when this applies is target specific'),
-         (mask:pi_normalized;
-         str:'  has been normalized so no expressions contain block nodes ')
-  );
+           (mask:pi_normalized;
+           str:'  has been normalized so no expressions contain block nodes ')
+           {$IFDEF FPC_HAS_WITNESS_GENERICS},
+           (mask:pi_has_wlg_dynamic_stack;
+           str:'  uses WLG dynamic stack frame for generic type T ')
+           {$ENDIF}
+    );
 var
   procinfooptions : tprocinfoflags;
   i      : longint;
@@ -2510,7 +2514,8 @@ const
          'm_implicit_generics',   { Delphi-style generic syntax: 'generic'/'specialize' keywords optional, <T> allowed }
          'm_for_step',            { allow `step N` clause in for-loops }
          'm_flexible_arrays',     { allow `array[] of T` as last field of a record (C99-style FAM) }
-         'm_composable_records'   { record composition: union, anonymous embed, expose, offsetof }
+         'm_composable_records',  { record composition: union, anonymous embed, expose, offsetof }
+         'm_lightweight_generics' { enable Witness-Based Lightweight Generics (WLG) }
        );
        { optimizer }
        optimizerswitchname : array[toptimizerswitch] of string[50] =
@@ -2876,6 +2881,10 @@ const
      (mask:df_has_global_ref; str:'Has Global Ref'),
      (mask:df_has_generic_fields; str:'Has generic fields'),
      (mask:df_llvm_no_typename; str:'LLVM no typename'),
+     { WLG flags }
+     (mask:df_has_witness;    str:'Has Witness'),
+     (mask:df_shared_generic; str:'Shared Generic'),
+     (mask:df_monomorph;      str:'Force Monomorph'),
      (mask:df_tuple;          str:'Tuple'),
      (mask:df_expose_rtti;    str:'Expose RTTI')
   );
@@ -2913,7 +2922,7 @@ begin
   else
     readderef('');
   write  ([space,'       DefOptions : ']);
-  ppufile.getset(tppuset2(defoptions));
+  ppufile.getset(tppuset4(defoptions));
   if defoptions<>[] then
     begin
       first:=true;

@@ -35,6 +35,9 @@ uses
   exception handling funclets }
 function create_outline_procdef(const basesymname: string; astruct: tabstractrecorddef; potype: tproctypeoption; resultdef: tdef): tprocdef;
 
+{ WLG support: inject implicit witness parameter into a shared generic procedure }
+procedure inject_witness_parameter(proc: tprocdef);
+
 procedure convert_to_funcref_intf(const n:tidstring;var def:tdef);
 function adjust_funcref(var def:tdef;sym,dummysym:tsym):boolean;
 
@@ -109,6 +112,34 @@ implementation
       { the code will be assigned directly to the "code" field later }
       result.forwarddef:=false;
       result.aliasnames.insert(result.mangledname);
+    end;
+
+
+  { WLG support: inject implicit witness parameter into a shared generic procedure }
+  procedure inject_witness_parameter(proc: tprocdef);
+    var
+      witness_sym: tparavarsym;
+    begin
+      if not assigned(proc) then
+        exit;
+      { Prevent double injection }
+      if proc.is_shared_generic then
+        exit;
+      { Create the implicit witness parameter }
+      witness_sym := cparavarsym.create(
+        'implicit_witness',
+        proc.parast.symlist.count,  { para nr }
+        vs_constref,                 { constref - read-only }
+        search_system_type('System.Generics.Witness.PWitnessTable').typedef,
+        [vo_is_hidden_para]
+      );
+      { Add to parameter symtable }
+      proc.parast.insertsym(witness_sym);
+      { Set procdef fields }
+      proc.witness_parasym := witness_sym;
+      proc.is_shared_generic := true;
+      { Default shape class - will be set during specialization }
+      proc.shape_class := Shape_Unknown;
     end;
 
 

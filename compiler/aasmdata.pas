@@ -76,6 +76,8 @@ interface
         { keep pool data separate, so we can generate new pool entries
           while emitting other data }
         al_objc_pools,
+        { WLG: Dedicated list for witness table data }
+        al_wlg_witness,
         al_end
       );
     {$push}{$j-}
@@ -141,6 +143,7 @@ interface
         'al_resourcestrings',
         'al_objc_data',
         'al_objc_pools',
+        'al_wlg_witness',
         'al_end'
       );
 

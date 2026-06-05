@@ -245,6 +245,20 @@ interface
     {# Returns true if p is a cyclic reference (refers to itself at some point via pointer or array) }
     function is_cyclic(p : tdef): Boolean; {$ifdef USEINLINE}inline;{$endif USEINLINE}
 
+{*****************************************************************************
+                    WLG Shape-Class classification functions
+ *****************************************************************************}
+
+    {# Classifies a type into a Shape-Class for Witness-Based Lightweight Generics.
+       Returns the appropriate tshapeclass based on the type's ABI/layout characteristics. }
+    function classify_shape(def: tdef): tshapeclass;
+
+    {# Returns true if the type requires managed operations (init/copy/final) }
+    function shape_requires_management(sc: tshapeclass): boolean; {$ifdef USEINLINE}inline;{$endif}
+
+    {# Returns the size category for POD types (1, 2, 4, or 8 bytes) }
+    function pod_size_category(def: tdef): longint;
+
     {# Returns true, if definition is a float }
     function is_fpu(def : tdef) : boolean;
 
@@ -2367,6 +2381,188 @@ implementation
               cur_def:=nil;
           end;
         result:=true;
+      end;
+
+
+{*****************************************************************************
+                    WLG Shape-Class classification functions
+ *****************************************************************************}
+
+    { Returns true if the type requires managed operations (init/copy/final) }
+    function shape_requires_management(sc: tshapeclass): boolean; {$ifdef USEINLINE}inline;{$endif}
+      begin
+        result := (sc = Shape_Managed);
+      end;
+
+    { Returns the size category for POD types (1, 2, 4, or 8 bytes) }
+    function pod_size_category(def: tdef): longint;
+      begin
+        if not assigned(def) then
+          begin
+            result := 0;
+            exit;
+          end;
+        case def.size of
+          1: result := 1;
+          2: result := 2;
+          4: result := 4;
+          8: result := 8;
+          else
+            result := 0; { Unknown or unsupported size }
+        end;
+      end;
+
+    { Classifies a type into a Shape-Class for Witness-Based Lightweight Generics }
+    function classify_shape(def: tdef): tshapeclass;
+      begin
+        if not assigned(def) then
+          begin
+            result := Shape_Unknown;
+            exit;
+          end;
+
+        { Check for managed types first (strings, dynamic arrays, managed records) }
+        if is_managed_type(def) then
+          begin
+            result := Shape_Managed;
+            exit;
+          end;
+
+        { Check for reference types (classes, interfaces, pointers) }
+        case def.typ of
+          classrefdef,
+          formaldef,
+          undefineddef,
+          procdef:
+            begin
+              result := Shape_Ref;
+              exit;
+            end;
+          pointerdef:
+            begin
+              { Raw pointers are Shape_Ref }
+              result := Shape_Ref;
+              exit;
+            end;
+          procvardef:
+            begin
+              { Procedure variables are pointer-sized }
+              result := Shape_Ref;
+              exit;
+            end;
+          else
+            begin
+              { All other types fall through to further checks }
+            end;
+        end;
+
+        { Check for ordinal types (integers, booleans, enums, chars) }
+        if (def.typ = orddef) or (def.typ = enumdef) then
+          begin
+            case pod_size_category(def) of
+              1: result := Shape_POD_1;
+              2: result := Shape_POD_2;
+              4: result := Shape_POD_4;
+              8: result := Shape_POD_8;
+              else
+                result := Shape_Unknown;
+            end;
+            exit;
+          end;
+
+        { Check for floating-point types }
+        if def.typ = floatdef then
+          begin
+            case pod_size_category(def) of
+              4: result := Shape_POD_4;  { Single }
+              8: result := Shape_POD_8;  { Double, Currency }
+              else
+                { Extended and other larger floats }
+                result := Shape_Managed; { Treat as managed to be safe }
+            end;
+            exit;
+          end;
+
+        { Check for set types (typically small, POD) }
+        if def.typ = setdef then
+          begin
+            case pod_size_category(def) of
+              1: result := Shape_POD_1;
+              2: result := Shape_POD_2;
+              4: result := Shape_POD_4;
+              8: result := Shape_POD_8;
+              else
+                result := Shape_Managed; { Larger sets treated as managed }
+            end;
+            exit;
+          end;
+
+        { Check for string types }
+        if def.typ = stringdef then
+          begin
+            case tstringdef(def).stringtype of
+              st_shortstring:
+                begin
+                  { ShortString is a fixed-size record, treat as POD based on size }
+                  case pod_size_category(def) of
+                    1: result := Shape_POD_1;
+                    2: result := Shape_POD_2;
+                    4: result := Shape_POD_4;
+                    8: result := Shape_POD_8;
+                    else
+                      result := Shape_Managed;
+                  end;
+                end;
+              st_ansistring,
+              st_widestring,
+              st_unicodestring,
+              st_longstring:
+                { Dynamic strings are managed types (already caught by is_managed_type above) }
+                result := Shape_Managed;
+            end;
+            exit;
+          end;
+
+        { Check for dynamic arrays }
+        if (def.typ = arraydef) and (ado_IsDynamicArray in tarraydef(def).arrayoptions) then
+          begin
+            { Dynamic arrays are managed (pointer to heap data) }
+            result := Shape_Ref;
+            exit;
+          end;
+
+        { Check for variant types }
+        if def.typ = variantdef then
+          begin
+            { Variants are managed }
+            result := Shape_Managed;
+            exit;
+          end;
+
+        { Check for records and objects }
+        if (def.typ = recorddef) or (def.typ = objectdef) then
+          begin
+            { Check if record has management operators }
+            if is_managed_type(def) then
+              result := Shape_Managed
+            else
+              begin
+                { Check if it's a simple POD record }
+                case pod_size_category(def) of
+                  1: result := Shape_POD_1;
+                  2: result := Shape_POD_2;
+                  4: result := Shape_POD_4;
+                  8: result := Shape_POD_8;
+                  else
+                    { Larger records without management - treat as complex }
+                    result := Shape_Complex;
+                end;
+              end;
+            exit;
+          end;
+
+        { Default: unknown shape class }
+        result := Shape_Unknown;
       end;
 
 end.

@@ -699,6 +699,8 @@ interface
           { used only by ELF so far }
           secflags : TSectionFlags;
           secprogbits : TSectionProgbits;
+          { WLG: COMDAT signature symbol for linker deduplication }
+          comdat_signature : TAsmSymbol;
           destructor Destroy;override;
           constructor ppuload(t:taitype;ppufile:tcompilerppufile);override;
           procedure ppuwrite(ppufile:tcompilerppufile);override;

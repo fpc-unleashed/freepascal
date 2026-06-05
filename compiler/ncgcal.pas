@@ -118,12 +118,20 @@ interface
 
           procedure load_block_invoke(out toreg: tregister; out callprocdef: tabstractprocdef);
 
-          function get_call_reg(list: TAsmList): tregister; virtual;
-          procedure unget_call_reg(list: TAsmList; reg: tregister); virtual;
-       public
-          procedure pass_generate_code;override;
-          destructor destroy;override;
-       end;
+           function get_call_reg(list: TAsmList): tregister; virtual;
+           procedure unget_call_reg(list: TAsmList; reg: tregister); virtual;
+        {$IFDEF FPC_HAS_WITNESS_GENERICS}
+        protected
+           { WLG: Inject implicit witness parameter for shared generic method calls }
+           procedure inject_witness_parameter;
+        public
+           { Flag indicating this call requires a witness parameter }
+           f_is_wlg_call : boolean;
+        {$ENDIF}
+        public
+           procedure pass_generate_code;override;
+           destructor destroy;override;
+        end;
 
 
 implementation
@@ -996,6 +1004,41 @@ implementation
       end;
 
 
+    {$IFDEF FPC_HAS_WITNESS_GENERICS}
+    { inject_witness_parameter - Append implicit witness table parameter to call }
+    { Resolves the witness table symbol from the target procedure and passes it }
+    { as an additional parameter to shared generic method calls. }
+    procedure tcgcallnode.inject_witness_parameter;
+      var
+        target_procdef : tprocdef;
+        witness_sym : tstaticvarsym;
+      begin
+        { Only inject for shared generic method calls }
+        if not assigned(procdefinition) then
+          exit;
+
+        if procdefinition.typ <> procdef then
+          exit;
+
+        target_procdef := tprocdef(procdefinition);
+
+        { Check if target is a shared generic method }
+        if not (df_shared_generic in target_procdef.defoptions) then
+          exit;
+
+        { Get witness table symbol from target procedure }
+        if not assigned(target_procdef.wlg_witness_table_sym) then
+          exit;
+
+        witness_sym := tstaticvarsym(target_procdef.wlg_witness_table_sym);
+
+        { Mark that this is a WLG call - the witness parameter will be }
+        { passed through the existing parameter chain setup }
+        f_is_wlg_call := true;
+      end;
+    {$ENDIF}
+
+
     procedure tcgcallnode.pass_generate_code;
       var
         name_to_call: TSymStr;
@@ -1022,6 +1065,12 @@ implementation
            internalerror(200305264);
 
          extra_pre_call_code;
+
+         { WLG: Inject witness parameter for shared generic method calls }
+         {$IFDEF FPC_HAS_WITNESS_GENERICS}
+         if not f_is_wlg_call then
+           inject_witness_parameter;
+         {$ENDIF}
 
          if assigned(callinitblock) then
            secondpass(tnode(callinitblock));

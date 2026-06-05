@@ -2138,6 +2138,25 @@ implementation
                 arraydef,
                 procvardef:
                   begin
+                    {$IFDEF FPC_HAS_WITNESS_GENERICS}
+                    { WLG Phase 1: Route to WLG specialization if enabled }
+                    if (m_lightweight_generics in current_settings.modeswitches) and
+                       assigned(spezcontext) and
+                       (df_generic in tstoreddef(spezdef).defoptions) then
+                      begin
+                        do_wlg_specialization(spezcontext,tstoreddef(spezdef),false);
+                        spezcontext.free;
+                        spezcontext:=nil;
+                        if spezdef<>generrordef then
+                          begin
+                            srsym:=spezdef.typesym;
+                            srsymtable:=srsym.owner;
+                            check_hints(srsym,srsym.symoptions,srsym.deprecatedmsg);
+                            result:=true;
+                          end;
+                        exit;
+                      end;
+                    {$ENDIF}
                     spezdef:=generate_specialization_phase2(spezcontext,tstoreddef(spezdef),false,'');
                     spezcontext.free;
                     spezcontext:=nil;

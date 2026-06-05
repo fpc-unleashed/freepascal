@@ -36,7 +36,11 @@ uses
   { node }
   node,
   { symtable }
-  symtype,symdef,symbase;
+  symtype,symdef,symbase,symsym,
+    { WLG support }
+    symconst,
+    { assembler }
+    aasmdata,aasmsym,aasmcnst,aasmtai,aasmbase;
 
     procedure generate_specialization(var tt:tdef;enforce_unit:boolean;parse_class_parent:boolean;const _prettyname:string;parsedtype:tdef;const symname:string;parsedpos:tfileposinfo);inline;
     procedure generate_specialization(var tt:tdef;enforce_unit:boolean;parse_class_parent:boolean;const _prettyname:string;const symname:string;symtable:tsymtable);inline;
@@ -67,6 +71,22 @@ uses
     procedure specialization_init(genericdef:tdef;var state:tspecializationstate);
     procedure specialization_done(var state:tspecializationstate);
 
+    { WLG (Witness-Based Lightweight Generics) support }
+    function classify_specialization_shape(context:tspecializationcontext;genericdef:tstoreddef):tshapeclass;
+    function compute_identity_hash(shapeclass:tshapeclass;context:tspecializationcontext):ansistring;
+    function should_use_wlg(genericdef:tstoreddef;shapeclass:tshapeclass):boolean;
+    procedure do_wlg_specialization(context:tspecializationcontext;genericdef:tstoreddef;parse_class_parent:boolean);
+    function do_wlg_specialization_result(context:tspecializationcontext;genericdef:tstoreddef;parse_class_parent:boolean;const _prettyname:ansistring):tdef;
+    procedure rewrite_wlg_generic_body(proc:tprocdef;shapeclass:tshapeclass);
+    {$IFDEF FPC_HAS_WITNESS_GENERICS}
+    function generate_witness_table_symbol(shapeclass:tshapeclass;const identity_hash:ansistring;
+      element_size:longint;element_alignment:longint;element_typeinfo:pointer;
+      init_proc,copy_proc,final_proc,compare_proc:pointer):tstaticvarsym;
+    procedure emit_witness_table_data(sym:tstaticvarsym;
+      element_size:longint;element_alignment:longint;element_typeinfo:pointer;
+      init_proc,copy_proc,final_proc,compare_proc:pointer);
+    {$ENDIF}
+
 implementation
 
 uses
@@ -75,11 +95,13 @@ uses
   { global }
   globals,tokens,verbose,finput,constexp,
   { symtable }
-  symconst,symsym,symtable,defcmp,defutil,procinfo,
+  symtable,defcmp,defutil,procinfo,
   { modules }
   fmodule,
   { node }
-  nobj,ncon,ncal,
+  nobj,ncon,ncal,nutils,nadd,nmem,ncnv,ninl,nld,
+  { compiler intrinsics }
+  compinnr,
   { parser }
   scanner,
   pbase,pexpr,pdecsub,ptype,psub,pparautl,pdecl,procdefutil;
@@ -89,6 +111,18 @@ uses
   const
     tgeneric_param_const_types : tdeftypeset = [orddef,stringdef,floatdef,setdef,pointerdef,enumdef];
     tgeneric_param_nodes : tnodetypeset = [typen,ordconstn,stringconstn,realconstn,setconstn,niln];
+  {$IFDEF FPC_HAS_WITNESS_GENERICS}
+  var
+    wlg_witness_registry : tfphashobjectlist = nil;
+    wlg_shared_code_registry : tfphashobjectlist = nil;
+  {$ENDIF}
+
+    { Forward declarations for WLG procedures used in generate_specialization_phase2 }
+    procedure apply_wlg_transformations(context:tspecializationcontext;result:tdef;genericdef:tstoreddef); forward;
+    procedure maybe_rewrite_wlg_body(def:tprocdef;hmodule:tmodule;shapeclass:tshapeclass); forward;
+    {$IFDEF FPC_HAS_WITNESS_GENERICS}
+    function wlg_lookup_first_specialization(genericdef:tstoreddef;shapeclass:tshapeclass):tdef; forward;
+    {$ENDIF}
 
     procedure make_prettystring(paramtype:tdef;first:boolean;constprettyname:ansistring;var prettyname,specializename:ansistring);
       var
@@ -1734,6 +1768,8 @@ uses
         hierarchy,
         prettyname : ansistring;
         generictypelist : tfphashobjectlist;
+        shared_key : ansistring;
+        shared_idx : integer;
         srsymtable,
         specializest : tsymtable;
         hashedid : thashedidstring;
@@ -1777,6 +1813,24 @@ uses
             result:=generrordef;
             exit;
           end;
+
+        {$IFDEF FPC_HAS_WITNESS_GENERICS}
+        { WLG Routing: Only activate WLG if the modeswitch is enabled }
+        if (m_lightweight_generics in current_settings.modeswitches) then
+          begin
+            { WLG now supports multi-parameter generics via Composite Shape Keys.
+              Each type parameter's shape is classified individually and concatenated
+              into a signature like "WLG_W_POD4_MNG" for TDictionary<Integer, string>.
+              This ensures multi-parameter generics with different parameter shapes
+              never collide in the registry. }
+            context.shapeclass:=classify_specialization_shape(context,genericdef);
+            if context.shapeclass <> Shape_Unknown then
+              begin
+                context.identity_hash:=compute_identity_hash(context.shapeclass,context);
+                context.is_wlg_specialization:=true;
+              end;
+          end;
+        {$ENDIF}
 
         { build the new type's name }
         hierarchy:=genericdef.ownerhierarchyname;
@@ -1852,6 +1906,31 @@ uses
               result:=find_in_hierarchy(current_genericdef,generictypelist);
             if not assigned(result) and assigned(current_specializedef) then
               result:=find_in_hierarchy(current_specializedef,generictypelist);
+          end;
+
+        {$IFDEF FPC_HAS_WITNESS_GENERICS}
+        { WLG Code Sharing with Veneer VMTs: Create separate type for same shape-class }
+        { This preserves type safety while sharing code - each specialization gets its own VMT }
+        { but the VMT method entries point to the shared code addresses }
+        { Initialize registry if needed so we can look up existing specializations }
+        if context.is_wlg_specialization and not assigned(wlg_shared_code_registry) then
+          wlg_shared_code_registry := tfphashobjectlist.create(false);
+        {$ENDIF}
+
+        { WLG: Look up veneer source BEFORE reparsing, so build_vmt can use it }
+        { This must happen before the "Reparse the original type definition" block }
+        if context.is_wlg_specialization and not assigned(context.wlg_veneer_source) then
+          begin
+            { Look up with validation }
+            context.wlg_veneer_source := wlg_lookup_first_specialization(genericdef, context.shapeclass);
+            { Validate the returned pointer - accept objectdef, recorddef, AND procdef }
+            { tabstractrecorddef is the base class for both classes and records }
+            { procdef is for standalone generic functions }
+            if assigned(context.wlg_veneer_source) and 
+               not (tobject(context.wlg_veneer_source) is tabstractrecorddef) and
+               not (tobject(context.wlg_veneer_source) is tprocdef) then
+              context.wlg_veneer_source := nil;
+            
           end;
 
         { decide in which symtable to put the specialization }
@@ -2058,7 +2137,14 @@ uses
                         ppflags:=[];
                         if po_classmethod in tprocdef(genericdef).procoptions then
                           include(ppflags,ppf_classmethod);
-                        parse_proc_dec_finish(pd,ppflags,tprocdef(genericdef).struct);
+                        { WLG: Skip body parsing for veneer standalone functions }
+                        if assigned(context.wlg_veneer_source) and (context.wlg_veneer_source.typ=procdef) then
+                          begin
+                            tprocdef(pd).wlg_veneer_source:=tprocdef(context.wlg_veneer_source);
+                            tprocdef(pd).is_implemented:=true;
+                          end
+                        else
+                          parse_proc_dec_finish(pd,ppflags,tprocdef(genericdef).struct);
                       end;
                     result:=pd;
                   end
@@ -2116,7 +2202,12 @@ uses
                       if oo_is_forward in tobjectdef(result).objectoptions then
                         add_forward_generic_def(result,context)
                       else if not (oo_inherits_not_specialized in tobjectdef(result).objectoptions) then
-                        build_vmt(tobjectdef(result))
+                        begin
+                          { WLG: Set veneer source if this specialization shares code with another }
+                          if assigned(context.wlg_veneer_source) and (context.wlg_veneer_source.typ = objectdef) then
+                            tobjectdef(result).wlg_veneer_source := context.wlg_veneer_source;
+                          build_vmt(tobjectdef(result))
+                        end
                       else
                         { update the procdevs to add hidden self param }
                         insert_struct_hidden_paras(tobjectdef(result));
@@ -2239,6 +2330,48 @@ uses
               not has_generic_paras(tstoreddef(result)) then
                   current_module.pendingspecializations.add(result.typename,result);
           end;
+
+        {$IFDEF FPC_HAS_WITNESS_GENERICS}
+        { WLG Post-Processing: Apply WLG transformations after specialization is built }
+        { Veneer mechanism works for classes, records, AND standalone functions: }
+        { 1. Mangled name redirection works for all (classes have VMTs, records have direct calls, functions use mangled names) }
+        { 2. Body compilation skipping works for all }
+        { 3. VMT copying (nobj.pas) only applies to classes - records/functions safely bypass this }
+        if context.is_wlg_specialization and assigned(result) and
+           not (df_generic in result.defoptions) then
+          begin
+            { Set wlg_veneer_source for classes and records }
+            { The lookup was already done earlier, so context.wlg_veneer_source is already set correctly }
+            { For the first specialization, it will be nil; for veneers, it points to the first }
+            if result.typ in [objectdef, recorddef] then
+              begin
+                { Set veneer source on the specialization (works for both classes and records) }
+                { Only set if this is actually a veneer (wlg_veneer_source points to a DIFFERENT def) }
+                if assigned(context.wlg_veneer_source) and 
+                   (context.wlg_veneer_source <> result) and
+                   (context.wlg_veneer_source.typ in [objectdef, recorddef]) then
+                  tabstractrecorddef(result).wlg_veneer_source := context.wlg_veneer_source;
+              end
+            else if result.typ = procdef then
+              begin
+                { For standalone generic procedures, set wlg_veneer_source directly on the procdef }
+                if assigned(context.wlg_veneer_source) and 
+                   (context.wlg_veneer_source <> result) and
+                   (context.wlg_veneer_source.typ = procdef) then
+                  tprocdef(result).wlg_veneer_source := tprocdef(context.wlg_veneer_source);
+              end;
+
+            { Register this specialization in the shared code registry }
+            { objectdef, recorddef, AND procdef instances can be registered for code sharing }
+            { tfphashobjectlist.Find returns the stored object directly, or nil if not found }
+            shared_key := genericdef.fulltypename + '_SC_' + tostr(ord(context.shapeclass));
+            if not assigned(wlg_shared_code_registry.Find(shared_key)) then
+              begin
+                { First specialization with this shape-class - register it }
+                wlg_shared_code_registry.Add(shared_key, result);
+              end
+          end;
+        {$ENDIF}
 
         generictypelist.free;
         generictypelist := nil;
@@ -2930,14 +3063,40 @@ uses
 ****************************************************************************}
 
 
-    procedure process_procdef(def:tprocdef;hmodule:tmodule);
-      var
-        oldcurrent_filepos : tfileposinfo;
-      begin
+      procedure process_procdef(def:tprocdef;hmodule:tmodule);
+        var
+          oldcurrent_filepos : tfileposinfo;
+          src: tdef;
+        begin
+          { WLG: Skip compiling the body for WLG veneer specializations }
+          { This applies to both class/record methods and standalone generic functions. }
+          { For standalone functions, check def.wlg_veneer_source directly (procdef-centric). }
+          { For methods, check def.struct.wlg_veneer_source (struct-centric). }
+          { Without this, same-shape-class specializations would both compile }
+          { their bodies under the same mangled name, causing duplicate label errors. }
+          if assigned(def.wlg_veneer_source) then
+            begin
+              { Direct veneer source pointer for standalone generic functions }
+              def.is_implemented:=true;
+              exit;
+            end;
+          if assigned(def.struct) and (def.struct.typ in [objectdef, recorddef]) and
+             assigned(tabstractrecorddef(def.struct).wlg_veneer_source) then
+            begin
+              { Mark as implemented so no forward-not-resolved error occurs }
+              def.is_implemented:=true;
+              exit;
+            end;
         if assigned(def.genericdef) and
             (def.genericdef.typ=procdef) and
             assigned(tprocdef(def.genericdef).generictokenbuf) then
           begin
+            { WLG: Skip compiling the body for WLG veneer standalone functions }
+            if assigned(def.wlg_veneer_source) then
+              begin
+                def.is_implemented:=true;
+                exit;
+              end;
             if not assigned(tprocdef(def.genericdef).generictokenbuf) then
               internalerror(2015061902);
             oldcurrent_filepos:=current_filepos;
@@ -2948,6 +3107,11 @@ uses
             current_scanner.startreplaytokens(tprocdef(def.genericdef).generictokenbuf,hmodule.change_endian);
             read_proc_body(def);
             current_filepos:=oldcurrent_filepos;
+
+            { WLG: After body is built, perform AST rewriting for shared generics }
+            { This transforms SizeOf(T) → witness^.Size before type-checking runs }
+            if (df_shared_generic in def.defoptions) and assigned(def.witness_parasym) then
+              maybe_rewrite_wlg_body(def, hmodule, def.shape_class);
           end
         { synthetic routines will be implemented afterwards }
         else if def.synthetickind=tsk_none then
@@ -3027,8 +3191,6 @@ uses
         for i:=0 to list.count-1 do
           begin
             def:=tstoreddef(list[i]);
-            if not tstoreddef(def).is_specialization then
-              continue;
             case def.typ of
               procdef:
                 begin
@@ -3170,6 +3332,700 @@ uses
               genericdef for the specialized type }
             result:=tstoreddef(ttypesym(sym).typedef);
           end;
+      end;
+
+
+{****************************************************************************
+                    WLG (Witness-Based Lightweight Generics)
+****************************************************************************}
+
+    { classify_specialization_shape - Determine the dominant shape-class for a specialization }
+    function classify_specialization_shape(context:tspecializationcontext;genericdef:tstoreddef):tshapeclass;
+      var
+        i : longint;
+        paramdef : tdef;
+        param_sc : tshapeclass;
+        first_sc : tshapeclass;
+        mixed : boolean;
+      begin
+        result:=Shape_Unknown;
+        if not assigned(context) or not assigned(genericdef) then
+          exit;
+
+        first_sc:=Shape_Unknown;
+        mixed:=false;
+
+        for i:=0 to context.paramlist.count-1 do
+          begin
+            paramdef:=get_generic_param_def(tsym(context.paramlist[i]));
+            if not assigned(paramdef) or (paramdef.typ=errordef) then
+              continue;
+
+            param_sc:=classify_shape(paramdef);
+
+            if first_sc=Shape_Unknown then
+              first_sc:=param_sc
+            else if first_sc<>param_sc then
+              begin
+                { Different shape-classes detected }
+                mixed:=true;
+                break;
+              end;
+          end;
+
+        if mixed then
+          result:=Shape_Managed
+        else
+          result:=first_sc;
+      end;
+
+
+    { compute_identity_hash - Generate a deterministic hash for WLG deduplication }
+    { Uses a Composite Shape Key model: each type parameter's shape is classified }
+    { individually and concatenated into a signature like "WLG_W_POD4_MNG" for }
+    { TDictionary<Integer, string>. This ensures multi-parameter generics with }
+    { different parameter shapes never collide in the registry. }
+    function compute_identity_hash(shapeclass:tshapeclass;context:tspecializationcontext):ansistring;
+      var
+        i: longint;
+        param_def: tdef;
+        param_sc: tshapeclass;
+        sc_name: ansistring;
+      begin
+        result := 'WLG_W';
+        if not assigned(context) then
+          exit;
+
+        { Loop over all parameters to build a composite shape-signature }
+        for i := 0 to context.paramlist.count - 1 do
+          begin
+            param_def := get_generic_param_def(tsym(context.paramlist[i]));
+            param_sc := classify_shape(param_def);
+
+            case param_sc of
+              Shape_Ref     : sc_name := 'REF';
+              Shape_POD_1   : sc_name := 'POD1';
+              Shape_POD_2   : sc_name := 'POD2';
+              Shape_POD_4   : sc_name := 'POD4';
+              Shape_POD_8   : sc_name := 'POD8';
+              Shape_Managed : sc_name := 'MNG';
+              Shape_Complex : sc_name := 'CMP';
+            else
+              sc_name := 'UNK';
+            end;
+
+            { Append this parameter's shape to the composite key }
+            result := result + '_' + sc_name;
+          end;
+      end;
+
+
+    { should_use_wlg - Determine if WLG pipeline should be used for this specialization }
+    function should_use_wlg(genericdef:tstoreddef;shapeclass:tshapeclass):boolean;
+      begin
+        result:=false;
+
+        { Check if WLG modeswitch is enabled }
+        {$IFDEF FPC_HAS_WITNESS_GENERICS}
+        if not (m_lightweight_generics in current_settings.modeswitches) then
+          exit;
+
+        { Check if monomorph is forced (opt-out) }
+        if assigned(genericdef) and (df_monomorph in genericdef.defoptions) then
+          exit;
+
+        { Only use WLG for eligible shape-classes }
+        case shapeclass of
+          Shape_Unknown,
+          Shape_Complex :
+            { Unknown or complex types fall back to legacy monomorphization }
+            exit;
+          Shape_Ref,
+          Shape_POD_1,
+          Shape_POD_2,
+          Shape_POD_4,
+          Shape_POD_8,
+          Shape_Managed :
+            { These shape-classes are eligible for WLG }
+            result:=true;
+        end;
+        {$ENDIF}
+      end;
+
+
+    { WLG Phase 1: Look up if there's a "first specialization" for this generic+shape pair }
+    { Uses same key format as wlg_shared_code_registry in generate_specialization_phase2 }
+    function wlg_lookup_first_specialization(genericdef:tstoreddef;shapeclass:tshapeclass):tdef;
+      var
+        key: ansistring;
+        obj: pointer;
+      begin
+        result:=nil;
+        if not assigned(wlg_shared_code_registry) then
+          exit;
+        if not assigned(genericdef) then
+          exit;
+        if (shapeclass = Shape_Unknown) then
+          exit;
+
+        { Build lookup key: must match format used in generate_specialization_phase2 }
+        key := genericdef.fulltypename + '_SC_' + tostr(ord(shapeclass));
+        
+        { Find on tfphashobjectlist returns the stored object directly }
+        obj := wlg_shared_code_registry.find(key);
+        { If the specialization is in the registry, it's valid - no need to check vmtentries.count }
+        { Accept objectdef (classes), recorddef (records), AND procdef (standalone functions) }
+        if assigned(obj) and ((tobject(obj) is tabstractrecorddef) or (tobject(obj) is tprocdef)) then
+          result := tdef(obj);
+      end;
+
+
+    { apply_wlg_transformations - Apply WLG transformations after specialization is built }
+    { Called from generate_specialization_phase2() when is_wlg_specialization is set }
+    { Handles: witness table creation, marking methods as shared generic }
+    { Note: witness parameter injection is deferred to code generation phase }
+    procedure apply_wlg_transformations(context:tspecializationcontext;result:tdef;genericdef:tstoreddef);
+      var
+        shapeclass : tshapeclass;
+        identity_hash : ansistring;
+        witness_sym : tstaticvarsym;
+        i : longint;
+        method_def : tdef;
+        proc_def : tprocdef;
+        element_size : longint;
+        element_alignment : longint;
+        source_vmt : tobjectdef;
+        target_vmt : tobjectdef;
+        vmt_idx : longint;
+        source_proc : tprocdef;
+        is_first : boolean;
+        first_specialization : tdef;
+        found_entry : TSymEntry;
+        found_sym : tsym;
+      begin
+        if not assigned(context) or not assigned(result) then
+          exit;
+
+        {$IFDEF FPC_HAS_WITNESS_GENERICS}
+        shapeclass:=context.shapeclass;
+        identity_hash:=context.identity_hash;
+
+        { WLG Phase 1: VMT Method Address Sharing }
+        { The lookup is already done in generate_specialization_phase2() via wlg_shared_code_registry }
+        { and context.wlg_veneer_source is already set there. No need to duplicate here. }
+
+        { Step 1: Create witness table symbol if not already created for this hash }
+        if not assigned(wlg_witness_registry) then
+          wlg_witness_registry:=tfphashobjectlist.create(false);
+
+        witness_sym:=tstaticvarsym(wlg_witness_registry.find(identity_hash));
+        if not assigned(witness_sym) then
+          begin
+            { Get element size and alignment from the specialized type }
+            element_size:=0;
+            element_alignment:=0;
+            if (context.paramlist.count > 0) then
+              begin
+                element_size:=get_generic_param_def(tsym(context.paramlist[0])).size;
+                element_alignment:=get_generic_param_def(tsym(context.paramlist[0])).alignment;
+              end;
+
+            { Create the witness table symbol }
+            witness_sym:=generate_witness_table_symbol(shapeclass, identity_hash,
+              element_size, element_alignment, nil, nil, nil, nil, nil);
+
+            if assigned(witness_sym) then
+              wlg_witness_registry.add(identity_hash, witness_sym);
+          end;
+
+        { Step 2: For class/record generics, process methods }
+        if result.typ in [objectdef, recorddef] then
+          begin
+            target_vmt:=tobjectdef(result);
+
+            { If we have a veneer source, copy VMT method procdefs from source }
+            { This ensures both @Class.Method and VMT lookups return the same address }
+            if assigned(context.wlg_veneer_source) and (context.wlg_veneer_source.typ = objectdef) then
+              begin
+                source_vmt:=tobjectdef(context.wlg_veneer_source);
+
+                { Copy method procdefs from source VMT to target VMT for code sharing }
+                { This makes @TargetClass.Method return the same address as @SourceClass.Method }
+                for vmt_idx:=0 to min(target_vmt.vmtentries.count, source_vmt.vmtentries.count)-1 do
+                  begin
+                    pvmtentry(target_vmt.vmtentries[vmt_idx])^.procdef :=
+                      pvmtentry(source_vmt.vmtentries[vmt_idx])^.procdef;
+                  end;
+
+                { NOTE: We do NOT copy symtable procdefs here. The VMT entries determine runtime code addresses.
+                  The symtable is only used for compile-time method resolution. Copying symtable procdefs
+                  would break virtual method override chains, causing "no method to override" errors. }
+              end
+            else
+              begin
+                { For each method in the specialization, mark as shared generic }
+                if assigned(tabstractrecorddef(result).symtable) then
+                  begin
+                    for i:=0 to tabstractrecorddef(result).symtable.deflist.count-1 do
+                      begin
+                        method_def:=tdef(tabstractrecorddef(result).symtable.deflist[i]);
+                        if method_def.typ=procdef then
+                          begin
+                            proc_def:=tprocdef(method_def);
+                            { CRITICAL: Remove df_generic to indicate this is NOT an abstract template.
+                              Keep df_shared_generic to mark it as a shared binary implementation.
+                              Without this, the compiler skips code generation entirely! }
+                            exclude(proc_def.defoptions, df_generic);
+                            include(proc_def.defoptions, df_shared_generic);
+                            if assigned(witness_sym) then
+                              proc_def.wlg_witness_table_sym:=tsym(witness_sym);
+                            rewrite_wlg_generic_body(proc_def, shapeclass);
+                          end;
+                      end;
+                  end;
+              end;
+          end
+        else if result.typ=procdef then
+          begin
+            { For standalone generic procedures }
+            proc_def:=tprocdef(result);
+            include(proc_def.defoptions, df_shared_generic);
+
+            { Set veneer source if there's a first specialization for this shape-class }
+            { This enables mangled name redirection and body compilation skipping }
+            if assigned(context.wlg_veneer_source) and (context.wlg_veneer_source <> result) then
+              begin
+                { The veneer source for standalone functions is stored on the procdef itself }
+                proc_def.wlg_veneer_source := tprocdef(context.wlg_veneer_source);
+              end;
+
+            { Store witness table symbol reference for code generation }
+            if assigned(witness_sym) then
+              proc_def.wlg_witness_table_sym:=tsym(witness_sym);
+
+            { Rewrite AST for WLG }
+            rewrite_wlg_generic_body(proc_def, shapeclass);
+          end;
+
+        { Step 3: Emit witness table data }
+        if assigned(witness_sym) then
+          begin
+            emit_witness_table_data(witness_sym,
+              element_size,
+              element_alignment,
+              nil, nil, nil, nil, nil);
+          end;
+        {$ENDIF}
+      end;
+
+
+    { do_wlg_specialization - Handle WLG specialization (create veneer + link to shared body) }
+    procedure do_wlg_specialization(context:tspecializationcontext;genericdef:tstoreddef;parse_class_parent:boolean);
+      var
+        shapeclass : tshapeclass;
+        identity_hash : ansistring;
+        specialization_def : tdef;
+        witness_sym : tstaticvarsym;
+        i : longint;
+        method_def : tdef;
+        proc_def : tprocdef;
+        element_size : longint;
+        element_alignment : longint;
+      begin
+        if not assigned(context) or not assigned(genericdef) then
+          exit;
+
+        {$IFDEF FPC_HAS_WITNESS_GENERICS}
+        { Step 1: Classify the shape-class for this specialization }
+        shapeclass:=classify_specialization_shape(context,genericdef);
+        context.shapeclass:=shapeclass;
+
+        { Step 2: Compute the identity hash for COMDAT deduplication }
+        identity_hash:=compute_identity_hash(shapeclass,context);
+        context.identity_hash:=identity_hash;
+
+        { Step 3: Mark this as a WLG specialization }
+        context.is_wlg_specialization:=true;
+
+        { Step 4: Create the specialization via legacy pipeline first }
+        { We need the specialization to exist so we can mark its methods as shared generic }
+        specialization_def:=generate_specialization_phase2(context,genericdef,parse_class_parent,'');
+        if not assigned(specialization_def) or (specialization_def.typ=errordef) then
+          exit;
+
+        { Step 5: Generate witness table symbol if not already created for this hash }
+        { Must happen before Step 6 so witness_sym is available for method processing }
+        if not assigned(wlg_witness_registry) then
+          wlg_witness_registry:=tfphashobjectlist.create(false);
+
+        witness_sym:=tstaticvarsym(wlg_witness_registry.find(identity_hash));
+        if not assigned(witness_sym) then
+          begin
+            { Get element size and alignment from the specialized type }
+            element_size:=0;
+            element_alignment:=0;
+            if (context.paramlist.count > 0) then
+              begin
+                element_size:=get_generic_param_def(tsym(context.paramlist[0])).size;
+                element_alignment:=get_generic_param_def(tsym(context.paramlist[0])).alignment;
+              end;
+
+            { Create the witness table symbol }
+            witness_sym:=generate_witness_table_symbol(shapeclass, identity_hash,
+              element_size, element_alignment, nil, nil, nil, nil, nil);
+
+            if assigned(witness_sym) then
+              wlg_witness_registry.add(identity_hash, witness_sym);
+          end;
+
+        { Step 6: For each method in the specialization, inject witness parameter, mark as shared generic, and rewrite AST }
+        if specialization_def.typ in [objectdef, recorddef] then
+          begin
+            { For class/record generics, iterate over methods in the symtable }
+            if assigned(tabstractrecorddef(specialization_def).symtable) then
+              begin
+                for i:=0 to tabstractrecorddef(specialization_def).symtable.deflist.count-1 do
+                  begin
+                    method_def:=tdef(tabstractrecorddef(specialization_def).symtable.deflist[i]);
+                    if method_def.typ=procdef then
+                      begin
+                        proc_def:=tprocdef(method_def);
+
+                        { Mark as shared generic }
+                        include(proc_def.defoptions, df_shared_generic);
+
+                        { Inject witness parameter }
+                        inject_witness_parameter(proc_def);
+
+                        { Store witness table symbol reference for code generation }
+                        if assigned(witness_sym) then
+                          proc_def.wlg_witness_table_sym:=tsym(witness_sym);
+
+                        { Rewrite AST for WLG - transform SizeOf, assignment, init/final }
+                        rewrite_wlg_generic_body(proc_def, shapeclass);
+                      end;
+                  end;
+              end;
+          end
+        else if specialization_def.typ=procdef then
+          begin
+            { For standalone generic procedures }
+            proc_def:=tprocdef(specialization_def);
+            include(proc_def.defoptions, df_shared_generic);
+            inject_witness_parameter(proc_def);
+
+            { Store witness table symbol reference for code generation }
+            if assigned(witness_sym) then
+              proc_def.wlg_witness_table_sym:=tsym(witness_sym);
+
+            { Rewrite AST for WLG }
+            rewrite_wlg_generic_body(proc_def, shapeclass);
+          end;
+
+        { Step 7: Emit witness table data }
+        if assigned(witness_sym) then
+          begin
+            emit_witness_table_data(witness_sym,
+              element_size,
+              element_alignment,
+              nil, nil, nil, nil, nil);
+          end;
+        {$ENDIF}
+      end;
+
+
+    { rewrite_wlg_generic_body - Apply WLG AST rewriting to a generic procedure body }
+    { Called after read_proc_body() completes, before type-checking runs }
+    { Transforms SizeOf(T) -> witness^.Size for shared generic methods }
+    procedure rewrite_wlg_generic_body(proc:tprocdef;shapeclass:tshapeclass);
+
+      { traverse - Recursive AST traversal with in-place node replacement }
+      { Uses var n: tnode to allow replacing nodes (in-place AST surgery) }
+      procedure traverse(var n: tnode);
+        var
+          load_node: tnode;
+          field_node: tnode;
+          witness_typesym: ttypesym;
+          witness_rec: trecorddef;
+          size_field: tsym;
+          temp_node: tnode;
+          inline_node: tinlinenode;
+          operand_node: tnode;
+        begin
+          if not assigned(n) then
+            exit;
+
+          { Detect SizeOf(T) represented as an inlinen node }
+          if n.nodetype = inlinen then
+            begin
+              inline_node := tinlinenode(n);
+
+              { Check if the inline function is SizeOf }
+              if inline_node.inlinenumber = in_sizeof_x then
+                begin
+                  { Get the operand node - should be a callparan containing a typen }
+                  if assigned(inline_node.left) and
+                     (inline_node.left.nodetype = callparan) then
+                    operand_node := tcallparanode(inline_node.left).left
+                  else
+                    operand_node := inline_node.left;
+
+                  { Check if operand is a typen node referencing the generic type T }
+                  if assigned(operand_node) and
+                     (operand_node.nodetype = typen) and
+                     assigned(operand_node.resultdef) and
+                     (df_generic in operand_node.resultdef.defoptions) then
+                    begin
+                      { Look up the TWitnessTable type definition }
+                      witness_typesym := search_system_type('TWITNESSTABLE');
+                      if assigned(witness_typesym) and
+                         (witness_typesym.typ = typesym) and
+                         (ttypesym(witness_typesym).typedef.typ = recorddef) then
+                        begin
+                          witness_rec := trecorddef(ttypesym(witness_typesym).typedef);
+                          size_field := tsym(witness_rec.symtable.find('SIZE'));
+
+                          if assigned(size_field) and
+                             assigned(proc.witness_parasym) then
+                            begin
+                              { 1. Create a load of the implicit witness parameter }
+                              { witness_parasym is stored as pointer to avoid circular dependency }
+                              load_node := cloadnode.create(tparavarsym(proc.witness_parasym), proc.parast);
+
+                              { 2. Create the field access subscript node (witness^.Size) }
+                              field_node := csubscriptnode.create(tfieldvarsym(size_field), load_node);
+
+                              { 3. Perform the in-place AST surgery }
+                              temp_node := n;
+                              n := field_node;
+                              temp_node.free;
+                              exit;
+                            end;
+                        end;
+                    end;
+                end;
+            end;
+
+          { Recursively traverse child nodes using foreachnodestatic pattern }
+          { This is simpler and avoids needing nbas in uses clause }
+          case n.nodetype of
+            { Unary nodes with 'left' child }
+            loadn, derefn, addrn, notn, unaryminusn, unaryplusn,
+            typeconvn, rttin, loadvmtaddrn, loadparentfpn,
+            specializen, exitn:
+              traverse(tunarynode(n).left);
+
+            { Binary nodes with 'left' and 'right' children }
+            addn, subn, muln, divn, modn, slashn, andn, orn, xorn, shrn, shln,
+            symdifn, ltn, lten, gtn, gten, equaln, unequaln, inn, starstarn,
+            assignn, subscriptn, vecn, calln, statementn:
+              begin
+                traverse(tbinarynode(n).left);
+                if assigned(tbinarynode(n).right) then
+                  traverse(tbinarynode(n).right);
+              end;
+
+            { Tertiary nodes - use ttertiarynode if applicable }
+            ifn:
+              if n is ttertiarynode then
+                begin
+                  traverse(ttertiarynode(n).left);
+                  if assigned(ttertiarynode(n).right) then
+                    traverse(ttertiarynode(n).right);
+                  if assigned(ttertiarynode(n).third) then
+                    traverse(ttertiarynode(n).third);
+                end;
+
+            { Parameter list nodes - traverse linked list via nextpara }
+            callparan:
+              begin
+                traverse(tcallparanode(n).left);
+                { nextpara is a property that reads/writes 'right' }
+                if assigned(tbinarynode(n).right) then
+                  traverse(tbinarynode(n).right);
+              end;
+
+            { Nodes with no children - nothing to traverse }
+            ordconstn, realconstn, stringconstn, pointerconstn,
+            setconstn, guidconstn, niln, typen, errorn, nothingn,
+            asmn, labeln, continuen, breakn, goton:
+              ;
+
+            { Handle all other node types not explicitly listed above }
+            else
+              ;
+          end;
+        end;
+
+      var
+        i: longint;
+        method_def: tdef;
+        proc_def: tprocdef;
+      begin
+        if not assigned(proc) or not assigned(proc.witness_parasym) then
+          exit;
+
+        { Start recursive traversal on the procedure's body }
+        { The body is stored in the inlininginfo^.code field }
+        if assigned(proc.inlininginfo) and assigned(proc.inlininginfo^.code) then
+          traverse(proc.inlininginfo^.code);
+      end;
+
+
+    { WLG: Wire up AST rewriting in process_procdef after read_proc_body() }
+    { This must happen after the body is built but before type-checking runs }
+    procedure maybe_rewrite_wlg_body(def:tprocdef;hmodule:tmodule;shapeclass:tshapeclass);
+      begin
+        { Only rewrite if this is a WLG shared generic method }
+        if not assigned(def) then
+          exit;
+        if not (df_shared_generic in def.defoptions) then
+          exit;
+        if not assigned(def.witness_parasym) then
+          exit;
+
+        { Perform the AST rewriting }
+        rewrite_wlg_generic_body(def, shapeclass);
+      end;
+
+
+    { generate_witness_table_symbol - Create a static symbol for the witness table constant }
+    function generate_witness_table_symbol(shapeclass:tshapeclass;const identity_hash:ansistring;
+      element_size:longint;element_alignment:longint;element_typeinfo:pointer;
+      init_proc,copy_proc,final_proc,compare_proc:pointer):tstaticvarsym;
+      var
+        witness_typedef : tdef;
+        witness_symname : ansistring;
+        witness_typesym : ttypesym;
+      begin
+        result:=nil;
+
+        {$IFDEF FPC_HAS_WITNESS_GENERICS}
+        { Look up TWitnessTable type from system unit }
+        witness_typedef:=nil;
+        witness_typesym:=search_system_type('TWITNESSTABLE');
+        if assigned(witness_typesym) then
+          witness_typedef:=witness_typesym.typedef;
+
+        if not assigned(witness_typedef) then
+          exit;
+
+        { Create symbol name from identity hash for COMDAT deduplication }
+        witness_symname:=tidstring(identity_hash);
+
+        { Create the static variable symbol with WLG witness table type }
+        result:=tstaticvarsym.create(witness_symname,vs_final,witness_typedef,[vo_is_internal]);
+
+        { Set mangled name to identity hash for linker deduplication }
+        result.set_mangledname(tidstring(identity_hash));
+
+        { Store WLG metadata in symbol for later use }
+        result.witness_shapeclass:=shapeclass;
+        result.witness_identity_hash:=identity_hash;
+        result.witness_element_size:=element_size;
+        result.witness_element_alignment:=element_alignment;
+        {$ENDIF}
+      end;
+
+
+    { emit_witness_table_data - Emit the witness table constant to the object file }
+    { This procedure emits the TWitnessTable record data using ttai_typedconstbuilder }
+    procedure emit_witness_table_data(sym: tstaticvarsym;
+      element_size: longint; element_alignment: longint; element_typeinfo: pointer;
+      init_proc, copy_proc, final_proc, compare_proc: pointer);
+      var
+        tcb: ttai_typedconstbuilder;
+        witness_typedef: tdef;
+        witness_typesym: ttypesym;
+        asmlist: tasmlist;
+        ptrdef: tdef;
+        sizeintdef: tdef;
+        asmsym: tasmsymbol;
+      begin
+        {$IFDEF FPC_HAS_WITNESS_GENERICS}
+        { Look up TWitnessTable type }
+        witness_typedef := nil;
+        witness_typesym := search_system_type('TWITNESSTABLE');
+        if assigned(witness_typesym) then
+          witness_typedef := witness_typesym.typedef;
+
+        if not assigned(witness_typedef) then
+          exit;
+
+        { Create typed const builder to emit the witness table data }
+        tcb := ctai_typedconstbuilder.create([tcalo_new_section, tcalo_make_dead_strippable]);
+        try
+          { Start building the witness table record }
+          tcb.maybe_begin_aggregate(witness_typedef);
+
+          { Get pointer and sizeint types }
+          ptrdef := voidpointertype;
+          sizeintdef := sizesinttype;
+
+          { Emit Size field (SizeInt) }
+          tcb.emit_ord_const(element_size, sizeintdef);
+
+          { Emit Alignment field (SizeInt) }
+          tcb.emit_ord_const(element_alignment, sizeintdef);
+
+          { Emit TypeInfo field (Pointer) }
+          if assigned(element_typeinfo) then
+            tcb.emit_tai(tai_const.create_sym_offset(nil, 0), ptrdef)
+          else
+            tcb.emit_ord_const(0, ptrdef);
+
+          { Emit Init field (procedure pointer) }
+          if assigned(init_proc) then
+            tcb.emit_tai(tai_const.create_sym_offset(nil, 0), ptrdef)
+          else
+            tcb.emit_ord_const(0, ptrdef);
+
+          { Emit Copy field (procedure pointer) }
+          if assigned(copy_proc) then
+            tcb.emit_tai(tai_const.create_sym_offset(nil, 0), ptrdef)
+          else
+            tcb.emit_ord_const(0, ptrdef);
+
+          { Emit Final field (procedure pointer) }
+          if assigned(final_proc) then
+            tcb.emit_tai(tai_const.create_sym_offset(nil, 0), ptrdef)
+          else
+            tcb.emit_ord_const(0, ptrdef);
+
+          { Emit Compare field (procedure pointer) }
+          if assigned(compare_proc) then
+            tcb.emit_tai(tai_const.create_sym_offset(nil, 0), ptrdef)
+          else
+            tcb.emit_ord_const(0, ptrdef);
+
+          tcb.maybe_end_aggregate(witness_typedef);
+
+          { Create an assembler symbol from the static variable symbol }
+          asmsym := current_asmdata.DefineAsmSymbol(sym.mangledname, AB_GLOBAL, AT_DATA, witness_typedef);
+          asmlist := tcb.get_final_asmlist(asmsym, sym, witness_typedef,
+            sec_rodata, sym.mangledname, witness_typedef.alignment);
+
+          { Add to current_asmdata.asmlists[al_typedconsts] }
+          current_asmdata.asmlists[al_typedconsts].concatlist(asmlist);
+        finally
+          tcb.free;
+        end;
+        {$ENDIF}
+      end;
+
+
+    { do_wlg_specialization_result - Wrapper that returns tdef for use in generate_specialization_phase2 }
+    function do_wlg_specialization_result(context:tspecializationcontext;genericdef:tstoreddef;parse_class_parent:boolean;const _prettyname:ansistring):tdef;
+      begin
+        { Call the existing do_wlg_specialization procedure }
+        { It creates the specialization via the legacy pipeline, then marks methods as shared generic }
+        do_wlg_specialization(context,genericdef,parse_class_parent);
+        
+        { Return the specialization from the context's forwarddef if set, otherwise nil }
+        if assigned(context) and assigned(context.forwarddef) then
+          result:=context.forwarddef
+        else
+          result:=nil;
       end;
 
 

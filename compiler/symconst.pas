@@ -254,6 +254,12 @@ type
     df_has_generic_fields,
     {  never use the typename for this type, always expand full definition }
     df_llvm_no_typename,
+    { type uses Witness-Based Lightweight Generics (WLG) shared body }
+    df_has_witness,
+    { type is a WLG shared generic body (not monomorphized) }
+    df_shared_generic,
+    { force monomorphization for this generic (opt-out of WLG) }
+    df_monomorph,
     { record def that backs an anonymous tuple type }
     df_tuple,
     { keep type-name string in RTTI/VMT even when m_strip_rtti is active;
@@ -280,6 +286,19 @@ type
     gcf_record             { specialization type needs to be a record type }
   );
   tgenericconstraintflags=set of tgenericconstraintflag;
+
+  { Shape-Classes for Witness-Based Lightweight Generics (WLG) }
+  { Types are grouped by their ABI/layout characteristics }
+  tshapeclass = (
+    Shape_Unknown,         { Not yet classified }
+    Shape_Ref,             { Pointer-sized / Non-Managed: classes, interfaces, raw pointers }
+    Shape_POD_1,           { Plain Old Data, 1 byte: Byte, Boolean }
+    Shape_POD_2,           { Plain Old Data, 2 bytes: Word, SmallInt }
+    Shape_POD_4,           { Plain Old Data, 4 bytes: Integer, Single, LongWord, Float }
+    Shape_POD_8,           { Plain Old Data, 8 bytes: Int64, Double, QWord }
+    Shape_Managed,         { Managed Value Types: AnsiString, UnicodeString, dynamic arrays }
+    Shape_Complex          { Custom/Opaque Records with operator overloads }
+  );
 
   { tsymlist entry types }
   tsltype = (sl_none,

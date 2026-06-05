@@ -470,3 +470,6 @@
   {$define SUPPORT_GET_FRAME}
 {$endif}
 
+{ Witness-Based Lightweight Generics: always on for unleashed compiler }
+{$define FPC_HAS_WITNESS_GENERICS}
+

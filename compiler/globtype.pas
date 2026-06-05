@@ -571,7 +571,8 @@ interface
          m_implicit_generics,   { Delphi-style generic syntax: 'generic'/'specialize' keywords optional, <T> allowed }
          m_for_step,            { allow `step N` clause in for-loops: for i := 1 to 10 step 2 do ... }
          m_flexible_arrays,     { allow `array[] of T` as last field of a record (C99-style FAM) }
-         m_composable_records   { record composition: union, anonymous embed, expose, offsetof }
+         m_composable_records,  { record composition: union, anonymous embed, expose, offsetof }
+         m_lightweight_generics { enable Witness-Based Lightweight Generics (WLG) }
        );
        tmodeswitches = set of tmodeswitch;
 
@@ -792,7 +793,8 @@ interface
          'IMPLICITGENERICS',
          'FORSTEP',
          'FLEXIBLEARRAYS',
-         'COMPOSABLERECORDS'
+         'COMPOSABLERECORDS',
+         'LIGHTWEIGHTGENERICS'
          );
 
 
@@ -862,9 +864,13 @@ interface
          pi_uses_ymm,
          { set if no frame pointer is needed, the rules when this applies is target specific }
          pi_no_framepointer_needed,
-         { procedure has been normalized so no expressions contain block nodes }
-         pi_normalized
-       );
+          { procedure has been normalized so no expressions contain block nodes }
+          pi_normalized
+          {$IFDEF FPC_HAS_WITNESS_GENERICS},
+          { WLG: procedure is a shared generic body requiring dynamic stack allocation for type T locals }
+          pi_has_wlg_dynamic_stack
+          {$ENDIF}
+        );
        tprocinfoflags=set of tprocinfoflag;
 
        ttlsmodel = (tlsm_none,

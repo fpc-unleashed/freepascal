@@ -29,7 +29,8 @@ uses
   cclasses,
   tokens,
   globtype,
-  symtype,symbase;
+  symtype,symbase,
+  symconst;
 
 const
   inline_specialization_block_types = [bt_type,bt_var_type,bt_const_type,bt_body,bt_except];
@@ -55,6 +56,11 @@ type
     sym : tsym;
     symtable : tsymtable;
     forwarddef : tdef;
+    { WLG extensions - populated when lightweight generics are enabled }
+    shapeclass : tshapeclass;           // Resolved shape-class for the specialization
+    identity_hash : ansistring;         // Compile-time identity hash (e.g., "WLG_W_POD_4_STDCMP")
+    is_wlg_specialization : boolean;    // True if using WLG pipeline vs legacy monomorphization
+    wlg_veneer_source : tdef;           // Source specialization to copy VMT code addresses from (for veneer VMTs)
     constructor create;
     destructor destroy;override;
     function getcopy:tspecializationcontext;
@@ -101,6 +107,11 @@ begin
   result.sym:=sym;
   result.symtable:=symtable;
   result.forwarddef:=forwarddef;
+  { Copy WLG extension fields }
+  result.shapeclass:=shapeclass;
+  result.identity_hash:=identity_hash;
+  result.is_wlg_specialization:=is_wlg_specialization;
+  result.wlg_veneer_source:=wlg_veneer_source;
 end;
 
 end.

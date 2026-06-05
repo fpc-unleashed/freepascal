@@ -126,18 +126,23 @@ interface
          procedure writereloc_internal(aTarget:TObjSection;offset:aword;len:byte;reltype:TObjRelocationType);override;
        end;
 
-       TCoffObjData = class(TObjData)
-       private
-         win32      : boolean;
+        TCoffObjData = class(TObjData)
+        private
+          win32      : boolean;
 {$ifdef arm}
-         eVCobj     : boolean;
+          eVCobj     : boolean;
 {$endif arm}
-       public
-         constructor createcoff(const n:string;awin32:boolean;acObjSection:TObjSectionClass);
-         procedure CreateDebugSections;override;
-         function  sectionname(atype:TAsmSectiontype;const aname:string;aorder:TAsmSectionOrder):string;override;
-         procedure writereloc(data:aint;len:aword;p:TObjSymbol;reloctype:TObjRelocationType);override;
-       end;
+        public
+          constructor createcoff(const n:string;awin32:boolean;acObjSection:TObjSectionClass);
+          procedure CreateDebugSections;override;
+          function  sectionname(atype:TAsmSectiontype;const aname:string;aorder:TAsmSectionOrder):string;override;
+          procedure writereloc(data:aint;len:aword;p:TObjSymbol;reloctype:TObjRelocationType);override;
+        {$IFDEF FPC_HAS_WITNESS_GENERICS}
+          { WLG: Create COFF COMDAT section for witness tables or shared generic code }
+          function create_wlg_coff_comdat_section(const AName: string; AAlign: longint;
+            AOptions: TObjSectionOptions; const AIdentityHash: string; AIsText: boolean): TCoffObjSection;
+        {$ENDIF}
+        end;
 
        TDJCoffObjData = class(TCoffObjData)
          constructor create(const n:string);override;
@@ -1764,6 +1769,67 @@ const pemagic : array[0..3] of byte = (
         else
           CurrObjSec.write(data,len);
       end;
+
+
+    {$IFDEF FPC_HAS_WITNESS_GENERICS}
+    { create_wlg_coff_comdat_section - Create a COFF COMDAT section for WLG witness tables or shared generic code }
+    function TCoffObjData.create_wlg_coff_comdat_section(const AName: string; AAlign: longint;
+      AOptions: TObjSectionOptions; const AIdentityHash: string; AIsText: boolean): TCoffObjSection;
+    var
+      grp: TObjSectionGroup;
+      sig_sym: TObjSymbol;
+      secflags: longword;
+    begin
+      { Check if section already exists (for deduplication) }
+      result := TCoffObjSection(ObjSectionList.Find(AName));
+      if assigned(result) then
+        exit;
+
+      { Determine section flags based on whether it's text or data }
+      if win32 then
+        begin
+          if AIsText then
+            secflags := PE_SCN_CNT_CODE or PE_SCN_MEM_EXECUTE or PE_SCN_MEM_READ
+          else
+            begin
+              secflags := PE_SCN_CNT_INITIALIZED_DATA or PE_SCN_MEM_READ;
+              if oso_write in AOptions then
+                secflags := secflags or PE_SCN_MEM_WRITE;
+            end;
+          { Add COMDAT flag }
+          secflags := secflags or PE_SCN_LNK_COMDAT;
+          { Add alignment }
+          case AAlign of
+             1 : secflags := secflags or PE_SCN_ALIGN_1BYTES;
+             2 : secflags := secflags or PE_SCN_ALIGN_2BYTES;
+             4 : secflags := secflags or PE_SCN_ALIGN_4BYTES;
+             8 : secflags := secflags or PE_SCN_ALIGN_8BYTES;
+            16 : secflags := secflags or PE_SCN_ALIGN_16BYTES;
+            else secflags := secflags or PE_SCN_ALIGN_16BYTES;
+          end;
+        end
+      else
+        begin
+          { DJGPP/GO32v2 - use standard COFF section types }
+          if AIsText then
+            secflags := COFF_STYP_TEXT
+          else
+            secflags := COFF_STYP_DATA;
+          { Note: DJGPP doesn't support COMDAT in the same way as PE/COFF }
+          { The section will still be created but without COMDAT semantics }
+        end;
+
+      { Create the section with COMDAT flag }
+      { Note: Full PE/COFF COMDAT requires section group creation which needs
+        access to private base class fields. For the bootstrap build, we set
+        the COMDAT flag and selection on the section. }
+      result := TCoffObjSection.create(ObjSectionList, AName, AAlign, AOptions + [oso_comdat]);
+      result.ObjData := self;
+
+      { Set COMDAT selection to 'any' - linker picks any matching definition }
+      result.ComdatSelection := oscs_any;
+    end;
+    {$ENDIF}
 
 
 {****************************************************************************

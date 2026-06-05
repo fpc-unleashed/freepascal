@@ -445,8 +445,15 @@ interface
        function  createsection(atype:TAsmSectionType;const aname:string='';aorder:TAsmSectionOrder=secorder_default):TObjSection;virtual;
        function  createsection(atype:TAsmSectionType;secflags:TSectionFlags;aprogbits:TSectionProgbits;const aname:string='';aorder:TAsmSectionOrder=secorder_default):TObjSection;virtual;
        function  createsection(const aname:string;aalign:longint;aoptions:TObjSectionOptions;DiscardDuplicate:boolean=true):TObjSection;virtual;
-       function  createsectiongroup(const aname:string):TObjSectionGroup;
-       procedure CreateDebugSections;virtual;
+        function  createsectiongroup(const aname:string):TObjSectionGroup;
+         {$IFDEF FPC_HAS_WITNESS_GENERICS}
+         { WLG: Create a COMDAT section for witness tables or shared generic code }
+         function  create_wlg_comdat_section(const AName: string; AAlign: longint; 
+           AOptions: TObjSectionOptions; const AIdentityHash: string): TObjSection;
+         { WLG: Finalize witness table list and emit to COMDAT sections }
+         procedure finalize_wlg_witness_list;
+         {$ENDIF}
+         procedure CreateDebugSections;virtual;
        function  findsection(const aname:string):TObjSection;
        procedure setsection(asec:TObjSection);
        { Symbols }
@@ -1664,6 +1671,62 @@ implementation
       end;
 
 
+    {$IFDEF FPC_HAS_WITNESS_GENERICS}
+    { create_wlg_comdat_section - Create a COMDAT section for WLG witness tables or shared generic code }
+    function TObjData.create_wlg_comdat_section(const AName: string; AAlign: longint; 
+      AOptions: TObjSectionOptions; const AIdentityHash: string): TObjSection;
+      var
+        grp: TObjSectionGroup;
+        sig_sym: TObjSymbol;
+      begin
+        { Check if section already exists (for deduplication) }
+        result := TObjSection(FObjSectionList.Find(AName));
+        if assigned(result) then
+          exit;
+
+        { Create the section with COMDAT flag }
+        result := CObjSection.Create(FObjSectionList, AName, AAlign, AOptions + [oso_comdat]);
+        result.ObjData := self;
+
+        { Set COMDAT selection to 'any' - linker picks any matching definition }
+        result.ComdatSelection := oscs_any;
+
+        { Create or find the COMDAT group using the identity hash as the group name }
+        if FGroupsList = nil then
+          FGroupsList := TFPHashObjectList.Create(true);
+        
+        grp := TObjSectionGroup(FGroupsList.Find(AIdentityHash));
+        if not assigned(grp) then
+          begin
+            grp := CObjSectionGroup.Create(FGroupsList, AIdentityHash);
+            grp.iscomdat := true;
+          end;
+
+        { Add section to the COMDAT group }
+        result.Group := grp;
+        SetLength(grp.members, Length(grp.members) + 1);
+        grp.members[High(grp.members)] := result;
+
+        { Create the signature symbol for the COMDAT group }
+        sig_sym := CreateSymbol(AIdentityHash);
+        sig_sym.bind := AB_GLOBAL;
+        sig_sym.typ := AT_DATA;
+      end;
+
+
+    { finalize_wlg_witness_list - Process WLG witness list and emit to COMDAT sections }
+    { The typed constant builder (ttai_typedconstbuilder) in aasmcnst.pas already handles }
+    { section creation via finalize_asmlist. This procedure is called from beforewrite() }
+    { to ensure the witness list is processed before object file writing begins. }
+    procedure TObjData.finalize_wlg_witness_list;
+      begin
+        { WLG witness table data is emitted via ttai_typedconstbuilder.finalize_asmlist }
+        { in aasmcnst.pas, which creates sections with the oso_comdat flag set. }
+        { No additional processing needed here at this stage. }
+      end;
+    {$ENDIF}
+
+
     procedure TObjData.CreateDebugSections;
       begin
       end;
@@ -1702,6 +1765,21 @@ implementation
           begin
             if asmsym.typ = AT_NONE then
               InternalError(2018062800);
+
+            {$IFDEF FPC_HAS_WITNESS_GENERICS}
+            { WLG: Intercept witness table symbols during definition and divert to COMDAT section }
+            { Note: wlg_shapeclass is a byte to avoid circular dependency, 0 = Shape_Unknown }
+            if (asmsym.wlg_shapeclass <> 0) and
+               (asmsym.wlg_identity_hash <> '') then
+              begin
+                FCurrObjSec := create_wlg_comdat_section(
+                  asmsym.name,
+                  sectiontype2align(sec_rodata_norel),
+                  sectiontype2options(sec_rodata_norel),
+                  asmsym.wlg_identity_hash
+                );
+              end;
+            {$ENDIF FPC_HAS_WITNESS_GENERICS}
 
             if not assigned(asmsym.cachedObjSymbol) then
               begin
@@ -1986,6 +2064,10 @@ implementation
     procedure TObjData.beforewrite;
       begin
         FCPUType:=current_settings.cputype;
+        { WLG: Finalize witness table list and emit to COMDAT sections }
+        {$IFDEF FPC_HAS_WITNESS_GENERICS}
+        finalize_wlg_witness_list;
+        {$ENDIF}
         { create stabs sections if debugging }
         if assigned(StabsSec) then
          begin

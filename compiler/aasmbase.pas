@@ -190,35 +190,41 @@ interface
 
        TAsmSectionOrder = (secorder_begin,secorder_default,secorder_end);
 
-       TSectionFlag = (SF_A,SF_W,SF_X);
-       TSectionFlags = set of TSectionFlag;
+      TSectionFlag = (SF_A,SF_W,SF_X,SF_G);
+      TSectionFlags = set of TSectionFlag;
        TSectionProgbits = (SPB_None,SPB_PROGBITS,SPB_NOBITS,SPB_NOTE,SPB_ARM_ATTRIBUTES);
 
        TAsmSymbol = class(TFPHashObject)
-       private
-         { this need to be incremented with every symbol loading into the
-           TAsmList with loadsym/loadref/const_symbol (PFV) }
-         refs       : longint;
-       public
-{$ifdef wasm}
-         nestingdepth : longint;
-{$endif wasm}
-         { on avr the compiler needs to replace cond. jumps with too large offsets
-           so we have to store an offset somewhere to calculate jump distances }
-{$ifdef AVR}
-         offset     : longint;
-{$endif AVR}
-         bind       : TAsmsymbind;
-         typ        : TAsmsymtype;
-{$ifdef llvm}
-         { have we generated a declaration for this symbol? }
-         declared   : boolean;
-{$endif llvm}
-         { Alternate symbol which can be used for 'renaming' needed for
-           asm inlining. Also used for external and common solving during linking }
-         altsymbol  : TAsmSymbol;
-         { Cached objsymbol }
-         cachedobjsymbol : TObject;
+        private
+          { this need to be incremented with every symbol loading into the
+            TAsmList with loadsym/loadref/const_symbol (PFV) }
+          refs       : longint;
+        public
+ {$ifdef wasm}
+          nestingdepth : longint;
+ {$endif wasm}
+          { on avr the compiler needs to replace cond. jumps with too large offsets
+            so we have to store an offset somewhere to calculate jump distances }
+ {$ifdef AVR}
+          offset     : longint;
+ {$endif AVR}
+ {$ifdef FPC_HAS_WITNESS_GENERICS}
+          { WLG: Metadata for COMDAT deduplication - propagates from parse phase to object writer }
+          { Note: Using byte instead of tshapeclass to avoid circular dependency with symconst.pas }
+          wlg_shapeclass : byte;
+          wlg_identity_hash : ansistring;
+ {$endif FPC_HAS_WITNESS_GENERICS}
+          bind       : TAsmsymbind;
+          typ        : TAsmsymtype;
+ {$ifdef llvm}
+          { have we generated a declaration for this symbol? }
+          declared   : boolean;
+ {$endif llvm}
+          { Alternate symbol which can be used for 'renaming' needed for
+            asm inlining. Also used for external and common solving during linking }
+          altsymbol  : TAsmSymbol;
+          { Cached objsymbol }
+          cachedobjsymbol : TObject;
          constructor Create(AList:TFPHashObjectList;const s:TSymStr;_bind:TAsmsymbind;_typ:Tasmsymtype);
          function getaltcopy(AList:TFPHashObjectList;altnr: longint): TAsmSymbol; virtual;
          function  is_used:boolean;

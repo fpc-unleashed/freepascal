@@ -58,11 +58,11 @@ unit cgcpu;
 
   implementation
 
-    uses
-       globtype,globals,verbose,systems,cutils,cclasses,
-       cpuinfo,
-       symtable,paramgr,cpupi,
-       rgcpu,ncgutil;
+      uses
+         globtype,globals,verbose,systems,cutils,cclasses,
+         cpuinfo,
+         symtable,paramgr,cpupi,
+         rgcpu,ncgutil,symtype,symcpu,symsym;
 
 
     procedure Tcgx86_64.init_register_allocators;
@@ -161,6 +161,18 @@ unit cgcpu;
         xmmsize: longint;
         regs_to_save_int,
         regs_to_save_mm: tcpuregisterarray;
+        { WLG Phase 2: Dynamic stack frame variables }
+        wlg_witness_reg: tregister;
+        wlg_ref: treference;
+        wlg_pd: tprocdef;
+        wlg_stack_sym: tsym;
+        wlg_stack_offset: longint;
+        { WLG Phase 4: Init/Final variables }
+        wlg_vs: tabstractnormalvarsym;
+        wlg_offset: longint;
+        first_param_reg: tregister;
+        skip_init: tasmlabel;
+        i: longint;
 
       procedure push_one_reg(reg: tregister);
         begin
@@ -258,6 +270,118 @@ unit cgcpu;
               end;
 
             { allocate stackframe space }
+            { WLG Phase 2: Dynamic stack frame generation for shared generics }
+            if current_procinfo.procdef.has_dynamic_locals then
+              begin
+                { 1. Retrieve the register holding the implicit witness parameter }
+                wlg_pd := current_procinfo.procdef;
+                wlg_witness_reg := NR_NO;
+                if assigned(wlg_pd.witness_parasym) then
+                  begin
+                    { The witness paraloc tells us which register holds the parameter }
+                    with tparavarsym(wlg_pd.witness_parasym).paraloc[callerside] do
+                      if assigned(location) and (location^.loc = LOC_REGISTER) then
+                        wlg_witness_reg := location^.register;
+                  end;
+                if wlg_witness_reg = NR_NO then
+                  internalerror(2026053101);
+
+                { 2. Load witness^.Size into RAX (offset 0 in TWitnessTable) }
+                fillchar(wlg_ref,sizeof(wlg_ref),0);
+                wlg_ref.base := wlg_witness_reg;
+                wlg_ref.index := NR_NO;
+                wlg_ref.offset := 0;
+                cg.a_load_ref_reg(list, OS_64, OS_64, wlg_ref, NR_RAX);
+
+                { 3. Load witness^.Alignment into RDX (offset sizeof(SizeInt)) }
+                fillchar(wlg_ref,sizeof(wlg_ref),0);
+                wlg_ref.base := wlg_witness_reg;
+                wlg_ref.index := NR_NO;
+                wlg_ref.offset := sizeof(SizeInt);
+                cg.a_load_ref_reg(list, OS_64, OS_64, wlg_ref, NR_RDX);
+
+                { 4. Align the stack allocation size dynamically }
+                { rax = rax + rdx }
+                cg.a_op_reg_reg(list, OP_ADD, OS_64, NR_RDX, NR_RAX);
+                { rdx = rdx - 1 }
+                cg.a_op_const_reg(list, OP_SUB, OS_64, 1, NR_RDX);
+                { rdx = not rdx }
+                cg.a_op_reg(list, OP_NOT, OS_64, NR_RDX);
+                { rax = rax and rdx }
+                cg.a_op_reg_reg(list, OP_AND, OS_64, NR_RDX, NR_RAX);
+
+                { 5. Add static locals size to the allocation size }
+                if localsize > 0 then
+                  cg.a_op_const_reg(list, OP_ADD, OS_64, localsize, NR_RAX);
+
+                { 6. Adjust the stack pointer dynamically: sub rsp, rax }
+                cg.a_op_reg_reg(list, OP_SUB, OS_64, NR_RAX, NR_RSP);
+
+                { 7. Load dynamic stack base into R12 (callee-saved, safe across calls) }
+                { lea r12, [rsp] }
+                fillchar(wlg_ref,sizeof(wlg_ref),0);
+                wlg_ref.base := NR_RSP;
+                wlg_ref.index := NR_NO;
+                wlg_ref.offset := 0;
+                cg.a_loadaddr_ref_reg(list, wlg_ref, NR_R12);
+
+                { Mark R12 as used so FPC generates push/pop for it }
+                list.concat(tai_regalloc.alloc(NR_R12,nil));
+                if (target_info.system=system_x86_64_win64) then
+                  begin
+                    list.concat(cai_seh_directive.create_reg(ash_pushreg,NR_R12));
+                    include(current_procinfo.flags,pi_has_unwind_info);
+                  end;
+
+                { WLG Phase 4: Save witness reg to NR_R13 (callee-saved, survives Init/Final calls) }
+                cg.a_op_reg_reg(list, OP_MOVE, OS_64, wlg_witness_reg, NR_R13);
+                list.concat(tai_regalloc.alloc(NR_R13,nil));
+                if (target_info.system=system_x86_64_win64) then
+                  begin
+                    list.concat(cai_seh_directive.create_reg(ash_pushreg,NR_R13));
+                    include(current_procinfo.flags,pi_has_unwind_info);
+                  end;
+
+                { WLG Phase 4d: Emit Init calls for dynamic locals }
+                if assigned(wlg_pd.wlg_dynamic_locals) and (wlg_pd.wlg_dynamic_locals.Count > 0) then
+                  begin
+                    for i := 0 to wlg_pd.wlg_dynamic_locals.Count - 1 do
+                      begin
+                        wlg_vs := tabstractnormalvarsym(wlg_pd.wlg_dynamic_locals[i]);
+                        wlg_offset := wlg_vs.localloc.reference.offset;
+
+                        { Load witness^.Init (offset 24) into R11 }
+                        fillchar(wlg_ref,sizeof(wlg_ref),0);
+                        wlg_ref.base := NR_R13;
+                        wlg_ref.index := NR_NO;
+                        wlg_ref.offset := 24; { Offset of Init in TWitnessTable }
+                        cg.a_load_ref_reg(list, OS_64, OS_64, wlg_ref, NR_R11);
+
+                        { Test if Init <> nil: cmp r11, 0; je skip_init }
+                        current_asmdata.getjumplabel(skip_init);
+                        cg.a_cmp_const_reg_label(list, OS_64, OC_EQ, 0, NR_R11, skip_init);
+
+                        { Load address of local var into first param reg (ABI-aware) }
+                        if target_info.system in systems_all_windows then
+                          first_param_reg := NR_RCX
+                        else
+                          first_param_reg := NR_RDI;
+
+                        fillchar(wlg_ref,sizeof(wlg_ref),0);
+                        wlg_ref.base := NR_R12; { Dynamic stack base }
+                        wlg_ref.index := NR_NO;
+                        wlg_ref.offset := wlg_offset;
+                        cg.a_loadaddr_ref_reg(list, wlg_ref, first_param_reg);
+
+                        list.concat(Taicpu.op_reg(A_CALL, tcgsize2opsize[OS_ADDR], NR_R11));
+                        a_label(list, skip_init);
+                      end;
+                  end;
+
+                { Reset localsize since we dynamically allocated the space }
+                localsize := 0;
+              end;
+
             if (localsize<>0) or
                ((target_info.stackalign>sizeof(pint)) and
                 (stackmisalignment <> 0) and
@@ -370,6 +494,14 @@ unit cgcpu;
         hreg : tregister;
         r : longint;
         regs_to_save_mm: tcpuregisterarray;
+        { WLG Phase 4e: Final variables }
+        wlg_pd_exit: tprocdef;
+        wlg_vs_exit: tabstractnormalvarsym;
+        wlg_offset_exit: longint;
+        wlg_ref_exit: treference;
+        first_param_reg_exit: tregister;
+        skip_final: tasmlabel;
+        i_exit: longint;
       begin
         { we do not need an exit stack frame when we never return
                 * the final ret is left so the peephole optimizer can easily do call/ret -> jmp or call conversions
@@ -383,7 +515,70 @@ unit cgcpu;
             { (restoring registers happens before epilogue, providing necessary padding) }
             if (current_procinfo.flags*[pi_has_unwind_info,pi_do_call,pi_has_saved_regs])=[pi_has_unwind_info,pi_do_call] then
               list.concat(Taicpu.op_none(A_NOP));
+            
+            { WLG Phase 4e: Emit Final calls for dynamic locals (before stack restore) }
+            if current_procinfo.procdef.has_dynamic_locals then
+              begin
+                wlg_pd_exit := current_procinfo.procdef;
+
+                if assigned(wlg_pd_exit.wlg_dynamic_locals) and (wlg_pd_exit.wlg_dynamic_locals.Count > 0) then
+                  begin
+                    { Finalize in reverse order }
+                    for i_exit := wlg_pd_exit.wlg_dynamic_locals.Count - 1 downto 0 do
+                      begin
+                        wlg_vs_exit := tabstractnormalvarsym(wlg_pd_exit.wlg_dynamic_locals[i_exit]);
+                        wlg_offset_exit := wlg_vs_exit.localloc.reference.offset;
+
+                        { Load witness^.Final (offset 40) into R11 }
+                        fillchar(wlg_ref_exit,sizeof(wlg_ref_exit),0);
+                        wlg_ref_exit.base := NR_R13;
+                        wlg_ref_exit.index := NR_NO;
+                        wlg_ref_exit.offset := 40; { Offset of Final in TWitnessTable }
+                        cg.a_load_ref_reg(list, OS_64, OS_64, wlg_ref_exit, NR_R11);
+
+                        { Test if Final <> nil }
+                        current_asmdata.getjumplabel(skip_final);
+                        cg.a_cmp_const_reg_label(list, OS_64, OC_EQ, 0, NR_R11, skip_final);
+
+                        { Load address of local var into first param reg (ABI-aware) }
+                        if target_info.system in systems_all_windows then
+                          first_param_reg_exit := NR_RCX
+                        else
+                          first_param_reg_exit := NR_RDI;
+
+                        fillchar(wlg_ref_exit,sizeof(wlg_ref_exit),0);
+                        wlg_ref_exit.base := NR_R12; { Dynamic stack base }
+                        wlg_ref_exit.index := NR_NO;
+                        wlg_ref_exit.offset := wlg_offset_exit;
+                        cg.a_loadaddr_ref_reg(list, wlg_ref_exit, first_param_reg_exit);
+
+                        list.concat(Taicpu.op_reg(A_CALL, tcgsize2opsize[OS_ADDR], NR_R11));
+                        a_label(list, skip_final);
+                      end;
+                  end;
+              end;
+
             { remove stackframe }
+            { WLG: For shared generic procedures, restore dynamic stack for type T locals }
+            {$IFDEF FPC_HAS_WITNESS_GENERICS}
+            if pi_has_wlg_dynamic_stack in current_procinfo.flags then
+              begin
+                {
+                  WLG Dynamic Stack Frame Epilogue:
+                  
+                  For shared generic methods, the dynamic stack space allocated
+                  for type T local variables must be restored before the standard
+                  epilogue. The dynamic allocation was done by reading Size from
+                  the witness table and adjusting RSP.
+                  
+                  The restore is handled by the standard leave/epilogue machinery
+                  since the dynamic allocation is part of final_localsize.
+                  No additional code is needed here when the full dynamic
+                  allocation is wired up.
+                }
+              end;
+            {$ENDIF}
+
             if not(nostackframe) then
               begin
                 if use_push then

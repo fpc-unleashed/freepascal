@@ -103,7 +103,7 @@
 {$endif }
 
 {****************************************************************************
-                         Global Types and Constants
+                          Global Types and Constants
 ****************************************************************************}
 
 { some values which are used in RTL for TSystemCodePage type }
@@ -501,6 +501,53 @@ Type
   TExitCode = Word;
 {$endif CPU16}
 
+{ Witness-Based Lightweight Generics (WLG) support }
+{ Must be defined after SizeInt for all CPU architectures }
+{$ifdef FPC_HAS_WITNESS_GENERICS}
+  { Function pointers for type-specific lifecycle actions }
+  TWitnessInit     = procedure(P: Pointer); register;
+  TWitnessCopy     = procedure(Dest, Src: Pointer); register;
+  TWitnessFinal    = procedure(P: Pointer); register;
+  TWitnessCompare  = function(A, B: Pointer): Longint; register;
+
+  PWitnessTable = ^TWitnessTable;
+  TWitnessTable = record
+    Size: SizeInt;
+    Alignment: SizeInt;
+    TypeInfo: Pointer; { Pointer to standard FPC RTTI for reflection compatibility }
+    Init: TWitnessInit;
+    Copy: TWitnessCopy;
+    Final: TWitnessFinal;
+    Compare: TWitnessCompare;
+  end;
+
+  { WLG RTL helper functions - default implementations for witness table entries }
+  { These are used when a type doesn't require custom lifecycle operations }
+
+  { fpc_witness_copy - Generic memory copy for POD types }
+  procedure fpc_witness_copy(Dest, Src: Pointer; Size: SizeInt); {$ifdef SYSTEMINLINE}inline;{$endif}
+
+  { fpc_witness_compare - Generic memory comparison for POD types }
+  function fpc_witness_compare(A, B: Pointer; Size: SizeInt): Longint; {$ifdef SYSTEMINLINE}inline;{$endif}
+
+  { fpc_witness_init_noop - No-op initialization for POD types (no managed fields) }
+  procedure fpc_witness_init_noop(P: Pointer); {$ifdef SYSTEMINLINE}inline;{$endif}
+
+  { fpc_witness_final_noop - No-op finalization for POD types (no managed fields) }
+  procedure fpc_witness_final_noop(P: Pointer); {$ifdef SYSTEMINLINE}inline;{$endif}
+
+  { fpc_witness_copy_managed - Managed type copy via RTTI (calls fpc_copy) }
+  procedure fpc_witness_copy_managed(Dest, Src: Pointer; TypeInfo: Pointer);
+
+  { fpc_witness_init_managed - Managed type initialization via RTTI (calls fpc_initialize) }
+  procedure fpc_witness_init_managed(P: Pointer; TypeInfo: Pointer);
+
+  { fpc_witness_final_managed - Managed type finalization via RTTI (calls fpc_finalize) }
+  procedure fpc_witness_final_managed(P: Pointer; TypeInfo: Pointer);
+
+{$ENDIF FPC_HAS_WITNESS_GENERICS}
+
+type
 {$if defined(CPUINT8)}
   ALUSInt = ShortInt;
   ALUUInt = Byte;

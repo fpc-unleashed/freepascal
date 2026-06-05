@@ -348,11 +348,17 @@ interface
             parameters as it is done by iso pascal with the program symbols,
             isoindex contains the parameter number }
           isoindex : dword;
-          { if this static variable was created based on a class field variable then this is set
-            to the symbol of the corresponding class field }
-          fieldvarsym : tfieldvarsym;
-          fieldvarsymderef : tderef;
-          constructor create(const n : TSymStr;vsp:tvarspez;def:tdef;vopts:tvaroptions);virtual;
+           { if this static variable was created based on a class field variable then this is set
+             to the symbol of the corresponding class field }
+           fieldvarsym : tfieldvarsym;
+           fieldvarsymderef : tderef;
+           { WLG: Metadata for witness table symbols - declared unconditionally to stabilize ABI }
+           witness_shapeclass : tshapeclass;
+           witness_identity_hash : ansistring;
+           witness_element_size : SizeInt;
+           witness_element_alignment : SizeInt;
+           witness_has_witness_table : boolean;
+           constructor create(const n : TSymStr;vsp:tvarspez;def:tdef;vopts:tvaroptions);virtual;
           constructor create_dll(const n : TSymStr;vsp:tvarspez;def:tdef);virtual;
           constructor create_C(const n: TSymStr; const mangled : TSymStr;vsp:tvarspez;def:tdef);virtual;
           constructor create_from_fieldvar(const n: TSymStr;fieldvar:tfieldvarsym);virtual;

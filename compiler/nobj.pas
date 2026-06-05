@@ -887,10 +887,25 @@ implementation
         end;
 
         { now add the methods }
+        { WLG: If this is a veneer VMT, copy code addresses from source specialization }
         for i:=0 to _class.vmtentries.count-1 do
-          vmtdef.add_field_by_def('',
-            cprocvardef.getreusableprocaddr(pvmtentry(_class.vmtentries[i])^.procdef,pc_address_only)
-          );
+          begin
+            if assigned(_class.wlg_veneer_source) and 
+               (tobject(_class.wlg_veneer_source) is tobjectdef) and
+               (i < tobjectdef(_class.wlg_veneer_source).vmtentries.count) then
+              begin
+                { Copy procdef from source VMT entry for code sharing }
+                vmtdef.add_field_by_def('',
+                  cprocvardef.getreusableprocaddr(pvmtentry(tobjectdef(_class.wlg_veneer_source).vmtentries[i])^.procdef,pc_address_only)
+                );
+              end
+            else
+              begin
+                vmtdef.add_field_by_def('',
+                  cprocvardef.getreusableprocaddr(pvmtentry(_class.vmtentries[i])^.procdef,pc_address_only)
+                );
+              end;
+          end;
         { the VMT ends with a nil pointer }
         vmtdef.add_field_by_def('',voidcodepointertype);
       end;
@@ -906,13 +921,28 @@ implementation
         old_current_structdef:=current_structdef;
         current_structdef:=_class;
 
-        { inherit (copy) VMT from parent object }
-        if assigned(_class.childof) then
-          _class.copyvmtentries(_class.childof);
+        { WLG: veneer source is set in generate_specialization_phase2 before build_vmt is called }
+        { so by the time we reach here, wlg_veneer_source is already populated if applicable }
+
+        { WLG Veneer: If this is a veneer specialization, copy VMT entries from source }
+        { Note: Must happen BEFORE childof copy to avoid "vmtentries.count<>0" error }
+        if assigned(_class.wlg_veneer_source) and
+           (tobject(_class.wlg_veneer_source) is tobjectdef) and
+           (tobjectdef(_class.wlg_veneer_source).vmtentries.count > 0) then
+          begin
+            _class.copyvmtentries(tobjectdef(_class.wlg_veneer_source));
+          end
+        else
+          begin
+            { inherit (copy) VMT from parent object }
+            if assigned(_class.childof) then
+              _class.copyvmtentries(_class.childof);
+          end;
 
         { process all procdefs, we must process the defs to
           keep the same order as that is written in the source
           to be compatible with the indexes in the interface vtable (PFV) }
+        { This MUST run for ALL specializations to assign extnumber correctly }
         for i:=0 to _class.symtable.DefList.Count-1 do
           begin
             def:=tdef(_class.symtable.DefList[i]);

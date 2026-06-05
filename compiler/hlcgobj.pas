@@ -5072,6 +5072,27 @@ implementation
           end;
         end;
       vs.localloc:=vs.initialloc;
+      { WLG Phase 3b/4c: Handle dynamic locals for shared generics }
+      {$ifdef FPC_HAS_WITNESS_GENERICS}
+      if assigned(current_procinfo) and
+         current_procinfo.procdef.has_dynamic_locals and
+         (vs.typ = localvarsym) and
+         (vs.localloc.loc = LOC_REFERENCE) then
+        begin
+          { Redirect base register to NR_R12 (callee-saved dynamic frame pointer) }
+          vs.localloc.reference.base := NR_R12;
+          { Track this local for Init/Final emission }
+          { Only add if it's a managed type (needs init/final) }
+          if vs.vardef.needs_inittable then
+            begin
+              if not assigned(current_procinfo.procdef.wlg_dynamic_locals) then
+                current_procinfo.procdef.wlg_dynamic_locals := tfpobjectlist.create(false);
+              { Avoid duplicates }
+              if current_procinfo.procdef.wlg_dynamic_locals.indexof(vs) < 0 then
+                current_procinfo.procdef.wlg_dynamic_locals.add(vs);
+            end;
+        end;
+      {$endif}
     end;
 
   procedure thlcgobj.paravarsym_set_initialloc_to_paraloc(vs: tparavarsym);
@@ -5771,7 +5792,29 @@ implementation
   procedure thlcgobj.record_generated_code_for_procdef(pd: tprocdef; code, data: TAsmList);
     var
       alt: TAsmListType;
+      source_def: tdef;
     begin
+      { WLG Phase 2: Check if this is a shared generic method with a veneer source }
+      { The veneer source is stored on the class def (tobjectdef), not on the procdef. }
+      { We need to look it up via the procdef's owner symtable. }
+      if (df_shared_generic in pd.defoptions) then
+        begin
+          { Try to find veneer source from the procdef's parent def (class only for now) }
+          source_def := nil;
+          if assigned(pd.owner) and (pd.owner.symtabletype = objectsymtable) then
+            begin
+              source_def := tobjectdef(pd.owner.defowner).wlg_veneer_source;
+            end;
+          
+          if assigned(source_def) and (source_def.typ = procdef) then
+            begin
+              { This is a shared generic method - skip code emission entirely }
+              { The VMT already points to the source method's code directly }
+              { Don't emit anything - the source method provides the code }
+              exit;
+            end;
+        end;
+      
       if not(po_assembler in pd.procoptions) then
         alt:=al_procedures
       else

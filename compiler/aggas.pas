@@ -54,7 +54,7 @@ interface
         function sectionalignment_aix(atype:TAsmSectiontype;secalign: longint):string;
         function sectionflags(secflags:TSectionFlags):string;virtual;
         procedure WriteSection(atype:TAsmSectiontype;const aname:string;aorder:TAsmSectionOrder;secalign:longint;
-          secflags:TSectionFlags=[];secprogbits:TSectionProgbits=SPB_None);virtual;
+          secflags:TSectionFlags=[];secprogbits:TSectionProgbits=SPB_None;comdat_signature:TAsmSymbol=nil);virtual;
         procedure WriteExtraHeader;virtual;
         procedure WriteExtraFooter;virtual;
         procedure WriteInstruction(hp: tai);
@@ -485,6 +485,9 @@ implementation
               result:=result+'w';
             SF_X:
               result:=result+'x';
+            SF_G:
+              { COMDAT group flag - handled separately in WriteSection }
+              ;
           end;
         end;
       end;
@@ -506,7 +509,7 @@ implementation
       end;
 
 
-    procedure TGNUAssembler.WriteSection(atype:TAsmSectiontype;const aname:string;aorder:TAsmSectionOrder;secalign:longint;secflags:TSectionFlags=[];secprogbits:TSectionProgbits=SPB_None);
+    procedure TGNUAssembler.WriteSection(atype:TAsmSectiontype;const aname:string;aorder:TAsmSectionOrder;secalign:longint;secflags:TSectionFlags=[];secprogbits:TSectionProgbits=SPB_None;comdat_signature:TAsmSymbol=nil);
       var
         s : string;
         usesectionprogbits,
