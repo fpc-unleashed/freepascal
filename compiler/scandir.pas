@@ -413,6 +413,24 @@ unit scandir;
       end;
 
 
+    procedure dir_entrypoint;
+      var
+         hs : string;
+      begin
+        if not current_module.in_global then
+          Message(scan_w_switch_is_global)
+        else
+          begin
+            current_scanner.skipspace;
+            hs:=current_scanner.readid;
+            if hs='' then
+              Message(parser_e_proc_directive_expected)
+            else
+              custom_entry_name:=hs;
+          end;
+      end;
+
+
     procedure dir_checklowaddrloads;
       begin
         do_localswitchdefault(cs_check_low_addr_load);
@@ -2221,6 +2239,7 @@ unit scandir;
         AddDirective('DENYPACKAGEUNIT',directive_all,@dir_denypackageunit);
         AddDirective('DESCRIPTION',directive_all, @dir_description);
         AddDirective('ENDREGION',directive_all, @dir_endregion);
+        AddDirective('ENTRYPOINT',directive_all, @dir_entrypoint);
         AddDirective('ERROR',directive_all, @dir_error);
         AddDirective('ERRORC',directive_mac, @dir_error);
         AddDirective('EXCESSPRECISION',directive_all, @dir_excessprecision);

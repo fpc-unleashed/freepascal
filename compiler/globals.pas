@@ -404,6 +404,12 @@ Const
          Read by ncgrtti.rtti_string alongside the modeswitch check. }
        force_striprtti_cli : boolean;
 
+       { `$entrypoint X` directive: raw identifier as written, mangled name
+         resolved after parsing.  RTL startup is bypassed; the user takes
+         responsibility for any init it would normally do }
+       custom_entry_name,
+       custom_entry_mangled : ansistring;
+
        { linking }
        usewindowapi  : boolean;
        description   : string;
