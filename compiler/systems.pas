@@ -351,7 +351,7 @@ interface
        systems_amigalike = [system_m68k_amiga,system_powerpc_morphos,system_powerpc_amiga]+systems_aros;
 
        { all native nt systems }
-       systems_nativent = [system_i386_nativent];
+       systems_nativent = [system_i386_nativent,system_x86_64_nativent];
 
        { Default to i80846 instead of pentium2 for all old i386 systems for which
          some newer instructions (like CMOVcc or PREFECTXXX) lead to troubles,
@@ -381,7 +381,7 @@ interface
                                          system_aarch64_win64]+systems_linux+systems_android+systems_wasm;
 
        { all systems that reference symbols in other binaries using indirect imports }
-       systems_indirect_var_imports = systems_all_windows+[system_i386_nativent];
+       systems_indirect_var_imports = systems_all_windows+[system_i386_nativent,system_x86_64_nativent];
 
        { all systems that support indirect entry information }
        systems_indirect_entry_information = systems_darwin+
@@ -408,7 +408,22 @@ interface
        { all systems that use the PE+ header in the PE/COFF file
          Note: this is here and not in ogcoff, because it's required in other
                units as well }
-       systems_peoptplus = [system_x86_64_win64,system_aarch64_win64];
+       systems_peoptplus = [system_x86_64_win64,system_aarch64_win64,system_x86_64_nativent];
+
+       { x86_64 targets that use the Microsoft x64 ABI (RCX/RDX/R8/R9 + 32-byte
+         shadow space) for the default calling convention; everything else
+         defaults to the SysV x86_64 ABI (RDI/RSI/RDX/RCX/R8/R9, no shadow). }
+       systems_x86_64_ms_abi = [system_x86_64_win64,system_x86_64_nativent];
+
+       { x86_64 targets that emit table-based SEH (.pdata/.xdata + a language
+         handler) for exception handling instead of the generic setjmp/longjmp
+         model. needed to catch hardware faults (AV, division by zero), which
+         the setjmp model cannot intercept. }
+       systems_x86_64_seh = [system_x86_64_win64,system_x86_64_nativent];
+
+       { i386 targets that emit win32-style SEH (the FS:[0] exception
+         registration chain) instead of setjmp/longjmp, for the same reason }
+       systems_i386_seh = [system_i386_win32,system_i386_nativent];
 
        { all systems that use garbage collection for reference-counted types }
        systems_garbage_collected_managed_types = [

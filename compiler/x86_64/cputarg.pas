@@ -51,6 +51,9 @@ implementation
       ,t_win
       ,win64unw
     {$endif}
+    {$ifndef NOTARGETNATIVENT}
+      ,t_nativent
+    {$endif}
     {$ifndef NOTARGETSUNOS}
       ,t_sunos
     {$endif}

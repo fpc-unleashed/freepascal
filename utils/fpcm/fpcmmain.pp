@@ -189,7 +189,7 @@ interface
         { nds    }  ( false, false, false, false, false, false, true,  false, false, false, false, false, false, false, false,   false, false, false,  false, false, false,  false,  false, false, false),
         { embedded }( false, true,  true,  true,  true,  true,  true,  true,  true,  true , false, false, true , false, false,   false, true , true ,  true,  false, true,   true,   true,  true,  false),
         { symbian } ( false, true,  false, false, false, false, true,  false, false, false, false, false, false, false, false,   false, false, false,  false, false, false,  false,  false, false, false),
-        { nativent }( false, true,  false, false, false, false, false, false, false, false, false, false, false, false, false,   false, false, false,  false, false, false,  false,  false, false, false),
+        { nativent }( false, true,  false, false, false, true,  false, false, false, false, false, false, false, false, false,   false, false, false,  false, false, false,  false,  false, false, false),
         { iphonesim }( false, true, false, false, false, true,  false, false, false, false, false, false, false, false, false,   false, false, true ,  false, false, false,  false,  false, false, false),
         { wii }     ( false, false, false, true,  false, false, false, false, false, false, false, false, false, false, false,   false, false, false,  false, false, false,  false,  false, false, false),
         { aix }     ( false, false, false, true,  false, false, false, true,  false, false, false, false, false, false, false,   false, false, false,  false, false, false,  false,  false, false, false),
