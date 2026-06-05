@@ -1117,7 +1117,9 @@ implementation
               end
             else
               begin
-                if apptype=app_gui then
+                if custom_entry_mangled<>'' then
+                  Concat('ENTRYNAME '+custom_entry_mangled)
+                else if apptype=app_gui then
                   Concat('ENTRYNAME _WinMainCRTStartup')
                 else
                   Concat('ENTRYNAME _mainCRTStartup');
@@ -1262,7 +1264,10 @@ implementation
 {$else not 86_64}
             Add('OUTPUT_FORMAT(pei-i386)');
 {$endif not x86_64}
-            Add('ENTRY(_mainCRTStartup)');
+            if custom_entry_mangled<>'' then
+              Add('ENTRY('+custom_entry_mangled+')')
+            else
+              Add('ENTRY(_mainCRTStartup)');
             Add('SECTIONS');
             Add('{');
             Add('  . = SIZEOF_HEADERS;');
@@ -1448,7 +1453,9 @@ implementation
             if apptype=app_gui then
               AppTypeStr:='--subsystem windows';
           end;
-        if apptype=app_gui then
+        if custom_entry_mangled<>'' then
+          EntryStr:='--entry='+custom_entry_mangled
+        else if apptype=app_gui then
           EntryStr:='--entry=_WinMainCRTStartup'
         else
           EntryStr:='--entry=_mainCRTStartup';

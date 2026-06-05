@@ -813,7 +813,9 @@ begin
        The "ENTRY" linkerscript command does not have any effect when augmenting
        a linker script, so use the command line parameter instead }
       if (not isdll) then
-        if (linksToSharedLibFiles and not linklibc) then
+        if custom_entry_mangled<>'' then
+          info.ExeCmd[1]:=info.ExeCmd[1]+' -e '+custom_entry_mangled
+        else if (linksToSharedLibFiles and not linklibc) then
           info.ExeCmd[1]:=info.ExeCmd[1]+' -e _dynamic_start'
         else
           info.ExeCmd[1]:=info.ExeCmd[1]+' -e _start';
@@ -1219,7 +1221,9 @@ begin
     end;
 
    if (not IsSharedLibrary) then
-     if (linkToSharedLibs and not linklibc) then
+     if custom_entry_mangled<>'' then
+       LinkScript.Concat('ENTRYNAME '+custom_entry_mangled)
+     else if (linkToSharedLibs and not linklibc) then
        LinkScript.Concat('ENTRYNAME _dynamic_start')
      else
        LinkScript.Concat('ENTRYNAME _start')
