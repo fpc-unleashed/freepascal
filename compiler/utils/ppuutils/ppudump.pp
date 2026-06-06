@@ -2511,7 +2511,9 @@ const
          'm_implicit_generics',   { Delphi-style generic syntax: 'generic'/'specialize' keywords optional, <T> allowed }
          'm_for_step',            { allow `step N` clause in for-loops }
          'm_flexible_arrays',     { allow `array[] of T` as last field of a record (C99-style FAM) }
-         'm_composable_records'   { record composition: union, anonymous embed, expose, offsetof }
+         'm_composable_records',  { record composition: union, anonymous embed, expose, offsetof }
+         'm_static_section',      { allow `static` declaration section in function/procedure bodies }
+         'm_inline_static'        { allow `static x := ...` inline declarations inside statement blocks }
        );
        { optimizer }
        optimizerswitchname : array[toptimizerswitch] of string[50] =
