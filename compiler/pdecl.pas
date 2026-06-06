@@ -39,6 +39,7 @@ interface
 
     procedure const_dec(out had_generic:boolean);
     procedure consts_dec(in_structure, allow_typed_const: boolean;out had_generic:boolean);
+    procedure static_dec(out had_generic:boolean);
     procedure label_dec;
     procedure type_dec(out had_generic:boolean);
     procedure types_dec(in_structure: boolean;out had_generic:boolean;var rtti_attrs_def: trtti_attribute_list);
@@ -66,6 +67,8 @@ implementation
        scanner,
        pbase,pexpr,ptype,ptconst,pdecsub,pdecvar,pdecobj,pgenutil,pparautl,
        procdefutil,
+       { codegen }
+       procinfo,
 {$ifdef jvm}
        pjvm,
 {$endif}
@@ -427,6 +430,193 @@ implementation
                  ((m_final_fields in current_settings.modeswitches) and
                   (current_scanner.idtoken=_FINAL))));
          block_type:=old_block_type;
+      end;
+
+
+    { static section: writeable typed-const-style declarations with optional
+      initializer (zero-init when absent) and := type inference. Permitted
+      only inside function/procedure bodies, where it gives a local-scoped
+      variable with program lifetime, equivalent to C's static locals. }
+    procedure static_dec(out had_generic:boolean);
+      var
+         orgname : TIDString;
+         hdef : tdef;
+         sym : tstaticvarsym;
+         storetokenpos,filepos : tfileposinfo;
+         old_block_type : tblock_type;
+         old_writable : boolean;
+         names : array of TIDString;
+         positions : array of tfileposinfo;
+         syms : array of tstaticvarsym;
+         namecount,ni : longint;
+         tokenbuf : tdynamicarray;
+         already_recording : boolean;
+         initexpr : tnode;
+      begin
+         had_generic:=false;
+         { consume the soft 'static' keyword (lives in scanner as _ID + idtoken=_STATIC) }
+         consume(_ID);
+         { only meaningful in function/procedure bodies; not at unit/program top level }
+         if (not assigned(current_procinfo)) or
+            (current_procinfo.procdef.localst.symtablelevel<normal_function_level) then
+           begin
+             Comment(V_Error,'static is only allowed in function/procedure bodies');
+             consume_all_until(_SEMICOLON);
+             exit;
+           end;
+         old_block_type:=block_type;
+         block_type:=bt_const;
+         { force writeable typed-constants in this section, restore on exit }
+         old_writable:=cs_typed_const_writable in current_settings.localswitches;
+         include(current_settings.localswitches,cs_typed_const_writable);
+         try
+           repeat
+             { collect one or more names separated by commas }
+             namecount:=0;
+             names:=nil;
+             positions:=nil;
+             repeat
+               setlength(names,namecount+1);
+               setlength(positions,namecount+1);
+               names[namecount]:=current_scanner.orgpattern;
+               positions[namecount]:=current_tokenpos;
+               inc(namecount);
+               consume(_ID);
+             until not try_to_consume(_COMMA);
+             orgname:=names[0];
+             filepos:=positions[0];
+             case current_scanner.token of
+               _COLON:
+                 begin
+                   { name [, name2, ...] : Type [ = Value ] }
+                   block_type:=bt_const_type;
+                   consume(_COLON);
+                   read_anon_type(hdef,false,nil);
+                   block_type:=bt_const;
+                   setlength(syms,namecount);
+                   for ni:=0 to namecount-1 do
+                     begin
+                       storetokenpos:=current_tokenpos;
+                       current_tokenpos:=positions[ni];
+                       check_allowed_for_var_or_const(hdef,false);
+                       syms[ni]:=cstaticvarsym.create(names[ni],vs_value,hdef,[]);
+                       syms[ni].visibility:=symtablestack.top.currentvisibility;
+                       symtablestack.top.insertsym(syms[ni]);
+                       syms[ni].register_sym;
+                       current_tokenpos:=storetokenpos;
+                     end;
+                   if try_to_consume(_EQ) then
+                     begin
+                       { explicit value via typed-const parser }
+                       if namecount=1 then
+                         begin
+                           maybe_guarantee_record_typesym(syms[0].vardef,syms[0].vardef.owner);
+                           read_typed_const(current_asmdata.asmlists[al_typedconsts],syms[0],false);
+                         end
+                       else
+                         begin
+                           already_recording:=current_scanner.is_recording_tokens;
+                           tokenbuf:=tdynamicarray.create(256);
+                           if not already_recording then
+                             current_scanner.startrecordtokens(tokenbuf);
+                           maybe_guarantee_record_typesym(syms[0].vardef,syms[0].vardef.owner);
+                           read_typed_const(current_asmdata.asmlists[al_typedconsts],syms[0],false);
+                           if not already_recording then
+                             current_scanner.stoprecordtokens;
+                           for ni:=1 to namecount-1 do
+                             begin
+                               maybe_guarantee_record_typesym(syms[ni].vardef,syms[ni].vardef.owner);
+                               tokenbuf.seek(0);
+                               current_scanner.startreplaytokens(tokenbuf,false);
+                               read_typed_const(current_asmdata.asmlists[al_typedconsts],syms[ni],false);
+                             end;
+                           tokenbuf.free;
+                         end;
+                     end
+                   else
+                     begin
+                       { no value -> BSS zero-init for each sym, RTL handles managed types }
+                       for ni:=0 to namecount-1 do
+                         cnodeutils.insertbssdata(syms[ni]);
+                       consume(_SEMICOLON);
+                     end;
+                 end;
+
+               _ASSIGNMENT:
+                 begin
+                   { name := Value with type inference (single name only) }
+                   if namecount>1 then
+                     Message(parser_e_initialized_only_one_var);
+                   consume(_ASSIGNMENT);
+                   { record tokens of the value expression, infer type via
+                     speculative expr(), then replay through read_typed_const
+                     to emit the initialized data segment entry }
+                   already_recording:=current_scanner.is_recording_tokens;
+                   tokenbuf:=tdynamicarray.create(256);
+                   if not already_recording then
+                     current_scanner.startrecordtokens(tokenbuf);
+                   block_type:=old_block_type;
+                   initexpr:=comp_expr([ef_accept_equal]);
+                   if not already_recording then
+                     current_scanner.stoprecordtokens;
+                   block_type:=bt_const;
+                   if (not assigned(initexpr.resultdef)) or (initexpr.resultdef=generrordef) then
+                     begin
+                       Comment(V_Error,'cannot infer type for static declaration');
+                       initexpr.free;
+                       tokenbuf.free;
+                       consume(_SEMICOLON);
+                       continue;
+                     end;
+                   hdef:=initexpr.resultdef;
+                   { same inference rules as inline-var: char promotes to default
+                     string type, sub-32-bit integers promote to LongInt }
+                   if is_conststring_array(hdef) or
+                      (not(nf_explicit in initexpr.flags) and is_char(hdef)) then
+                     begin
+                       if m_default_unicodestring in current_settings.modeswitches then
+                         hdef:=cunicodestringtype
+                       else if m_default_ansistring in current_settings.modeswitches then
+                         hdef:=getansistringdef
+                       else
+                         hdef:=cshortstringtype;
+                     end;
+                   if not(nf_explicit in initexpr.flags) and is_integer(hdef) and
+                      (torddef(hdef).ordtype in [s8bit,u8bit,s16bit,u16bit]) then
+                     hdef:=s32inttype;
+                   initexpr.free;
+                   storetokenpos:=current_tokenpos;
+                   current_tokenpos:=filepos;
+                   sym:=cstaticvarsym.create(orgname,vs_value,hdef,[]);
+                   sym.visibility:=symtablestack.top.currentvisibility;
+                   symtablestack.top.insertsym(sym);
+                   sym.register_sym;
+                   current_tokenpos:=storetokenpos;
+                   maybe_guarantee_record_typesym(sym.vardef,sym.vardef.owner);
+                   { replay tokens through typed-const parser to materialize the
+                     value in the data segment; parse_tail=false because we
+                     consume the trailing semicolon ourselves below }
+                   tokenbuf.seek(0);
+                   current_scanner.startreplaytokens(tokenbuf,false);
+                   read_typed_const(current_asmdata.asmlists[al_typedconsts],sym,false,false);
+                   tokenbuf.free;
+                   consume(_SEMICOLON);
+                 end;
+
+               else
+                 begin
+                   Message(parser_e_syntax_error);
+                   consume_all_until(_SEMICOLON);
+                   if current_scanner.token=_SEMICOLON then
+                     consume(_SEMICOLON);
+                 end;
+             end;
+           until current_scanner.token<>_ID;
+         finally
+           if not old_writable then
+             exclude(current_settings.localswitches,cs_typed_const_writable);
+           block_type:=old_block_type;
+         end;
       end;
 
 
