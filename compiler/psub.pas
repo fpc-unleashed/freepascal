@@ -3377,6 +3377,14 @@ implementation
                           end
                         else
                           break;
+                      end;
+                    _STATIC:
+                      begin
+                        handle_unexpected_had_generic;
+                        if m_static_section in current_settings.modeswitches then
+                          static_dec(hadgeneric)
+                        else
+                          break;
                       end
                     else
                       break;
@@ -3483,6 +3491,14 @@ implementation
                            hadgeneric:=true;
                            consume(_ID);
                          end
+                       else
+                         break;
+                     end;
+                   _STATIC:
+                     begin
+                       handle_unexpected_had_generic;
+                       if m_static_section in current_settings.modeswitches then
+                         static_dec(hadgeneric)
                        else
                          break;
                      end
