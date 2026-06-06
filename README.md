@@ -17,6 +17,7 @@
   - [Multi-Variable Initialization](#multi-variable-initialization)
   - [Flexible Array Members](#flexible-array-members)
   - [Composable Records](#composable-records)
+  - [Static Variables](#static-variables)
   - [Scoped Cleanup (defer, autofree, scoped with)](#scoped-cleanup)
   - [For-Step](#for-step)
   - [Tweaks](#tweaks)
@@ -50,6 +51,8 @@ The following modeswitches are enabled automatically:
 | ---------------------------------- | ------------------------------------------------------------- |
 | `statementexpressions`             | Use `if`, `case`, and `try` as expressions                    |
 | `inlinevars`                       | Declare variables inline anywhere inside a `begin..end` block |
+| `staticsection`                    | Body-level `static` declaration block (typed-const-style, writeable, optional initializer) |
+| `inlinestatic`                     | Inline `static name := expr;` declarations anywhere inside a body |
 | `tuples`                           | Anonymous tuple types, literals, and destructuring            |
 | `match`                            | Pattern matching with first-match semantics                   |
 | `multivarinit`                     | Initialize several variables of the same type with one value  |
@@ -492,6 +495,63 @@ WriteLn(BitSizeOf(TFlags.a));     // 1 - per-field bitsize override
 `GetMemAligned` / `AllocMemAligned` / `ReAllocMemAligned` / `FreeMemAligned` in the `system` unit allocate heap memory honouring a record's `align N` clause (default `GetMem` returns 16-byte aligned only). No `uses` clause required.
 
 See [unleashed/docs/composable-records.md](unleashed/docs/composable-records.md) for the full reference: all three forms, every modifier, the C-style bitfield grammar, intrinsics catalogue, generic interaction, RTTI publication, PPU layout, visibility and shadowing rules, and real-world WinAPI port examples (`SYSTEM_INFO`, `MEMORYSTATUSEX`).
+
+---
+
+### Static Variables
+
+**Activate:** available in Unleashed mode (modeswitches `staticsection` and `inlinestatic`).
+
+A writeable `static` storage class with program-wide lifetime and block-local scope - the same idea as C's `static int x;` inside a function. Two flavors share the keyword:
+
+- A **declaration block** parallel to `var` / `const`, taking compile-time initializers; zero runtime cost (data segment).
+- A **single-statement inline form** anywhere in a body, taking runtime initializers; one-shot guard so the expression evaluates once on the first reach per call site.
+
+#### Section static
+
+```pascal
+procedure Bumper;
+static
+  cnt: Integer = 0;       // explicit value
+  greet: string;          // zero-init
+  ratio := 3.14;          // inferred type
+begin
+  Inc(cnt);
+  WriteLn(cnt, ' ', greet, ' ', ratio);
+end;
+
+begin
+  Bumper;  // 1   3.14
+  Bumper;  // 2   3.14
+end.
+```
+
+#### Inline static
+
+```pascal
+function NextId: Integer;
+begin
+  static next := 1000;            // runs once; cached for the program lifetime
+  Result := next;
+  Inc(next);
+end;
+```
+
+Runtime initializers are allowed:
+
+```pascal
+procedure ReadConfigOnce;
+begin
+  static cfg := LoadConfigFromDisk;   // LoadConfigFromDisk runs once
+  Use(cfg);
+end;
+```
+
+Initialization runs once on the first reach via a hidden Boolean guard set true before evaluating the expression: if the initializer raises, the variable keeps its zero bytes and subsequent calls skip the init block - no retry.
+
+`static` is rejected at unit / program level - use plain `var`, which already gives program lifetime and is visible at that scope.
+
+See [unleashed/docs/static-section.md](unleashed/docs/static-section.md) for the full reference: type inference rules, initializer semantics, guard behaviour on exceptions and recursion, multi-name declarations, and edge cases.
 
 ---
 

@@ -8,6 +8,12 @@ Declare variables at point of first use inside any statement block, with explici
 
 Enabled via `{$modeswitch inlinevars}`.
 
+## [Static Variables](static-section.md)
+
+A writeable `static` storage class with program-wide lifetime but block-local scope - the same idea as C's `static int x;` inside a function. Two flavors: a `static` declaration section (parallel to `var` / `const`, compile-time initializers, zero runtime cost) and a single-statement `static name := expr;` inline form (anywhere in a body, runtime initializers via a one-shot guard set true before the assignment, so a raised init leaves the variable zeroed and is not retried). Allowed only inside function / procedure / method bodies; at unit / program level plain `var` already gives the same lifetime and is the right tool.
+
+Enabled via `{$modeswitch staticsection}` and `{$modeswitch inlinestatic}` (both on by default in `unleashed`).
+
 ## [Anonymous Tuples](tuples.md)
 
 Lightweight anonymous record types written in parentheses, e.g. `(Integer, String)` or `(name: string; age: integer)`. Supports tuple literals, destructuring assignment, comparison, and works wherever a record works (function results, parameters, fields). Built on the existing record infrastructure, so managed types, copy semantics, and calling conventions are inherited for free.
