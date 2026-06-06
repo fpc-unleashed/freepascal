@@ -252,7 +252,8 @@ const
   { 123 } 'PS1-mipsel',
   { 124 } 'WASIp1threads-WASM32',
   { 125 } 'WASIp2-WASM32',
-  { 126 } 'FreeBSD-powerpc64'
+  { 126 } 'FreeBSD-powerpc64',
+  { 127 } 'NativeNT-x86_64'
   );
 
 const
