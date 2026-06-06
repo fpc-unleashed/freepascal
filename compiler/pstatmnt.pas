@@ -3418,6 +3418,9 @@ implementation
         init_block     : tblocknode;
         init_stat      : tstatementnode;
         old_block_type : tblock_type;
+        old_writable   : boolean;
+        already_recording : boolean;
+        tokenbuf       : tdynamicarray;
         storetokenpos,
         filepos        : tfileposinfo;
       begin
@@ -3442,6 +3445,8 @@ implementation
         consume(_ID);
         hdef := nil;
         initexpr := nil;
+        tokenbuf := nil;
+        already_recording := false;
         old_block_type := block_type;
         try
           if current_scanner.token=_COLON then
@@ -3453,19 +3458,37 @@ implementation
               if try_to_consume(_ASSIGNMENT) then
                 begin
                   block_type := old_block_type;
+                  { record tokens around expr() so a compile-time-constant
+                    initializer can be replayed straight into the typed
+                    constant builder; runtime expressions throw the buffer
+                    away and fall through to the guarded init }
+                  already_recording := current_scanner.is_recording_tokens;
+                  tokenbuf := tdynamicarray.create(256);
+                  if not already_recording then
+                    current_scanner.startrecordtokens(tokenbuf);
                   initexpr := expr(true);
+                  if not already_recording then
+                    current_scanner.stoprecordtokens;
+                  do_typecheckpass(initexpr);
                 end;
             end
           else if current_scanner.token=_ASSIGNMENT then
             begin
               consume(_ASSIGNMENT);
               block_type := old_block_type;
+              already_recording := current_scanner.is_recording_tokens;
+              tokenbuf := tdynamicarray.create(256);
+              if not already_recording then
+                current_scanner.startrecordtokens(tokenbuf);
               initexpr := expr(true);
+              if not already_recording then
+                current_scanner.stoprecordtokens;
               do_typecheckpass(initexpr);
               if (not assigned(initexpr.resultdef)) or (initexpr.resultdef=generrordef) then
                 begin
                   Comment(V_Error,'cannot infer type for inline static declaration');
                   initexpr.free;
+                  tokenbuf.free;
                   result := cerrornode.create;
                   exit;
                 end;
@@ -3500,33 +3523,59 @@ implementation
           sym.register_sym;
           sym.varstate := vs_initialised;
           current_tokenpos := storetokenpos;
-          cnodeutils.insertbssdata(sym);
-          if assigned(initexpr) then
+          if assigned(initexpr) and is_constnode(initexpr) then
             begin
-              { hidden Boolean guard, lives next to the static var in BSS; the
-                generated code sets it true before evaluating the init expr,
-                so a raised exception leaves the variable on its zero bytes
-                and subsequent calls skip the init block }
-              guardsym := cstaticvarsym.create('$static_guard_'+name,vs_value,pasbool8type,[]);
-              include(guardsym.symoptions,sp_internal);
-              symtablestack.top.insertsym(guardsym);
-              guardsym.register_sym;
-              guardsym.varstate := vs_initialised;
-              cnodeutils.insertbssdata(guardsym);
-              init_block := internalstatements(init_stat);
-              addstatement(init_stat,cassignmentnode.create(
-                cloadnode.create(guardsym,guardsym.owner),
-                cordconstnode.create(1,pasbool8type,false)));
-              addstatement(init_stat,cassignmentnode.create(
-                cloadnode.create(sym,sym.owner),
-                initexpr));
-              result := cifnode.create(
-                cnotnode.create(cloadnode.create(guardsym,guardsym.owner)),
-                init_block,
-                nil);
+              { compile-time constant initializer: drop the parsed tree and
+                replay the recorded tokens through read_typed_const, which
+                materializes the value in the data segment. No guard, no
+                BSS slot, no runtime branch on every call. Force writeable
+                typed constants in this scope so the variable stays
+                assignable; restore the flag on exit. }
+              initexpr.free;
+              old_writable := cs_typed_const_writable in current_settings.localswitches;
+              include(current_settings.localswitches,cs_typed_const_writable);
+              try
+                tokenbuf.seek(0);
+                current_scanner.startreplaytokens(tokenbuf,false);
+                read_typed_const(current_asmdata.asmlists[al_typedconsts],sym,false,false);
+              finally
+                if not old_writable then
+                  exclude(current_settings.localswitches,cs_typed_const_writable);
+              end;
+              result := cnothingnode.create;
             end
           else
-            result := cnothingnode.create;
+            begin
+              cnodeutils.insertbssdata(sym);
+              if assigned(initexpr) then
+                begin
+                  { hidden Boolean guard, lives next to the static var in BSS;
+                    the generated code sets it true before evaluating the init
+                    expr, so a raised exception leaves the variable on its zero
+                    bytes and subsequent calls skip the init block }
+                  guardsym := cstaticvarsym.create('$static_guard_'+name,vs_value,pasbool8type,[]);
+                  include(guardsym.symoptions,sp_internal);
+                  symtablestack.top.insertsym(guardsym);
+                  guardsym.register_sym;
+                  guardsym.varstate := vs_initialised;
+                  cnodeutils.insertbssdata(guardsym);
+                  init_block := internalstatements(init_stat);
+                  addstatement(init_stat,cassignmentnode.create(
+                    cloadnode.create(guardsym,guardsym.owner),
+                    cordconstnode.create(1,pasbool8type,false)));
+                  addstatement(init_stat,cassignmentnode.create(
+                    cloadnode.create(sym,sym.owner),
+                    initexpr));
+                  result := cifnode.create(
+                    cnotnode.create(cloadnode.create(guardsym,guardsym.owner)),
+                    init_block,
+                    nil);
+                end
+              else
+                result := cnothingnode.create;
+            end;
+          if assigned(tokenbuf) then
+            tokenbuf.free;
         finally
           block_type := old_block_type;
         end;
