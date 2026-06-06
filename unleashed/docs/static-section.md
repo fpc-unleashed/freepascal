@@ -193,7 +193,9 @@ end;
 
 ### Cost
 
-One hidden flag (1 byte, BSS) plus one branch before the first use in every call. Cheap but not zero. If the initializer is a compile-time constant and you want zero cost, use section `static` instead.
+When the initializer is a compile-time constant (literal, named constant, or any expression that constant-folds to a `niln` / `ordconstn` / `pointerconstn` / `stringconstn` / `guidconstn` / `realconstn` / `setconstn` node), the inline form is materialized directly in the typed-constant data segment - no BSS slot, no guard flag, no runtime branch. The variable lives there from program start, the same as a section `static`.
+
+When the initializer is a runtime expression (a function call, a parameter reference, anything that does not constant-fold), the inline form falls back to the guarded init: one hidden flag (1 byte, BSS) plus one branch before the first use in every call. Cheap but not zero.
 
 ## Differences from related features
 
@@ -203,7 +205,8 @@ One hidden flag (1 byte, BSS) plus one branch before the first use in every call
 | `var x := V;` (inline var) | call | block | runtime expr | stack alloc + eval per call |
 | `const x = V;` (in body) | program | block | compile-time | data segment, read-only |
 | section `static` | program | block | compile-time, optional | data segment, writeable |
-| inline `static` | program | block | runtime expr, optional | BSS + flag + first-call branch |
+| inline `static` (const init) | program | block | compile-time | data segment, writeable, zero runtime cost |
+| inline `static` (runtime init) | program | block | runtime expr | BSS + flag + first-call branch |
 
 ## Threading
 
