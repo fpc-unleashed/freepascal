@@ -1370,6 +1370,23 @@ begin
   writeln([space]);
 end;
 
+
+procedure ReadLwgCanonicals;
+var
+  c, i : longint;
+  s : ansistring;
+begin
+  c:=ppufile.getlongint;
+  Writeln([space,'Lightgenerics canonicals: ',c]);
+  for i:=0 to c-1 do
+    begin
+      s:=ppufile.getstring;
+      Writeln([space,'  ',i,' : ',s]);
+    end;
+  writeln([space]);
+end;
+
+
 function getexprint:Tconstexprint;
 
 var
@@ -2556,7 +2573,8 @@ const
          'm_asyncawait',          { `async expr` runs on a worker thread yielding `future of T`; `await f` joins }
          'm_parallelfor',         { run `for parallel ... do` body across worker threads }
          'm_int128',              { 128 bit integer types Int128/UInt128 with literals beyond 64 bit }
-         'm_out_var'              { inline out-variable declaration and `_` discard at call sites }
+         'm_out_var',             { inline out-variable declaration and `_` discard at call sites }
+         'm_lightgenerics'        { share method bodies across same-shape generic specializations }
        );
        { optimizer }
        optimizerswitchname : array[toptimizerswitch] of string[50] =
@@ -5210,6 +5228,9 @@ begin
 
          ibunitimportsyms :
            ReadUnitImportSyms;
+
+         iblwgcanonicals :
+           ReadLwgCanonicals;
 
          iberror :
            begin

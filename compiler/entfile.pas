@@ -127,6 +127,7 @@ const
   ibmoduleoptions   = 85;
   ibunitimportsyms  = 86;
   iborderedsymbols  = 87;
+  iblwgcanonicals  = 88;
 
   ibmainname       = 90;
   ibsymtableoptions = 91;
@@ -524,6 +525,7 @@ begin
   ibmoduleoptions: entry_name:='ibmoduleoptions';
   ibunitimportsyms: entry_name:='ibunitimportsyms';
   iborderedsymbols: entry_name:='iborderedsymbols';
+  iblwgcanonicals: entry_name:='iblwgcanonicals';
 
   ibmainname: entry_name:='ibmainname';
   ibsymtableoptions: entry_name:='ibsymtableoptions';

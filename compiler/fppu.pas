@@ -126,6 +126,8 @@ interface
           procedure writeOrderedSymbols;
           procedure writeunitimportsyms;
           procedure writeasmsyms(kind:tunitasmlisttype;list:tfphashobjectlist);
+          procedure writelwgcanonicals;
+          procedure readlwgcanonicals;
           procedure writeextraheader;
           procedure readsourcefiles;
           procedure readloadunit;
@@ -1135,6 +1137,54 @@ var
         ppufile.writeentry(ibasmsymbols);
       end;
 
+
+    procedure tppumodule.writelwgcanonicals;
+      { lightgenerics: write the canonical mangled names this
+        module emitted (Shape_Ref / Shape_POD / Shape_Managed shared
+        bodies whose generic template lives anywhere). consumers of
+        this unit can then skip redundant emission of the same
+        canonical and link cross-module to our body }
+      var
+        i, c : longint;
+        s : TSymStr;
+      begin
+        if (lwg_canonical_writelist=nil) or (lwg_canonical_writelist.count=0) then
+          exit;
+        c:=lwg_canonical_writelist.count;
+        ppufile.putlongint(c);
+        for i:=0 to c-1 do
+          begin
+            s:=lwg_canonical_writelist.NameOfIndex(i);
+            ppufile.putstring(s);
+          end;
+        ppufile.writeentry(iblwgcanonicals);
+      end;
+
+
+    procedure tppumodule.readlwgcanonicals;
+      { populate lwg_emitted_external from the ppu entry so callers of
+        maybe_route_through_lwg in a downstream unit see which canonicals
+        are already owned by this unit }
+      var
+        i, c : longint;
+        name : TSymStr;
+      begin
+        c:=ppufile.getlongint;
+        if c<=0 then
+          exit;
+        if lwg_emitted_external=nil then
+          lwg_emitted_external:=TFPHashList.Create;
+        for i:=0 to c-1 do
+          begin
+            name:=ppufile.getstring;
+            if (name<>'') and (lwg_emitted_external.Find(name)=nil) then
+              { value is irrelevant; store a stable non-nil pointer so the
+                hash list does not complain. self is fine since it is the
+                owning module and outlives the entry }
+              lwg_emitted_external.Add(name,self);
+          end;
+      end;
+
     procedure tppumodule.writeextraheader;
       var
         old_docrc: boolean;
@@ -1671,6 +1721,8 @@ var
                readasmsyms;
              ibunitimportsyms:
                readunitimportsyms;
+             iblwgcanonicals:
+               readlwgcanonicals;
              ibendimplementation :
                break;
            else
@@ -1849,6 +1901,9 @@ var
 
          { write all symbols imported from another unit }
          writeunitimportsyms;
+
+         { lightgenerics canonical mangled names emitted by this module }
+         writelwgcanonicals;
 
          { end of implementation }
          ppufile.writeentry(ibendimplementation);
