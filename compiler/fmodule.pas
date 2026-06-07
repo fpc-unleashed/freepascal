@@ -283,6 +283,29 @@ interface
         { contains a list of specializations for which the method bodies need
           to be generated }
         pendingspecializations : TFPHashObjectList;
+        { lightgenerics: canonical mangled names whose body has already been
+          emitted in this module. duplicate specializations of the same
+          shape-class reuse the same code address and skip their own
+          emission. lazy created in pgenutil when first needed }
+        lwg_emitted : TFPHashList;
+        { lightgenerics: canonical mangled names that turned out to be
+          unsafe to share (body uses TypeInfo(T) or other type-identity
+          sensitive constructs). once added, every specialization that
+          would have routed via this canonical falls back to its own
+          monomorphized body }
+        lwg_poisoned : TFPHashList;
+        { lightgenerics: canonical mangled names emitted by other modules
+          that this module imports. populated from the iblwgcanonicals
+          PPU entry of each used unit at load time. when a specialization
+          in current_module would route to a canonical already listed
+          here, the current unit skips emission and the linker resolves
+          the call to the defining unit's body }
+        lwg_emitted_external : TFPHashList;
+        { lightgenerics: canonical mangled names that should be written
+          out as iblwgcanonicals when this module's PPU is finalised.
+          a subset of lwg_emitted (excludes the LWGWIT_* witness-table
+          entries that also share the lwg_emitted bucket) }
+        lwg_canonical_writelist : TFPHashList;
         { list of attributes that are used and thus need their construction
           functions generated }
         used_rtti_attrs: tfpobjectlist;
@@ -777,6 +800,10 @@ implementation
         extendeddefs:=TFPHashObjectList.Create(true);
         genericdummysyms:=tfphashobjectlist.create(true);
         pendingspecializations:=tfphashobjectlist.create(false);
+        lwg_emitted:=nil; { lazy create on first lightgenerics specialization }
+        lwg_poisoned:=nil; { lazy create on first lightgenerics fallback }
+        lwg_emitted_external:=nil; { lazy create on first imported canonical }
+        lwg_canonical_writelist:=nil; { lazy create on first canonical emission }
         waitingforunit:=tfpobjectlist.create(false);
         waitingunits:=tfpobjectlist.create(false);
         used_rtti_attrs:=tfpobjectlist.create(false);
@@ -903,6 +930,14 @@ implementation
         genericdummysyms := nil;
         pendingspecializations.free;
         pendingspecializations := nil;
+        lwg_emitted.free;
+        lwg_emitted := nil;
+        lwg_poisoned.free;
+        lwg_poisoned := nil;
+        lwg_emitted_external.free;
+        lwg_emitted_external := nil;
+        lwg_canonical_writelist.free;
+        lwg_canonical_writelist := nil;
         waitingforunit.free;
         waitingforunit := nil;
         waitingunits.free;
@@ -1115,6 +1150,14 @@ implementation
         linkorderedsymbols:=TCmdStrList.Create;
         pendingspecializations.free;
         pendingspecializations:=tfphashobjectlist.create(false);
+        lwg_emitted.free;
+        lwg_emitted:=nil;
+        lwg_poisoned.free;
+        lwg_poisoned:=nil;
+        lwg_emitted_external.free;
+        lwg_emitted_external:=nil;
+        lwg_canonical_writelist.free;
+        lwg_canonical_writelist:=nil;
         genericdummysyms.Free;
         genericdummysyms := tfphashobjectlist.create(true);
         extendeddefs.Free;

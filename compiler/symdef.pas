@@ -34,7 +34,7 @@ interface
        { node }
        node,
        { aasm }
-       aasmtai,
+       aasmbase,aasmtai,
        cpuinfo,
        cgbase,
        parabase
@@ -377,6 +377,18 @@ interface
           { for targets that initialise typed constants via explicit assignments
             instead of by generating an initialised data section }
           tcinitcode     : tnode;
+          { lightgenerics: per-specialization witness table symbol
+            emitted into the module's typed-const section. populated for
+            Shape_POD and Shape_Managed specializations; the canonical mangled
+            method bodies look this up to find the witness pointer to pass at
+            call sites. compile-time only, never persisted to ppu }
+          lwg_witness_asmsym : tasmsymbol;
+          { lightgenerics: tstaticvarsym aliased to the witness
+            asm symbol so the callsite can reach the witness via
+            caddrnode/cloadnode in bind_parasym. compile-time only.
+            stored as tobject so symdef does not pull symsym into its
+            interface section }
+          lwg_witness_varsym : tobject;
           constructor create(const n:string; dt:tdeftyp;doregister:boolean);
           constructor ppuload(dt:tdeftyp;ppufile:tcompilerppufile);
           procedure ppuwrite(ppufile:tcompilerppufile);override;
@@ -973,6 +985,27 @@ interface
           { only needed when actually compiling a unit, no need to save/load from ppu }
           invoke_helper : tprocdef;
           copied_from : tprocdef;
+          { lightgenerics: canonical mangled name shared across same-shape
+            specializations, and a per-module skip flag set on every duplicate
+            so its body is not emitted. both are compile-time-only state, never
+            persisted to ppu }
+          lwg_canonical_mangle : TSymStr;
+          lwg_skip_emit : boolean;
+          { lightgenerics: this shared body needs the witness pointer as an
+            implicit parameter (Shape_Managed where T-on-T operations route
+            through Witness^.Copy/Witness^.Final). compile-time only }
+          lwg_uses_witness : boolean;
+          { lightgenerics: force the persisted _mangledname to a caller-chosen
+            string. used by pgenutil to publish the canonical mangle in the
+            ppu so consumer units resolve cross-module calls to the shared
+            body. unlike setmangledname this is idempotent and accepts an
+            already-set _mangledname value }
+          procedure lwg_force_persisted_mangle(const s: TSymStr);
+          { lightgenerics: clear the persisted _mangledname so the next
+            mangledname() call recomputes the legacy per-spec mangle. used
+            by psub when a body turns out to be unsafe to share and has
+            to fall back to its own monomorph emission }
+          procedure lwg_clear_persisted_mangle;
           constructor create(level:byte;doregister:boolean);virtual;
           constructor ppuload(ppufile:tcompilerppufile);
           destructor  destroy;override;
@@ -1474,7 +1507,6 @@ implementation
       { module }
       fmodule,ppu,
       { other }
-      aasmbase,
       gendef,
       fpchash,
       entfile
@@ -7745,6 +7777,14 @@ implementation
 
     function tprocdef.mangledname : TSymStr;
       begin
+        { lightgenerics override: once a method has been classified as a
+          shape-Ref-shared body, its mangled name is the canonical name
+          shared by every same-shape specialization }
+        if lwg_canonical_mangle<>'' then
+          begin
+            result:=lwg_canonical_mangle;
+            exit;
+          end;
 {$ifdef symansistr}
         if _mangledname='' then
           begin
@@ -7998,6 +8038,41 @@ implementation
 {$endif jvm}
         include(procoptions,po_has_mangledname);
       end;
+
+
+    procedure tprocdef.lwg_force_persisted_mangle(const s: TSymStr);
+      begin
+        if s='' then
+          exit;
+{$ifdef symansistr}
+        if _mangledname=s then
+          exit;
+        _mangledname:=s;
+{$else symansistr}
+        if assigned(_mangledname) and (_mangledname^=s) then
+          exit;
+        if assigned(_mangledname) then
+          stringdispose(_mangledname);
+        _mangledname:=stringdup(s);
+{$endif symansistr}
+        include(procoptions,po_has_mangledname);
+      end;
+
+
+    procedure tprocdef.lwg_clear_persisted_mangle;
+      begin
+{$ifdef symansistr}
+        _mangledname:='';
+{$else symansistr}
+        if assigned(_mangledname) then
+          begin
+            stringdispose(_mangledname);
+            _mangledname:=nil;
+          end;
+{$endif symansistr}
+        exclude(procoptions,po_has_mangledname);
+      end;
+
 
     function tprocdef.needsglobalasmsym: boolean;
       begin

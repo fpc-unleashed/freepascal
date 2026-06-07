@@ -163,6 +163,8 @@ implementation
        { parser }
        scanner,gendef,
        pbase,pstatmnt,pdecl,pdecsub,pexports,pgenutil,pparautl,
+       { intrinsics - lightgenerics body inspection }
+       compinnr,ninl,
        { codegen }
        tgobj,cgbase,cgobj,hlcgobj,hlcgcpu,dbgbase,
 
@@ -1951,6 +1953,68 @@ implementation
       end;
 
 
+    function lwg_body_unsafe_for_sharing(var n: tnode; arg: pointer): foreachnoderesult;
+      { return fen_norecurse_true the moment we spot a construct whose
+        generated machine code depends on the concrete type identity of
+        T, not just T's ABI shape. those bodies cannot be shared safely
+        across same-shape specializations because the substituted T
+        differs per specialization.
+
+        - inlinen with in_typeinfo_x / in_objc_encode_x:
+            substitutes a concrete TypeInfo / @encode for the first
+            specialization and bakes it into the shared body.
+        - assignn whose left/right resultdef is managed:
+            assignments on managed types lower to type-specific ARC
+            helpers (fpc_ansistr_assign vs fpc_dynarray_copy etc) at
+            code generation. sharing one body across managed Ts would
+            call the first specialization's helper for every T. }
+      begin
+        result:=fen_false;
+        if (n.nodetype=inlinen) and
+           (tinlinenode(n).inlinenumber in [in_typeinfo_x,in_objc_encode_x]) then
+          begin
+            result:=fen_norecurse_true;
+            exit;
+          end;
+        if (n.nodetype=assignn) and
+           assigned(tassignmentnode(n).left) and
+           assigned(tassignmentnode(n).left.resultdef) and
+           is_managed_type(tassignmentnode(n).left.resultdef) then
+          begin
+            result:=fen_norecurse_true;
+            exit;
+          end;
+        { obj as T / obj is T cast a concrete class reference for the
+          first specialization into the shared body. subsequent
+          specializations would inherit the wrong target class and
+          either misclassify the object or raise EInvalidCast.
+          asn/isn nodes also lower to a call site that takes a
+          loadvmtaddrn-supplied class ref - either form means a
+          per-T class reference is baked into the body }
+        if n.nodetype in [asn,isn,loadvmtaddrn] then
+          begin
+            result:=fen_norecurse_true;
+            exit;
+          end;
+      end;
+
+
+    procedure lwg_drop_canonical_writelist(const name: TSymStr);
+      { remove a canonical mangle from the per-module writelist so a
+        poisoned spec is never advertised in the ppu. silently does
+        nothing when the list is empty or the name is not present }
+      var
+        idx : SizeInt;
+      begin
+        if not assigned(current_module) or
+           (current_module.lwg_canonical_writelist=nil) then
+          exit;
+        idx:=current_module.lwg_canonical_writelist.FindIndexOf(name);
+        if idx>=0 then
+          current_module.lwg_canonical_writelist.Delete(idx);
+      end;
+
+
     procedure tcgprocinfo.generate_code;
 
        procedure check_for_threadvars_in_initfinal;
@@ -2025,6 +2089,50 @@ implementation
 
         { We need valid code }
         if Errorcount<>0 then
+          exit;
+
+        { lightgenerics: when a canonical mangle is set, walk the body
+          AST for type-identity-sensitive constructs (TypeInfo(T) etc).
+          if found, poison the canonical and revert this procdef to its
+          regular monomorphized mangle so it emits its own body. later
+          specializations of the same canonical see the poison and also
+          fall back. when not poisoned and skip_emit is set, the body
+          has already been emitted by the first specialization }
+        if procdef.lwg_canonical_mangle<>'' then
+          begin
+            if assigned(current_module.lwg_poisoned) and
+               (current_module.lwg_poisoned.Find(procdef.lwg_canonical_mangle)<>nil) then
+              begin
+                { drop the poisoned canonical from any local tracking so a
+                  future ppu writeback does not advertise a name we did
+                  not actually emit }
+                lwg_drop_canonical_writelist(procdef.lwg_canonical_mangle);
+                procdef.lwg_canonical_mangle:='';
+                procdef.lwg_skip_emit:=false;
+                { clear the persisted canonical so mangledname() falls back
+                  to defaultmangledname and the ppu writeback emits the
+                  legacy per-spec mangle. then aliasnames gets that mangle
+                  for the gen_proc_symbol entry }
+                procdef.lwg_clear_persisted_mangle;
+                procdef.aliasnames.Clear;
+                procdef.aliasnames.insert(procdef.mangledname);
+              end
+            else if not procdef.lwg_skip_emit then
+              begin
+                if foreachnodestatic(code,@lwg_body_unsafe_for_sharing,nil) then
+                  begin
+                    if current_module.lwg_poisoned=nil then
+                      current_module.lwg_poisoned:=TFPHashList.Create;
+                    current_module.lwg_poisoned.Add(procdef.lwg_canonical_mangle,procdef);
+                    lwg_drop_canonical_writelist(procdef.lwg_canonical_mangle);
+                    procdef.lwg_canonical_mangle:='';
+                    procdef.lwg_clear_persisted_mangle;
+                    procdef.aliasnames.Clear;
+                    procdef.aliasnames.insert(procdef.mangledname);
+                  end;
+              end;
+          end;
+        if procdef.lwg_skip_emit then
           exit;
 
         { No code can be generated for generic template }

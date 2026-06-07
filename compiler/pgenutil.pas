@@ -80,6 +80,12 @@ uses
   fmodule,
   { node }
   nobj,ncon,ncal,
+  { assembler - lightgenerics emits witness tables as static data }
+  aasmbase,aasmtai,aasmdata,
+  { rtti - wires TypeInfo(T) into the managed witness so the
+    shared body can route fpc_copy_proc / fpc_initialize / fpc_finalize
+    through Witness^.TypeInfo }
+  ncgrtti,
   { parser }
   scanner,
   pbase,pexpr,pdecsub,ptype,psub,pparautl,pdecl,procdefutil;
@@ -89,6 +95,10 @@ uses
   const
     tgeneric_param_const_types : tdeftypeset = [orddef,stringdef,floatdef,setdef,pointerdef,enumdef];
     tgeneric_param_nodes : tnodetypeset = [typen,ordconstn,stringconstn,realconstn,setconstn,niln];
+
+    { forward decls for routines referenced by generate_specialization
+      before their definition appears later in the file }
+    procedure maybe_mark_lwg_uses_witness(def: tprocdef); forward;
 
     procedure make_prettystring(paramtype:tdef;first:boolean;constprettyname:ansistring;var prettyname,specializename:ansistring);
       var
@@ -2205,6 +2215,12 @@ uses
                       parse_proc_directives(pd,pdflags);
                       while try_consume_hintdirective(pd.symoptions,pd.deprecatedmsg) do
                         consume(_SEMICOLON);
+                      { lightgenerics: if any type parameter is
+                        Shape_Managed, this specialization's shared body
+                        needs the implicit Witness pointer. set the flag
+                        before handle_calling_convention so pparautl inserts
+                        the hidden parameter while laying out the paraloc }
+                      maybe_mark_lwg_uses_witness(tprocdef(result));
                       if parse_generic then
                         handle_calling_convention(tprocdef(result),hcc_default_actions_intf)
                       else
@@ -2973,6 +2989,559 @@ uses
 ****************************************************************************}
 
 
+    function all_class_type_params_shape_ref(rd: tabstractrecorddef): boolean;
+      var
+        i : longint;
+        sym : tsym;
+      begin
+        result:=false;
+        if not assigned(rd) or not assigned(rd.genericparas) or
+           (rd.genericparas.count=0) then
+          exit;
+        for i:=0 to rd.genericparas.count-1 do
+          begin
+            sym:=tsym(rd.genericparas.items[i]);
+            if (sym=nil) or (sym.typ<>typesym) then
+              exit;
+            if classify_generic_shape(ttypesym(sym).typedef)<>Shape_Ref then
+              exit;
+          end;
+        result:=true;
+      end;
+
+
+    function shape_suffix(sc: tshapeclass): TSymStr;
+      begin
+        case sc of
+          Shape_Ref:     result:='ref';
+          Shape_POD_1:   result:='pod1';
+          Shape_POD_2:   result:='pod2';
+          Shape_POD_4:   result:='pod4';
+          Shape_POD_8:   result:='pod8';
+          Shape_Managed: result:='mng';
+        else
+          result:='';
+        end;
+      end;
+
+
+    function composite_shareable_key(genericparas: tfphashobjectlist): TSymStr;
+      { build a per-parameter shape key like "ref" or "pod4_ref_mng".
+        empty string means at least one parameter is Shape_Unknown or
+        Shape_Complex. Shape_Managed is allowed in the key; methods
+        whose bodies touch managed type-identity then poison the
+        canonical via the AST scan in psub.generate_code and fall back
+        to monomorphization at the per-procedure level }
+      var
+        i : longint;
+        sym : tsym;
+        sc : tshapeclass;
+        suffix : TSymStr;
+      begin
+        result:='';
+        if not assigned(genericparas) or (genericparas.count=0) then
+          exit;
+        for i:=0 to genericparas.count-1 do
+          begin
+            sym:=tsym(genericparas.items[i]);
+            if (sym=nil) or (sym.typ<>typesym) then
+              exit;
+            sc:=classify_generic_shape(ttypesym(sym).typedef);
+            if not (sc in [Shape_Ref,Shape_POD_1,Shape_POD_2,Shape_POD_4,Shape_POD_8,Shape_Managed]) then
+              begin
+                result:='';
+                exit;
+              end;
+            suffix:=shape_suffix(sc);
+            if suffix='' then
+              begin
+                result:='';
+                exit;
+              end;
+            if result='' then
+              result:=suffix
+            else
+              result:=result+'_'+suffix;
+          end;
+      end;
+
+
+    function is_lwg_shareable_method(def: tprocdef): boolean;
+      begin
+        { share regular instance methods, class methods (classref Self is
+          still pointer-sized), static methods (no Self), property
+          getter/setter bodies (semantically just methods), and instance
+          destructors (the per-spec vmt cleanup wrapper monomorphizes
+          on its own; the destructor body itself is shareable). exclude
+          class constructors / destructors (per-class state), operators,
+          externals and assembler routines, and instance constructors
+          (the vmt allocation prologue is per-class) }
+        result:=assigned(def.struct) and
+                def.struct.is_specialization and
+                not (def.proctypeoption in [potype_class_constructor,potype_class_destructor,
+                                            potype_proginit,potype_unitinit,potype_unitfinalize,
+                                            potype_operator]) and
+                ((def.procoptions*[po_external,po_assembler])=[]);
+      end;
+
+
+    function is_lwg_shareable_standalone(def: tprocdef): boolean;
+      { standalone generic function specialization (no Self). procdef carries
+        its own genericparas and is_specialization. excludes operators and
+        external/asm definitions }
+      begin
+        result:=not assigned(def.struct) and
+                def.is_specialization and
+                assigned(def.genericparas) and
+                (def.genericparas.count>0) and
+                not (def.proctypeoption in [potype_operator,potype_propgetter,potype_propsetter,
+                                            potype_proginit,potype_unitinit,potype_unitfinalize]) and
+                ((def.procoptions*[po_external,po_assembler])=[]);
+      end;
+
+
+    function build_lwg_canonical_mangle(def: tprocdef; const shapekey: TSymStr): TSymStr;
+      var
+        genericrd : tabstractrecorddef;
+        genericpd : tprocdef;
+        unitname : TSymStr;
+        gentypename : TSymStr;
+        methodname : TSymStr;
+        genmod : tmodule;
+        ownerst : tsymtable;
+      begin
+        result:='';
+        if shapekey='' then
+          exit;
+        unitname:='';
+        ownerst:=nil;
+        if assigned(def.struct) then
+          begin
+            if not assigned(def.struct.genericdef) then
+              exit;
+            if not (def.struct.genericdef.typ in [recorddef,objectdef]) then
+              exit;
+            genericrd:=tabstractrecorddef(def.struct.genericdef);
+            if not assigned(genericrd.objname) then
+              exit;
+            gentypename:=genericrd.objname^;
+            ownerst:=genericrd.owner;
+          end
+        else
+          begin
+            { standalone generic function: prefix gentypename with "$FN"
+              so standalone-function symbols never collide with method
+              symbols }
+            if not assigned(def.genericdef) or (def.genericdef.typ<>procdef) then
+              exit;
+            genericpd:=tprocdef(def.genericdef);
+            if not assigned(genericpd.procsym) then
+              exit;
+            gentypename:='$FN';
+            if assigned(genericpd.procsym.owner) then
+              ownerst:=genericpd.procsym.owner
+            else
+              ownerst:=genericpd.owner;
+          end;
+        { canonical mangle uses the generic template's home module name so
+          every consumer of the template across modules picks the same
+          canonical. cross-module dedup requires both producer and consumer
+          to agree on the symbol name without coordinating through the
+          consuming module's identity }
+        if assigned(ownerst) then
+          begin
+            genmod:=find_module_from_symtable(ownerst);
+            if assigned(genmod) and assigned(genmod.modulename) then
+              unitname:=genmod.modulename^;
+          end;
+        if unitname='' then
+          exit;
+        { standalone specializations carry a per-spec procsym whose name is
+          tagged with a CRC; methods keep their plain name. take the generic
+          template's name when available so the canonical mangle matches
+          across specializations }
+        if assigned(def.genericdef) and (def.genericdef.typ=procdef) and
+           assigned(tprocdef(def.genericdef).procsym) then
+          methodname:=tprocdef(def.genericdef).procsym.name
+        else
+          methodname:=def.procsym.name;
+        { format: <gentemplate_unit>_$LWG_<shapekey>$_<gentype>_<methodname>$<paramcount>_<shapekey>
+
+          shapekey encodes every type parameter's shape in declaration order
+          (e.g. "ref", "pod4", "ref_pod4", "pod8_ref_pod4"). paramcount
+          alone disambiguates overloads of the same method name because
+          return-type-only overloads aren't legal Pascal }
+        result:=unitname+'_$LWG_'+shapekey+'$_'+gentypename+'_'+methodname+'$'+tostr(def.paras.count)+'_'+shapekey;
+      end;
+
+
+    function lwg_canonical_emitted_externally(const canonical: TSymStr): boolean;
+      { walk every loaded module (not just current_module.used_units) and
+        check whether any of them already emitted this canonical. ppu-loaded
+        units publish their emitted canonicals via iblwgcanonicals (->
+        m.lwg_emitted_external); units compiled in the same run still have
+        their emission record live in m.lwg_canonical_writelist (the
+        in-memory equivalent that writeppu serialises).
+
+        walking loaded_units rather than the more conservative used_units
+        catches the indirectly-shared case where two consumer units (b and
+        c) of one template unit a both specialize the same shape but neither
+        imports the other - if b emits first, c sees b in loaded_units and
+        skips re-emit. without this the linker would multiply-define the
+        symbol. either presence means we skip body emission and the linker
+        resolves the call to the defining unit's body }
+      var
+        m : tmodule;
+      begin
+        result:=false;
+        if current_module=nil then
+          exit;
+        m:=tmodule(loaded_units.first);
+        while assigned(m) do
+          begin
+            if m<>current_module then
+              begin
+                if assigned(m.lwg_emitted_external) and
+                   (m.lwg_emitted_external.Find(canonical)<>nil) then
+                  begin
+                    result:=true;
+                    exit;
+                  end;
+                if assigned(m.lwg_canonical_writelist) and
+                   (m.lwg_canonical_writelist.Find(canonical)<>nil) then
+                  begin
+                    result:=true;
+                    exit;
+                  end;
+              end;
+            m:=tmodule(m.next);
+          end;
+      end;
+
+
+    procedure maybe_route_through_lwg(def:tprocdef);
+      var
+        canonical : TSymStr;
+        shapekey : TSymStr;
+        params : tfphashobjectlist;
+      begin
+        if not (m_lightgenerics in current_settings.modeswitches) then
+          exit;
+        if is_lwg_shareable_method(def) then
+          params:=def.struct.genericparas
+        else if is_lwg_shareable_standalone(def) then
+          params:=def.genericparas
+        else
+          exit;
+        shapekey:=composite_shareable_key(params);
+        if shapekey='' then
+          exit;
+        canonical:=build_lwg_canonical_mangle(def,shapekey);
+        if canonical='' then
+          exit;
+        { a prior specialization of this canonical proved its body to be
+          type-identity-sensitive; subsequent specializations must take
+          the regular monomorphized path }
+        if assigned(current_module.lwg_poisoned) and
+           (current_module.lwg_poisoned.Find(canonical)<>nil) then
+          exit;
+        def.lwg_canonical_mangle:=canonical;
+        { persist the canonical as the procdef's mangledname so PPU
+          consumers resolve cross-module calls to the body that owns
+          this canonical }
+        def.lwg_force_persisted_mangle(canonical);
+        if current_module.lwg_emitted=nil then
+          current_module.lwg_emitted:=TFPHashList.Create;
+        if current_module.lwg_emitted.FindIndexOf(canonical)>=0 then
+          def.lwg_skip_emit:=true
+        else if lwg_canonical_emitted_externally(canonical) then
+          begin
+            { another loaded unit already owns this canonical; we just
+              call into it. record the canonical locally to dedup further
+              specializations within this module, but do not advertise it
+              as ours (do not add to lwg_canonical_writelist) }
+            def.lwg_skip_emit:=true;
+            current_module.lwg_emitted.Add(canonical,def);
+          end
+        else
+          begin
+            { value is irrelevant, only key presence matters. store def
+              itself as a stable non-nil pointer so the hash list does
+              not complain. also remember the canonical for ppu writeback
+              so consumers know we own it }
+            current_module.lwg_emitted.Add(canonical,def);
+            if current_module.lwg_canonical_writelist=nil then
+              current_module.lwg_canonical_writelist:=TFPHashList.Create;
+            current_module.lwg_canonical_writelist.Add(canonical,def);
+          end;
+      end;
+
+
+    function dominant_pod_shape(rd: tabstractrecorddef): tshapeclass;
+      { returns Shape_POD_N if every type parameter classifies as the
+        same Shape_POD_N bucket; Shape_Unknown otherwise. sharing only
+        shares specializations when every parameter has identical POD
+        size, because that is the only case where the emitted machine
+        code can drop into a fixed-stride witness Copy }
+      var
+        i : longint;
+        sym : tsym;
+        sc, first_sc : tshapeclass;
+      begin
+        result:=Shape_Unknown;
+        if not assigned(rd) or not assigned(rd.genericparas) or
+           (rd.genericparas.count=0) then
+          exit;
+        first_sc:=Shape_Unknown;
+        for i:=0 to rd.genericparas.count-1 do
+          begin
+            sym:=tsym(rd.genericparas.items[i]);
+            if (sym=nil) or (sym.typ<>typesym) then
+              exit;
+            sc:=classify_generic_shape(ttypesym(sym).typedef);
+            if not (sc in [Shape_POD_1,Shape_POD_2,Shape_POD_4,Shape_POD_8]) then
+              exit;
+            if i=0 then
+              first_sc:=sc
+            else if sc<>first_sc then
+              exit;
+          end;
+        result:=first_sc;
+      end;
+
+
+    function pod_shape_to_size(sc: tshapeclass): longint;
+      begin
+        case sc of
+          Shape_POD_1: result:=1;
+          Shape_POD_2: result:=2;
+          Shape_POD_4: result:=4;
+          Shape_POD_8: result:=8;
+        else
+          result:=0;
+        end;
+      end;
+
+
+    function ensure_lwg_pod_witness(podsize: longint): tasmsymbol;
+      { emit one TLWGWitness constant per (module, POD size). every Shape_POD_N
+        specialization in the module shares the same witness because the four
+        live fields (Size, Alignment, Copy, Compare) only depend on N. cached
+        in current_module.lwg_emitted under the witness symbol name so the
+        emit happens exactly once }
+      var
+        symname, copyname, comparename : ansistring;
+        list : tasmlist;
+        sym, copysym, comparesym : tasmsymbol;
+        cached : pointer;
+      begin
+        symname:='LWGWIT_POD_'+tostr(podsize);
+        if current_module.lwg_emitted=nil then
+          current_module.lwg_emitted:=TFPHashList.Create;
+        cached:=current_module.lwg_emitted.Find(symname);
+        if cached<>nil then
+          begin
+            result:=tasmsymbol(cached);
+            exit;
+          end;
+        copyname:='FPC_LWG_COPY_'+tostr(podsize);
+        comparename:='FPC_LWG_COMPARE_'+tostr(podsize);
+        sym:=current_asmdata.DefineAsmSymbol(symname,AB_GLOBAL,AT_DATA,voidpointertype);
+        copysym:=current_asmdata.RefAsmSymbol(copyname,AT_FUNCTION);
+        comparesym:=current_asmdata.RefAsmSymbol(comparename,AT_FUNCTION);
+        list:=current_asmdata.AsmLists[al_typedconsts];
+        maybe_new_object_file(list);
+        new_section(list,sec_rodata,symname,sizeof(pint));
+        list.concat(tai_symbol.Create_Global(sym,0));
+        { TLWGWitness record fields in source order, 8 bytes each on 64-bit }
+        list.concat(tai_const.Create_64bit(podsize));      { Size }
+        list.concat(tai_const.Create_64bit(podsize));      { Alignment }
+        list.concat(tai_const.Create_64bit(0));            { TypeInfo - not yet wired }
+        list.concat(tai_const.Create_64bit(0));            { Init - nil for POD }
+        list.concat(tai_const.Create_sym(copysym));        { Copy = fpc_lwg_copy_N }
+        list.concat(tai_const.Create_64bit(0));            { Final - nil for POD }
+        list.concat(tai_const.Create_sym(comparesym));     { Compare = fpc_lwg_compare_N }
+        list.concat(tai_symbol_end.Create(sym));
+        current_module.lwg_emitted.Add(symname,sym);
+        result:=sym;
+      end;
+
+
+    function any_param_is_shape_managed(genericparas: tfphashobjectlist): boolean;
+      var
+        i : longint;
+        sym : tsym;
+      begin
+        result:=false;
+        if not assigned(genericparas) then exit;
+        for i:=0 to genericparas.count-1 do
+          begin
+            sym:=tsym(genericparas.items[i]);
+            if (sym<>nil) and (sym.typ=typesym) and
+               (classify_generic_shape(ttypesym(sym).typedef)=Shape_Managed) then
+              begin
+                result:=true;
+                exit;
+              end;
+          end;
+      end;
+
+
+    procedure maybe_mark_lwg_uses_witness(def: tprocdef);
+      { mark a method specialization as needing the implicit
+        Witness pointer. when any type parameter of the struct (or the
+        standalone fn's procdef) classifies as Shape_Managed, the body
+        is going to lower T-on-T operations into Witness^.Copy /
+        Witness^.Final calls, so pparautl must insert the hidden
+        parameter at declaration time }
+      var
+        i : longint;
+        sym : tsym;
+        params : tfphashobjectlist;
+        any_managed : boolean;
+      begin
+        if not (m_lightgenerics in current_settings.modeswitches) then
+          exit;
+        if def.lwg_uses_witness then
+          exit;
+        params:=nil;
+        if assigned(def.struct) and def.struct.is_specialization then
+          params:=def.struct.genericparas
+        else if def.is_specialization and assigned(def.genericparas) then
+          params:=def.genericparas;
+        if not assigned(params) or (params.count=0) then
+          exit;
+        any_managed:=false;
+        for i:=0 to params.count-1 do
+          begin
+            sym:=tsym(params.items[i]);
+            if (sym<>nil) and (sym.typ=typesym) and
+               (classify_generic_shape(ttypesym(sym).typedef)=Shape_Managed) then
+              begin
+                any_managed:=true;
+                break;
+              end;
+          end;
+        if any_managed then
+          def.lwg_uses_witness:=true;
+      end;
+
+
+    function ensure_lwg_managed_witness(struct: tabstractrecorddef): tasmsymbol;
+      { emit one TLWGWitness constant per Shape_Managed specialization.
+        the TypeInfo slot points at the standard fpc full-rtti label for the
+        first managed type parameter so the shared body can route
+        fpc_copy_proc / fpc_initialize / fpc_finalize through it.
+        Init / Copy / Final / Compare stay nil - the AST routing in step 5
+        invokes the existing system helpers directly with Witness^.TypeInfo
+        rather than going through per-spec wrappers.
+        also creates an external staticvarsym aliased to the witness asm
+        symbol so the callsite can reach the witness via a regular
+        caddrnode(cloadnode(...)) tree in bind_parasym }
+      var
+        symname : ansistring;
+        list : tasmlist;
+        sym, rttisym : tasmsymbol;
+        cached : pointer;
+        gentypename : ansistring;
+        t, mng_t : tdef;
+        sz, al : longint;
+        i : longint;
+        psym : tsym;
+        wvsym : tstaticvarsym;
+      begin
+        result:=nil;
+        if not assigned(struct) or not assigned(struct.objname) then
+          exit;
+        gentypename:=struct.objname^;
+        symname:='LWGWIT_MNG_'+gentypename;
+        if current_module.lwg_emitted=nil then
+          current_module.lwg_emitted:=TFPHashList.Create;
+        cached:=current_module.lwg_emitted.Find(symname);
+        if cached<>nil then
+          begin
+            result:=tasmsymbol(cached);
+            exit;
+          end;
+        sz:=sizeof(pint);
+        al:=sizeof(pint);
+        mng_t:=nil;
+        if assigned(struct.genericparas) and (struct.genericparas.count>0) then
+          for i:=0 to struct.genericparas.count-1 do
+            begin
+              psym:=tsym(struct.genericparas.items[i]);
+              if (psym<>nil) and (psym.typ=typesym) then
+                begin
+                  t:=ttypesym(psym).typedef;
+                  if assigned(t) then
+                    begin
+                      sz:=t.size;
+                      al:=t.alignment;
+                      if classify_generic_shape(t)=Shape_Managed then
+                        mng_t:=t;
+                      if mng_t<>nil then
+                        break;
+                    end;
+                end;
+            end;
+        rttisym:=nil;
+        if assigned(mng_t) and assigned(RTTIWriter) then
+          rttisym:=RTTIWriter.get_rtti_label(mng_t,fullrtti,false);
+        sym:=current_asmdata.DefineAsmSymbol(symname,AB_GLOBAL,AT_DATA,voidpointertype);
+        list:=current_asmdata.AsmLists[al_typedconsts];
+        maybe_new_object_file(list);
+        new_section(list,sec_rodata,symname,sizeof(pint));
+        list.concat(tai_symbol.Create_Global(sym,0));
+        list.concat(tai_const.Create_64bit(sz));     { Size }
+        list.concat(tai_const.Create_64bit(al));     { Alignment }
+        if assigned(rttisym) then
+          list.concat(tai_const.Create_sym(rttisym))      { TypeInfo -> full RTTI for T }
+        else
+          list.concat(tai_const.Create_64bit(0));
+        list.concat(tai_const.Create_64bit(0));      { Init - routed via TypeInfo }
+        list.concat(tai_const.Create_64bit(0));      { Copy - routed via TypeInfo }
+        list.concat(tai_const.Create_64bit(0));      { Final - routed via TypeInfo }
+        list.concat(tai_const.Create_64bit(0));      { Compare }
+        list.concat(tai_symbol_end.Create(sym));
+        current_module.lwg_emitted.Add(symname,sym);
+        { staticvarsym alias so bind_parasym can address the witness via
+          regular AST nodes; use a separate internal name with the witness
+          mangled name set via create_C so the var sym and the asm const
+          point at the same memory. typed as voidpointertype - bind_parasym
+          will only take its address, never dereference }
+        wvsym:=cstaticvarsym.create_C('$LWG_WVAR_'+gentypename,symname,vs_const,voidpointertype);
+        wvsym.varstate:=vs_initialised;
+        current_module.localsymtable.insertsym(wvsym);
+        struct.lwg_witness_varsym:=wvsym;
+        result:=sym;
+      end;
+
+
+    procedure maybe_emit_lwg_pod_witness(struct: tabstractrecorddef);
+      var
+        sc : tshapeclass;
+        podsize : longint;
+      begin
+        if not (m_lightgenerics in current_settings.modeswitches) then
+          exit;
+        if not assigned(struct) or not struct.is_specialization then
+          exit;
+        if assigned(struct.lwg_witness_asmsym) then
+          exit;
+        sc:=dominant_pod_shape(struct);
+        if sc<>Shape_Unknown then
+          begin
+            podsize:=pod_shape_to_size(sc);
+            if podsize>0 then
+              struct.lwg_witness_asmsym:=ensure_lwg_pod_witness(podsize);
+            exit;
+          end;
+        { managed shapes get their own per-spec witness }
+        if any_param_is_shape_managed(struct.genericparas) then
+          struct.lwg_witness_asmsym:=ensure_lwg_managed_witness(struct);
+      end;
+
+
     procedure process_procdef(def:tprocdef;hmodule:tmodule);
       var
         oldcurrent_filepos : tfileposinfo;
@@ -2989,6 +3558,10 @@ uses
             current_filepos.moduleindex:=hmodule.moduleid;
             current_tokenpos:=current_filepos;
             current_scanner.startreplaytokens(tprocdef(def.genericdef).generictokenbuf,hmodule.change_endian);
+            { decide lightgenerics routing before the body is parsed. body parsing
+              still happens for typecheck and for cache warmth, but generate_code
+              honours lwg_skip_emit and bails out without emitting machine code }
+            maybe_route_through_lwg(def);
             read_proc_body(def);
             current_filepos:=oldcurrent_filepos;
           end
@@ -3010,6 +3583,11 @@ uses
           hmodule:=find_module_from_symtable(def.genericdef.owner)
         else if not (df_internal in def.defoptions) then
           internalerror(201202041);
+        { lightgenerics: when the specialization's type parameters
+          land in a Shape_POD bucket, emit the witness constant once per
+          (module, POD size). this only emits data; the witness is not
+          consumed by any callsite or method body yet }
+        maybe_emit_lwg_pod_witness(def);
         for i:=0 to def.symtable.DefList.Count-1 do
           begin
             hp:=tdef(def.symtable.DefList[i]);
