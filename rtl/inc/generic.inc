@@ -3209,6 +3209,64 @@ function fpc_PopCnt_qword(AValue : QWord): QWord;[Public,Alias:'FPC_POPCNT_QWORD
   end;
 {$endif}
 
+{ Lightweight generics witness helpers. Used as Copy entries in TLWGWitness
+  records emitted by the compiler for Shape_POD specializations. Init/Final
+  for POD shapes can be left nil in the witness, no helper needed. Managed
+  shapes get per-specialization wrappers emitted by the compiler, not these
+  generic ones }
+procedure fpc_lwg_copy_1(Dest, Src: Pointer); [public, alias: 'FPC_LWG_COPY_1'];
+  begin
+    PByte(Dest)^ := PByte(Src)^;
+  end;
+
+procedure fpc_lwg_copy_2(Dest, Src: Pointer); [public, alias: 'FPC_LWG_COPY_2'];
+  begin
+    PWord(Dest)^ := PWord(Src)^;
+  end;
+
+procedure fpc_lwg_copy_4(Dest, Src: Pointer); [public, alias: 'FPC_LWG_COPY_4'];
+  begin
+    PCardinal(Dest)^ := PCardinal(Src)^;
+  end;
+
+procedure fpc_lwg_copy_8(Dest, Src: Pointer); [public, alias: 'FPC_LWG_COPY_8'];
+  begin
+    PQWord(Dest)^ := PQWord(Src)^;
+  end;
+
+{ TLWGCompare entries for unsigned byte-wise equality on a fixed-size POD.
+  ordered comparisons (less/greater) for unsigned values match the unsigned
+  byte sequence on little-endian targets and would need separate signed
+  variants on big-endian. the witness exposes equality-only (`=` / `<>`)
+  which is the only operator typical containers need }
+function fpc_lwg_compare_1(A, B: Pointer): LongInt; [public, alias: 'FPC_LWG_COMPARE_1'];
+  begin
+    if PByte(A)^ = PByte(B)^ then Result := 0
+    else if PByte(A)^ < PByte(B)^ then Result := -1
+    else Result := 1;
+  end;
+
+function fpc_lwg_compare_2(A, B: Pointer): LongInt; [public, alias: 'FPC_LWG_COMPARE_2'];
+  begin
+    if PWord(A)^ = PWord(B)^ then Result := 0
+    else if PWord(A)^ < PWord(B)^ then Result := -1
+    else Result := 1;
+  end;
+
+function fpc_lwg_compare_4(A, B: Pointer): LongInt; [public, alias: 'FPC_LWG_COMPARE_4'];
+  begin
+    if PCardinal(A)^ = PCardinal(B)^ then Result := 0
+    else if PCardinal(A)^ < PCardinal(B)^ then Result := -1
+    else Result := 1;
+  end;
+
+function fpc_lwg_compare_8(A, B: Pointer): LongInt; [public, alias: 'FPC_LWG_COMPARE_8'];
+  begin
+    if PQWord(A)^ = PQWord(B)^ then Result := 0
+    else if PQWord(A)^ < PQWord(B)^ then Result := -1
+    else Result := 1;
+  end;
+
 {$if not defined(VER3_2) and not defined(CPUJVM)}
 {$push}
 {$R-,Q-}

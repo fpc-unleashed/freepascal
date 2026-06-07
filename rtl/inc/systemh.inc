@@ -534,6 +534,35 @@ Type
   UInt32  = Cardinal;
   UIntPtr = PtrUInt;
 
+  { Lightweight generics witness table - per-specialization ABI metadata that
+    the compiler hands to shared method bodies so they can operate on T
+    without knowing T statically. Shape_Ref sharing does not use this;
+    Shape_POD and Shape_Managed specializations emit one constant of this type
+    per eligible specialization and passes a pointer to it as an implicit
+    parameter alongside Self }
+  TLWGInit     = procedure(P: Pointer);
+  TLWGCopy     = procedure(Dest, Src: Pointer);
+  TLWGFinal    = procedure(P: Pointer);
+  TLWGCompare  = function(A, B: Pointer): LongInt;
+
+  PLWGWitness = ^TLWGWitness;
+  TLWGWitness = record
+    Size:      SizeInt;       { sizeof(T) for the specialization }
+    Alignment: SizeInt;       { required alignment of T in bytes }
+    TypeInfo:  Pointer;       { points at the standard FPC RTTI entry for T,
+                                so existing helpers (fpc_initialize, fpc_copy,
+                                fpc_finalize) remain available to the shared
+                                body via the witness }
+    Init:    TLWGInit;        { nil for POD shapes, non-nil for managed shapes }
+    Copy:    TLWGCopy;        { always non-nil; for POD types points at a
+                                fpc_lwg_copy_<N> helper, for managed types at
+                                a compiler-emitted per-specialization wrapper
+                                around fpc_copy }
+    Final:   TLWGFinal;       { nil for POD shapes, non-nil for managed shapes }
+    Compare: TLWGCompare;     { optional; may be nil when no `=` operator is
+                                used against T inside the shared body }
+  end;
+
 {$if not declared(Comp)}
   { map comp to int64, but this doesn't mean we compile the comp support in! }
   Comp = type Int64;
