@@ -3546,15 +3546,22 @@ implementation
             end
           else
             begin
+              { mark the static var as typed-const so DFA treats the BSS-zero
+                bytes as a valid initial value and does not warn about reads
+                before the guard fires }
+              include(sym.varoptions,vo_is_typed_const);
               cnodeutils.insertbssdata(sym);
               if assigned(initexpr) then
                 begin
                   { hidden Boolean guard, lives next to the static var in BSS;
                     the generated code sets it true before evaluating the init
                     expr, so a raised exception leaves the variable on its zero
-                    bytes and subsequent calls skip the init block }
+                    bytes and subsequent calls skip the init block. Marked
+                    vo_is_internal so DFA skips it entirely. }
                   guardsym := cstaticvarsym.create('$static_guard_'+name,vs_value,pasbool8type,[]);
                   include(guardsym.symoptions,sp_internal);
+                  include(guardsym.varoptions,vo_is_internal);
+                  include(guardsym.varoptions,vo_is_typed_const);
                   symtablestack.top.insertsym(guardsym);
                   guardsym.register_sym;
                   guardsym.varstate := vs_initialised;
