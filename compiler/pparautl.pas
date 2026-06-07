@@ -31,6 +31,7 @@ interface
     procedure insert_funcret_para(pd:tabstractprocdef);
     procedure insert_parentfp_para(pd:tabstractprocdef);
     procedure insert_self_and_vmt_para(pd:tabstractprocdef);
+    procedure insert_lwg_witness_para(pd:tabstractprocdef);
     procedure insert_funcret_local(pd:tprocdef);
     procedure insert_hidden_para(p:TObject;arg:pointer);
     procedure check_c_para(pd:Tabstractprocdef);
@@ -177,6 +178,33 @@ implementation
 
             current_tokenpos:=storepos;
           end;
+      end;
+
+
+    procedure insert_lwg_witness_para(pd:tabstractprocdef);
+      const
+        name_lwg_witness='lwgwitness';
+      var
+        storepos : tfileposinfo;
+        vs       : tparavarsym;
+      begin
+        if (pd.typ<>procdef) then
+          exit;
+        if not tprocdef(pd).lwg_uses_witness then
+          exit;
+        if assigned(pd.parast.find('$'+name_lwg_witness)) then
+          exit;
+        storepos:=current_tokenpos;
+        current_tokenpos:=tprocdef(pd).fileinfo;
+        { hidden Witness pointer carried alongside Self into the shared
+          body. typed as voidpointertype to avoid pulling PLWGWitness from
+          system unit at this stage; codegen sees it as a plain pointer
+          and the body uses Witness^.Copy etc through manual offset
+          arithmetic from the witness layout }
+        vs:=cparavarsym.create('$'+name_lwg_witness,paranr_lwg_witness,vs_value,
+              voidpointertype,[vo_is_hidden_para]);
+        pd.parast.insertsym(vs);
+        current_tokenpos:=storepos;
       end;
 
 
@@ -682,6 +710,10 @@ implementation
 
             { insert parentfp parameter if required }
             insert_parentfp_para(pd);
+
+            { lightgenerics: insert hidden witness pointer for
+              shared bodies that operate on Shape_Managed type parameters }
+            insert_lwg_witness_para(pd);
           end;
 
         { Calculate parameter tlist }

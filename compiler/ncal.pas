@@ -4017,9 +4017,27 @@ implementation
                   else
                     hiddentree:=gen_block_context
                 end
+              else if (currpara.name='$lwgwitness') and
+                      (procdefinition.typ=procdef) and
+                      assigned(tprocdef(procdefinition).struct) and
+                      assigned(tprocdef(procdefinition).struct.lwg_witness_varsym) then
+                begin
+                  { lightgenerics: push the address of the per-spec
+                    TLWGWitness const so the shared body's AST routing can
+                    deref Witness^.TypeInfo at runtime }
+                  hiddentree:=ctypeconvnode.create_internal(
+                    caddrnode.create_internal(
+                      cloadnode.create(
+                        tstaticvarsym(tprocdef(procdefinition).struct.lwg_witness_varsym),
+                        tstaticvarsym(tprocdef(procdefinition).struct.lwg_witness_varsym).owner
+                      )
+                    ),
+                    voidpointertype
+                  );
+                end
               else
                 hiddentree:=cnothingnode.create;
-                
+
               pt:=ccallparanode.create(hiddentree,oldppt^);
               { set correct callnode }
               pt.callnode:=self;              
