@@ -581,7 +581,8 @@ interface
          m_asyncawait,          { `async expr` runs on a worker thread yielding `future of T`; `await f` joins and reads the result }
          m_parallelfor,         { run `for parallel [(N)] var i := lo to hi do` body across worker threads }
          m_int128,              { 128 bit integer types Int128/UInt128 with literals beyond 64 bit }
-         m_out_var              { inline out-variable declaration and `_` discard at call sites }
+         m_out_var,             { inline out-variable declaration and `_` discard at call sites }
+         m_lightgenerics        { share method bodies across generic specializations whose type params have identical ABI shape }
        );
        tmodeswitches = set of tmodeswitch;
 
@@ -812,7 +813,8 @@ interface
          'ASYNCAWAIT',
          'PARALLELFOR',
          'INT128',
-         'OUTVAR'
+         'OUTVAR',
+         'LIGHTGENERICS'
          );
 
 

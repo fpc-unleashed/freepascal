@@ -152,6 +152,7 @@ const
 
   { Required to support variations of syscalls on Amiga-likes }
   paranr_syscall_lib_first   = 9;             { for basefirst on MorphOS/ppc and AmigaOS4/ppc }
+  paranr_lwg_witness         = high(word)-50; { lightgenerics: implicit witness pointer for Shape_Managed shared bodies. high number puts it after user params in the parsed order while still ahead of parentfp_delphi_cc }
   paranr_syscall_lib_last    = high(word)-3;  { everything else }
 
   paranr_result_leftright    = high(word)-2;
@@ -280,6 +281,21 @@ type
     gcf_record             { specialization type needs to be a record type }
   );
   tgenericconstraintflags=set of tgenericconstraintflag;
+
+  { ABI shape buckets used by `lightgenerics` modeswitch to decide whether two
+    generic specializations may share emitted method bodies. Two specializations
+    whose every type parameter classifies into the same Shape_* bucket can reuse
+    the same machine code; the front end still enforces type identity }
+  tshapeclass = (
+    Shape_Unknown,         { not eligible for sharing }
+    Shape_Ref,             { pointer-sized, no managed lifecycle: class refs, interfaces, raw pointers, classref, procvar, dynamic array }
+    Shape_POD_1,           { 1-byte plain old data: byte, boolean, small enum }
+    Shape_POD_2,           { 2-byte plain old data }
+    Shape_POD_4,           { 4-byte plain old data }
+    Shape_POD_8,           { 8-byte plain old data }
+    Shape_Managed,         { needs ARC-style copy/finalize: ansistring, unicodestring, dynarr-of-managed, managed records, variants }
+    Shape_Complex          { fixed-size record without management ops but not a POD bucket }
+  );
 
   { tsymlist entry types }
   tsltype = (sl_none,

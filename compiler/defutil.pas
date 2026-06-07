@@ -245,6 +245,12 @@ interface
     {# Returns true if p is a cyclic reference (refers to itself at some point via pointer or array) }
     function is_cyclic(p : tdef): Boolean; {$ifdef USEINLINE}inline;{$endif USEINLINE}
 
+    {# Classify a type into an ABI shape bucket used by `lightgenerics` to
+       decide whether generic specializations may share emitted bodies. Pure
+       function, no side effects on the def. Returns Shape_Unknown for any
+       def that does not safely fit a bucket }
+    function classify_generic_shape(def: tdef): tshapeclass;
+
     {# Returns true, if definition is a float }
     function is_fpu(def : tdef) : boolean;
 
@@ -2482,6 +2488,89 @@ implementation
               cur_def:=nil;
           end;
         result:=true;
+      end;
+
+
+    function classify_generic_shape(def: tdef): tshapeclass;
+      var
+        sz : asizeint;
+      begin
+        result:=Shape_Unknown;
+        if not assigned(def) then
+          exit;
+        { managed types route through Shape_Managed regardless of size, because
+          their copy/finalize semantics differ from any POD bucket }
+        if is_managed_type(def) then
+          begin
+            result:=Shape_Managed;
+            exit;
+          end;
+        case def.typ of
+          objectdef:
+            { class refs and interface refs are pointer-sized handles. plain
+              old-style objects are not handles so they fall through to a
+              size-based classification below }
+            if tobjectdef(def).objecttype in [odt_class,odt_interfacecorba,odt_interfacecom,odt_dispinterface,odt_helper,odt_objcclass,odt_objcprotocol] then
+              begin
+                result:=Shape_Ref;
+                exit;
+              end;
+          pointerdef,
+          classrefdef,
+          procvardef,
+          formaldef:
+            begin
+              result:=Shape_Ref;
+              exit;
+            end;
+          arraydef:
+            if ado_IsDynamicArray in tarraydef(def).arrayoptions then
+              begin
+                { is_managed_type already caught managed-element dynarrays.
+                  what remains is dynarr-of-pointer-sized: still a ref-handle }
+                result:=Shape_Ref;
+                exit;
+              end;
+          else
+            ;
+        end;
+        { fall through to a size-based POD classification for ordinals,
+          enums, and sets. floats are intentionally excluded: even though a
+          Double matches Int64 in width, target ABIs route floats through
+          xmm/fpu registers, so monomorphized bodies for T=Double and
+          T=Int64 emit different machine code }
+        case def.typ of
+          orddef,enumdef,setdef:
+            begin
+              sz:=def.size;
+              case sz of
+                1: result:=Shape_POD_1;
+                2: result:=Shape_POD_2;
+                4: result:=Shape_POD_4;
+                8: result:=Shape_POD_8;
+              else
+                result:=Shape_Unknown;
+              end;
+              exit;
+            end;
+          recorddef:
+            begin
+              { plain old records without management ops: try POD bucket by
+                size, otherwise treat as opaque complex shape }
+              sz:=def.size;
+              case sz of
+                1: result:=Shape_POD_1;
+                2: result:=Shape_POD_2;
+                4: result:=Shape_POD_4;
+                8: result:=Shape_POD_8;
+              else
+                result:=Shape_Complex;
+              end;
+              exit;
+            end;
+          else
+            ;
+        end;
       end;
 
 end.
