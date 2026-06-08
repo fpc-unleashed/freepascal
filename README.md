@@ -588,7 +588,7 @@ The section form sits before the body like a `var` / `static` section and suppor
 
 The init runs exactly once per thread: if the expression raises, that thread's variable keeps its zero bytes and the guard stays set, so subsequent calls in that thread skip the init - no retry. Other threads still run their own init independently.
 
-Unlike regular `static`, a compile-time-constant initializer like `threadstatic x := 5;` does **not** fold into the data segment. TLS has no per-thread template, so even a literal needs the guarded runtime assignment to apply per thread. One branch on first use per thread, free thereafter.
+Unlike regular `static`, a non-zero compile-time-constant initializer like `threadstatic x := 5;` does **not** fold into the data segment. TLS has no per-thread template, so it needs the guarded runtime assignment to apply per thread. One branch on first use per thread, free thereafter. A zero-valued constant (`= 0`, `= nil`, `= false`, `= ''`) is the exception: the per-thread block is zero-allocated, so the guard and assignment are dropped, just like the no-initializer form.
 
 The sym lives in its declaring routine's local symtable, so it follows normal Pascal scoping; the parser also registers it on a module-level list so `InsertThreadvars` walks it into `FPC_THREADVARTABLES` at startup.
 
