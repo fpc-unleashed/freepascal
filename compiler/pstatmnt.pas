@@ -3583,7 +3583,15 @@ implementation
                 before the guard fires }
               include(sym.varoptions,vo_is_typed_const);
               cnodeutils.insertbssdata(sym);
-              if assigned(initexpr) then
+              if assigned(initexpr) and is_zerobytes_const(initexpr) then
+                begin
+                  { the initializer folds to all-zero bytes, which the BSS
+                    zero-init already provides (per thread for threadstatic),
+                    so neither a guard nor an assignment is needed }
+                  initexpr.free;
+                  result := cnothingnode.create;
+                end
+              else if assigned(initexpr) then
                 begin
                   { hidden Boolean guard, lives next to the static var in BSS;
                     the generated code sets it true before evaluating the init
