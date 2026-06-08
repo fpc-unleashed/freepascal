@@ -46,6 +46,8 @@ implementation
        systems,
        { aasm }
        cpubase,aasmtai,aasmdata,aasmbase,
+       { module - current_module.localsymtable for threadstatic registration }
+       fmodule,
        { symtable }
        symconst,symbase,symtype,symdef,symsym,symtable,defutil,defcmp,
        paramgr,
@@ -3408,7 +3410,7 @@ implementation
       flag ensures the expression is evaluated only on the first reach;
       if it raises, the flag stays set and the variable keeps its zero
       bytes - no retry. Enabled by modeswitch InlineStatic. }
-    function inline_static_statement : tnode;
+    function inline_static_statement(is_threadvar:boolean) : tnode;
       var
         name           : TIDString;
         hdef           : tdef;
@@ -3423,13 +3425,25 @@ implementation
         tokenbuf       : tdynamicarray;
         storetokenpos,
         filepos        : tfileposinfo;
+        kw_label       : ansistring;
+        guard_prefix   : ansistring;
       begin
+        if is_threadvar then
+          begin
+            kw_label := 'threadstatic';
+            guard_prefix := '$threadstatic_guard_';
+          end
+        else
+          begin
+            kw_label := 'static';
+            guard_prefix := '$static_guard_';
+          end;
         result := nil;
         consume(_ID);
         if (not assigned(current_procinfo)) or
            (current_procinfo.procdef.localst.symtablelevel<normal_function_level) then
           begin
-            Comment(V_Error,'static is only allowed in function/procedure bodies');
+            Comment(V_Error,kw_label+' is only allowed in function/procedure bodies');
             consume_all_until(_SEMICOLON);
             result := cerrornode.create;
             exit;
@@ -3486,7 +3500,7 @@ implementation
               do_typecheckpass(initexpr);
               if (not assigned(initexpr.resultdef)) or (initexpr.resultdef=generrordef) then
                 begin
-                  Comment(V_Error,'cannot infer type for inline static declaration');
+                  Comment(V_Error,'cannot infer type for inline '+kw_label+' declaration');
                   initexpr.free;
                   tokenbuf.free;
                   result := cerrornode.create;
@@ -3519,11 +3533,29 @@ implementation
           current_tokenpos := filepos;
           sym := cstaticvarsym.create(name,vs_value,hdef,[]);
           sym.visibility := symtablestack.top.currentvisibility;
-          symtablestack.top.insertsym(sym);
-          sym.register_sym;
           sym.varstate := vs_initialised;
+          symtablestack.top.insertsym(sym);
+          if is_threadvar then
+            begin
+              { sym lives in the function's localst for proper scoping;
+                register it on the module-level list so InsertThreadvars
+                walks it into FPC_THREADVARTABLES alongside top-level
+                threadvars - without that step the BSS slot stays at a
+                zero TLS handle and FPC_THREADVAR_RELOCATE returns garbage }
+              include(sym.varoptions,vo_is_thread_var);
+              if not assigned(current_module.extra_threadvar_syms) then
+                current_module.extra_threadvar_syms := tfplist.create;
+              current_module.extra_threadvar_syms.add(sym);
+            end;
+          sym.register_sym;
           current_tokenpos := storetokenpos;
-          if assigned(initexpr) and is_constnode(initexpr) then
+          { the typed-constant data-segment fast path applies only to
+            regular static - threadstatic must run the assignment for
+            each thread because FPC's TLS layout has no per-thread
+            template support, so we always take the guarded init path
+            (guard itself is also a threadvar, giving one guard per
+            thread) }
+          if (not is_threadvar) and assigned(initexpr) and is_constnode(initexpr) then
             begin
               { compile-time constant initializer: drop the parsed tree and
                 replay the recorded tokens through read_typed_const, which
@@ -3557,12 +3589,19 @@ implementation
                     the generated code sets it true before evaluating the init
                     expr, so a raised exception leaves the variable on its zero
                     bytes and subsequent calls skip the init block. Marked
-                    vo_is_internal so DFA skips it entirely. }
-                  guardsym := cstaticvarsym.create('$static_guard_'+name,vs_value,pasbool8type,[]);
+                    vo_is_internal so DFA skips it entirely. For threadstatic
+                    the guard is also a threadvar so each thread runs init
+                    independently on its first reach. }
+                  guardsym := cstaticvarsym.create(guard_prefix+name,vs_value,pasbool8type,[]);
                   include(guardsym.symoptions,sp_internal);
                   include(guardsym.varoptions,vo_is_internal);
                   include(guardsym.varoptions,vo_is_typed_const);
                   symtablestack.top.insertsym(guardsym);
+                  if is_threadvar then
+                    begin
+                      include(guardsym.varoptions,vo_is_thread_var);
+                      current_module.extra_threadvar_syms.add(guardsym);
+                    end;
                   guardsym.register_sym;
                   guardsym.varstate := vs_initialised;
                   cnodeutils.insertbssdata(guardsym);
@@ -4201,7 +4240,18 @@ implementation
                 (current_scanner.token=_ID) and
                 (current_scanner.idtoken=_STATIC) then
                begin
-                 code:=inline_static_statement;
+                 code:=inline_static_statement(false);
+                 if assigned(code) then
+                   exit(code);
+               end;
+             { Inline thread-static: per-thread storage via TLS, with a
+               per-thread guard so the init runs once per thread on first
+               reach. `threadstatic name := ...` }
+             if (m_thread_static in current_settings.modeswitches) and
+                (current_scanner.token=_ID) and
+                (current_scanner.idtoken=_THREADSTATIC) then
+               begin
+                 code:=inline_static_statement(true);
                  if assigned(code) then
                    exit(code);
                end;

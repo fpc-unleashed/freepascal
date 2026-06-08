@@ -306,6 +306,13 @@ interface
            -- actual type: tnode (but fmodule should not depend on node) }
         tcinitcode     : tobject;
 
+        { threadstatic syms declared inside function/procedure/method bodies.
+          They live in their declaring routine's localst for proper scoping,
+          but InsertThreadvars only walks globalsymtable / localsymtable, so
+          we register them here for the runtime FPC_THREADVARTABLES walk to
+          pick up. Holds tstaticvarsym pointers; nil until first use. }
+        extra_threadvar_syms : tfplist;
+
         { the current extended rtti directive }
         rtti_directive : trtti_directive;
 
@@ -774,6 +781,7 @@ implementation
         deprecatedmsg:=nil;
         namespace:=nil;
         tcinitcode:=nil;
+        extra_threadvar_syms:=nil;
         _exports:=TLinkedList.Create;
         dllscannerinputlist:=TFPHashList.Create;
         asmdata:=casmdata.create(modulename);
@@ -881,6 +889,8 @@ implementation
         stringdispose(namespace);
         tcinitcode.free;
         tcinitcode := nil;
+        extra_threadvar_syms.free;
+        extra_threadvar_syms := nil;
         localunitsearchpath.Free;
         localunitsearchpath := nil;
         localobjectsearchpath.free;
