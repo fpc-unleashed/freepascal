@@ -112,7 +112,9 @@ end;
 
 ## Storage and registration
 
-The hidden variable carries `vo_is_thread_var`, so codegen routes loads and stores through `FPC_THREADVAR_RELOCATE` and the BSS slot holds a TLS handle. The slot is registered in `FPC_THREADVARTABLES` at unit / program init, the same as a classic top-level `threadvar`.
+The hidden variable carries `vo_is_thread_var`, so codegen routes loads and stores through the threadvar relocation mechanism and the BSS slot holds a TLS handle. The slot is registered in `FPC_THREADVARTABLES` at unit / program init, the same as a classic top-level `threadvar`.
+
+On win32 / win64 each access does not call `FPC_THREADVAR_RELOCATE`: the fast path is inlined as a read of the running thread's threadvar block from the TEB TLS slot array plus the variable offset, with the helper reached only when the block is not yet allocated for the thread. With the address hoisted out of a loop (which `-O2` does), a threadstatic access then costs the same as a global; the call-per-access form was several times slower.
 
 The sym lives in its declaring routine's local symtable, so `hi` declared in `procedure test` is **not visible** from other routines in the same unit - regular Pascal scoping. To make registration still work, the parser appends every threadstatic sym to `current_module.extra_threadvar_syms`, and `InsertThreadvars` walks that list alongside the standard global / local symtables when building `FPC_THREADVARTABLES`.
 
