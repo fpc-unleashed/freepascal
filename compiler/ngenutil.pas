@@ -1432,6 +1432,7 @@ implementation
       sym: tasmsymbol;
       tabledef: trecorddef;
       add : boolean;
+      s_i : longint;
     begin
        if (tf_section_threadvars in target_info.flags) then
          exit;
@@ -1440,6 +1441,11 @@ implementation
        if assigned(current_module.globalsymtable) then
          current_module.globalsymtable.SymList.ForEachCall(@AddToThreadvarList,tcb);
        current_module.localsymtable.SymList.ForEachCall(@AddToThreadvarList,tcb);
+       { threadstatic syms declared inside routine bodies live in their
+         declaring routine's localst for proper scoping; pick them up too }
+       if assigned(current_module.extra_threadvar_syms) then
+         for s_i:=0 to current_module.extra_threadvar_syms.count-1 do
+           AddToThreadvarList(tobject(current_module.extra_threadvar_syms[s_i]),tcb);
        if trecordsymtable(tabledef.symtable).datasize<>0 then
          { terminator }
          tcb.emit_tai(tai_const.Create_nil_dataptr,voidpointertype);
