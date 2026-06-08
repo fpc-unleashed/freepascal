@@ -329,6 +329,20 @@ implementation
          oldfilepos: tfileposinfo;
          blk_i: longint;
       begin
+        { splice the guarded per-thread initializers from `threadstatic`
+          declaration sections to the front of the body; done before the
+          local-var defaults below so those still run first, matching the
+          inline form where the section sits after the var section }
+        if assigned(current_procinfo.threadstatic_initcode) then
+         begin
+           if assigned(block) and (block.nodetype=blockn) then
+             begin
+               tblocknode(block).left:=cstatementnode.create(
+                 current_procinfo.threadstatic_initcode,tblocknode(block).left);
+               current_procinfo.threadstatic_initcode:=nil;
+             end;
+         end;
+
         { initialized variables }
         if current_procinfo.procdef.localst.symtabletype=localsymtable then
          begin
@@ -3383,6 +3397,14 @@ implementation
                         handle_unexpected_had_generic;
                         if m_static_section in current_settings.modeswitches then
                           static_dec(hadgeneric)
+                        else
+                          break;
+                      end;
+                    _THREADSTATIC:
+                      begin
+                        handle_unexpected_had_generic;
+                        if m_thread_static in current_settings.modeswitches then
+                          threadstatic_dec(hadgeneric)
                         else
                           break;
                       end

@@ -147,6 +147,11 @@ unit procinfo;
             statement_block can avoid creating an extra blocksymtable there }
           parsing_main_block : boolean;
 
+          { guarded per-thread init statements collected from `threadstatic`
+            declaration sections; prepended to the routine body so each
+            initializer runs once per thread on first entry }
+          threadstatic_initcode : tnode;
+
           { Registers saved by the current procedure - useful for peephole optimizers }
           saved_regs_int,
           saved_regs_address,
@@ -255,6 +260,7 @@ implementation
         CurrBreakLabel:=nil;
         CurrContinueLabel:=nil;
         parsing_main_block:=false;
+        threadstatic_initcode:=nil;
         if Assigned(parent) and (parent.procdef.parast.symtablelevel>=normal_function_level) then
           parent.addnestedproc(Self);
       end;
@@ -277,6 +283,11 @@ implementation
          localrefsyms := nil;
          localrefdefs.free;
          localrefdefs := nil;
+         { freed here only if the body was never assembled (e.g. parse error
+           or pure-asm body); on the normal path it is spliced into the body
+           and the field is cleared }
+         threadstatic_initcode.free;
+         threadstatic_initcode := nil;
       end;
 
     procedure tprocinfo.destroy_tree;
