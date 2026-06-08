@@ -134,6 +134,12 @@ A property with a type but no `read` / `write` clause synthesizes a `strict priv
 
 Enabled via `{$modeswitch autoproperties}`.
 
+## [Lightweight Generics](lightgenerics.md)
+
+Drops the duplicated-body cost of stock monomorphization. The compiler buckets each type parameter into an ABI shape class - `Shape_Ref`, `Shape_POD_1/2/4/8`, `Shape_Managed`, `Shape_Complex` - and emits one method body per (bucket, method) pair instead of one per specialization. Class specializations whose every type parameter is `Shape_Ref` (class refs, interfaces, raw pointers, classref, procvar, dynamic arrays) share, as do specializations whose parameters all land in the same `Shape_POD_N` bucket (`TCell<Integer>` and `TCell<LongWord>` reuse one body; `TCell<Int64>` keeps its own). Multi-parameter generics match on a composite key (one shape per parameter in order), and sharing covers instance/class/static methods, constructors, destructors, property accessors, generic records, standalone generic functions, and cross-module specializations. Distinct specializations keep distinct types, distinct VMTs and distinct RTTI, but their VMT slots and call sites all resolve to the same code address. Floats are excluded (fpu/xmm ABI); managed specializations share any body that does not assign the type parameter, and fall back to per-type code for the bodies that do.
+
+Opt-in via `{$modeswitch lightgenerics}` - not in the default unleashed set yet.
+
 ## [Tweaks](tweaks.md)
 
 Small semantic adjustments that make standard Pascal constructs behave the way most people expect them to. No dedicated modeswitch - these are unleashed-mode-only. Currently covers the preserved for-loop counter (`for i := 1 to N do ... break;` keeps the right value of `i` after the loop), with more entries to follow.

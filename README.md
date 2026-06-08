@@ -37,6 +37,7 @@
   - [Compound Assignment for Pascal Operators](#compound-assignment-for-pascal-operators)
   - [Custom Binary Metadata](#custom-binary-metadata)
   - [Compile-Time Directives](#compile-time-directives)
+  - [Lightweight Generics](#lightweight-generics)
   - [Extra Improvements](#extra-improvements)
   - [Detailed Documentation](#detailed-documentation)
 - [Installation](#installation)
@@ -1421,6 +1422,23 @@ end.
 ```
 
 See [unleashed/docs/embed.md](unleashed/docs/embed.md) for the full reference, including the encoding, empty-file behavior, and inference caveats.
+
+---
+
+### Lightweight Generics
+
+**Activate:** `{$modeswitch lightgenerics}` (opt-in; not enabled by default in `{$mode unleashed}`)
+
+Stock generics are monomorphized. Every `TList<TForm>` and `TList<TButton>` gets its own copy of every method body, even when the two copies are byte-identical on the target ABI. For pointer-typed parameters that is pure duplication, since a class reference, interface, or raw pointer all move the same way (one 8-byte load/store on x64). Lightweight generics emits one body per ABI shape and points every same-shape specialization at it.
+
+```pas
+{$mode unleashed}
+{$modeswitch lightgenerics}
+```
+
+Type identity is untouched: `is`/`as`, RTTI, distinct VMTs, and distinct types behave exactly as before, and only the machine code behind the methods is shared. The compiler buckets each type parameter by how it is passed and copied (`Shape_Ref` for all pointer-like types, `Shape_POD_1/2/4/8` per integer width, plus separate buckets for managed and complex records), then shares a body when every parameter lands in the same bucket and the generated code is byte-identical. Floats stay separate because they move through xmm/fpu registers, and a body whose type identity leaks (`TypeInfo(T)`, `as`/`is` on `T`) falls back to per-type code automatically. Sharing spans units: a specialization in one unit reuses a body emitted in another through the PPU.
+
+See [unleashed/docs/lightgenerics.md](unleashed/docs/lightgenerics.md) for the shape table, the canonical symbol scheme, cross-module behavior, and how to verify two specializations resolve to the same code address.
 
 ---
 
