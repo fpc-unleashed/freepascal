@@ -100,6 +100,17 @@ interface
          destructor destroy;override;
        end;
 
+       { stack for active recording buffers; each frame keeps its own
+         last_settings/last_message/last_filepos snapshot so independent
+         generic templates capture their initial state correctly }
+       trecordstack = class
+         tokenbuf : tdynamicarray;
+         last_settings : tsettings;
+         last_message  : pmessagestaterecord;
+         last_filepos  : tfileposinfo;
+         next : trecordstack;
+       end;
+
        tcompile_time_predicate = function(var valuedescr: String) : Boolean;
 
        tspecialgenerictoken =
@@ -175,6 +186,9 @@ interface
           { if nexttoken<>NOTOKEN, then nexttokenpos holds its filepos }
           next_filepos   : tfileposinfo;
 
+          { stack of outer recording buffers (nested generic templates) }
+          recordouterstack : trecordstack;
+
           { current macro nesting depth }
           macro_nesting_depth,
           comment_level,
@@ -233,8 +247,13 @@ interface
           procedure handledirectives;
           procedure linebreak;
           procedure recordtoken;
+          { internal: record current token into the active buf only;
+            recordtoken iterates over the outer-record stack and calls this
+            with each frame's state swapped in. }
+          procedure record_token_active;
           procedure startrecordtokens(buf:tdynamicarray);
           procedure stoprecordtokens;
+          procedure free_recordouterstack;
           function is_recording_tokens:boolean;
           procedure replaytoken;
           procedure startreplaytokens(buf:tdynamicarray; change_endian:boolean);
@@ -3249,6 +3268,7 @@ type
       { reset scanner }
         preprocstack:=nil;
         replaystack:=nil;
+        recordouterstack:=nil;
         comment_level:=0;
         yylexcount:=0;
         block_type:=bt_general;
@@ -3288,6 +3308,7 @@ type
           end;
         while assigned(replaystack) do
           popreplaystack;
+        free_recordouterstack;
         if not inputfile.closed then
           closeinputfile;
         if inputfile.is_macro then
@@ -3456,11 +3477,24 @@ type
 {$endif}
 
     procedure tscannerfile.startrecordtokens(buf:tdynamicarray);
+      var
+        frame : trecordstack;
       begin
         if not assigned(buf) then
           internalerror(200511172);
+        { nested generic templates: push the outer recording onto a stack
+          and start the inner with fresh state so its initial settings/filepos
+          markers are emitted at its own start }
         if assigned(recordtokenbuf) then
-          internalerror(200511173);
+          begin
+            frame:=trecordstack.create;
+            frame.tokenbuf:=recordtokenbuf;
+            frame.last_settings:=last_settings;
+            frame.last_message:=last_message;
+            frame.last_filepos:=last_filepos;
+            frame.next:=recordouterstack;
+            recordouterstack:=frame;
+          end;
         recordtokenbuf:=buf;
         fillchar(last_settings,sizeof(last_settings),0);
         last_message:=nil;
@@ -3469,10 +3503,36 @@ type
 
 
     procedure tscannerfile.stoprecordtokens;
+      var
+        frame : trecordstack;
       begin
         if not assigned(recordtokenbuf) then
           internalerror(200511174);
-        recordtokenbuf:=nil;
+        if assigned(recordouterstack) then
+          begin
+            { pop outer frame, restore its state }
+            frame:=recordouterstack;
+            recordouterstack:=frame.next;
+            recordtokenbuf:=frame.tokenbuf;
+            last_settings:=frame.last_settings;
+            last_message:=frame.last_message;
+            last_filepos:=frame.last_filepos;
+            frame.free;
+          end
+        else
+          recordtokenbuf:=nil;
+      end;
+
+    procedure tscannerfile.free_recordouterstack;
+      var
+        frame : trecordstack;
+      begin
+        while assigned(recordouterstack) do
+          begin
+            frame:=recordouterstack;
+            recordouterstack:=frame.next;
+            frame.free;
+          end;
       end;
 
     function tscannerfile.is_recording_tokens: boolean;
@@ -3797,6 +3857,47 @@ type
 
     procedure tscannerfile.recordtoken;
       var
+        frame : trecordstack;
+        saved_buf : tdynamicarray;
+        saved_settings : tsettings;
+        saved_message : pmessagestaterecord;
+        saved_filepos : tfileposinfo;
+      begin
+        if not assigned(recordtokenbuf) then
+          internalerror(200511176);
+        { record into the topmost (innermost) buffer first }
+        record_token_active;
+        { then walk outer frames and record into each, swapping their
+          last_* state in so per-frame markers are emitted correctly }
+        if assigned(recordouterstack) then
+          begin
+            saved_buf:=recordtokenbuf;
+            saved_settings:=last_settings;
+            saved_message:=last_message;
+            saved_filepos:=last_filepos;
+            frame:=recordouterstack;
+            while assigned(frame) do
+              begin
+                recordtokenbuf:=frame.tokenbuf;
+                last_settings:=frame.last_settings;
+                last_message:=frame.last_message;
+                last_filepos:=frame.last_filepos;
+                record_token_active;
+                frame.last_settings:=last_settings;
+                frame.last_message:=last_message;
+                frame.last_filepos:=last_filepos;
+                frame:=frame.next;
+              end;
+            recordtokenbuf:=saved_buf;
+            last_settings:=saved_settings;
+            last_message:=saved_message;
+            last_filepos:=saved_filepos;
+          end;
+      end;
+
+
+    procedure tscannerfile.record_token_active;
+      var
         t : ttoken;
         s : tspecialgenerictoken;
         len,msgnb,copy_size : asizeint;
@@ -3804,8 +3905,6 @@ type
         b : byte;
         pmsg : pmessagestaterecord;
       begin
-        if not assigned(recordtokenbuf) then
-          internalerror(200511176);
         t:=_GENERICSPECIALTOKEN;
         { ensure that all fields of settings are up to date }
         current_settings.verbosity:=status.verbosity;
