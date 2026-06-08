@@ -221,6 +221,10 @@ interface
     function get_string_value(p : tnode; def: tstringdef) : tstringconstnode;
     function is_constresourcestringnode(p : tnode) : boolean;
     function is_emptyset(p : tnode):boolean;
+    { true when the constant node's value is the all-zero-bytes representation
+      (0 ordinal, nil pointer, empty string, empty set), so zeroed storage
+      already holds it and no explicit initializer assignment is needed }
+    function is_zerobytes_const(p : tnode):boolean;
     function genconstsymtree(p : tconstsym) : tnode;
 
     function getbooleanvalue(p : tnode) : boolean;
@@ -320,6 +324,25 @@ implementation
       begin
         is_emptyset:=(p.nodetype=setconstn) and
                      (Tsetconstnode(p).value_set^=[]);
+      end;
+
+
+    function is_zerobytes_const(p : tnode):boolean;
+      begin
+        case p.nodetype of
+          niln:
+            result:=true;
+          ordconstn:
+            result:=tordconstnode(p).value=0;
+          pointerconstn:
+            result:=tpointerconstnode(p).value=0;
+          stringconstn:
+            result:=tstringconstnode(p).len=0;
+          setconstn:
+            result:=tsetconstnode(p).value_set^=[];
+          else
+            result:=false;
+        end;
       end;
 
 

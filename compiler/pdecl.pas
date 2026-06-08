@@ -743,11 +743,15 @@ implementation
                        block_type:=old_block_type;
                        initexpr:=comp_expr([ef_accept_equal]);
                        block_type:=bt_var;
-                       for ni:=0 to namecount-1 do
-                         if ni<namecount-1 then
-                           emit_guarded_init(syms[ni],initexpr.getcopy)
-                         else
-                           emit_guarded_init(syms[ni],initexpr);
+                       if is_zerobytes_const(initexpr) then
+                         { all-zero value already provided by per-thread BSS }
+                         initexpr.free
+                       else
+                         for ni:=0 to namecount-1 do
+                           if ni<namecount-1 then
+                             emit_guarded_init(syms[ni],initexpr.getcopy)
+                           else
+                             emit_guarded_init(syms[ni],initexpr);
                      end;
                    { no value -> per-thread BSS zero-init handled by the RTL }
                    consume(_SEMICOLON);
@@ -786,7 +790,10 @@ implementation
                       (torddef(hdef).ordtype in [s8bit,u8bit,s16bit,u16bit]) then
                      hdef:=s32inttype;
                    sym:=make_tsvar(orgname,hdef,positions[0]);
-                   emit_guarded_init(sym,initexpr);
+                   if is_zerobytes_const(initexpr) then
+                     initexpr.free
+                   else
+                     emit_guarded_init(sym,initexpr);
                    consume(_SEMICOLON);
                  end;
 
