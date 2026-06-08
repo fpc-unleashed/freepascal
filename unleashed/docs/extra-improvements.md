@@ -135,6 +135,48 @@ var
 
 Without the switch in non-Delphi modes you still write the explicit form (`generic TList<T>` / `specialize TList<integer>`); the switch only adds the implicit form on top, it does not remove anything.
 
+## Nested generic methods
+
+Stock FPC rejects any `generic` declared inside another `generic` with `Fatal: Declaration of generic inside another generic is not allowed`, so a generic class cannot carry a generic method of its own:
+
+```pas
+generic TBox<T> = class
+  generic procedure Map<U>(item: U);   // stock FPC: rejected
+end;
+```
+
+The block was an implementation limit, not a language one. FPC records a generic's body as a replayable token stream into a single buffer; nesting one generic inside another needs a second recording in flight, which the single buffer could not hold (it raised an internal error), so the parser forbade the construct outright. Delphi has supported generic methods on generic classes for years.
+
+In `unleashed` mode the restriction is lifted. A generic class or record can declare a method with its own type parameter list, independent of the enclosing type's:
+
+```pas
+{$mode unleashed}
+
+type
+  TBox<T> = class
+    FValue: T;
+    function Pair<U>(const a: T; const b: U): string;
+  end;
+
+function TBox<T>.Pair<U>(const a: T; const b: U): string;
+begin
+  FValue := a;
+  Result := Format('T=%d U=%d', [SizeOf(T), SizeOf(U)]);
+end;
+
+var
+  b: TBox<Integer>;                  // class specialized once, T = Integer
+begin
+  b := TBox<Integer>.Create;
+  writeln(b.Pair<Byte>(10, 5));      // method specialized here: U = Byte
+  writeln(b.Pair<Double>(20, 3.14)); // same method, different U: U = Double
+end.
+```
+
+The class and the method specialize independently: `TBox<Integer>` fixes `T`, and each call site picks its own `U`. The nested template survives `.ppu` serialization, so a generic method declared in one unit specializes correctly when called from another. Nested generic types inside a generic, type-parameter constraints on the nested method (`Foo<U: class>`), and managed `U` types all work.
+
+Available only in `unleashed` mode, no dedicated modeswitch.
+
 ## Compound assignment on properties
 
 Stock FPC rejects `prop += x` (and all other compound forms `-=`, `*=`, `/=`, `and=`, `or=`, `xor=`, `mod=`, `div=`, `shl=`, `shr=`) on a class or record property with `Error: Variable identifier expected`. The reasoning in the parser comment is that the read accessor and the write accessor can target different storage, so the rewrite into `prop := prop + x` was disallowed even though it is exactly what the user has to type by hand.
