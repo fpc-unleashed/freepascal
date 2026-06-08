@@ -29,6 +29,7 @@
   - [Lazy Label Declarations](#lazy-label-declarations)
   - [Compound Assignment for Pascal Operators](#compound-assignment-for-pascal-operators)
   - [Custom Binary Metadata](#custom-binary-metadata)
+  - [Compile-Time Directives](#compile-time-directives)
   - [Extra Improvements](#extra-improvements)
   - [Detailed Documentation](#detailed-documentation)
 - [Installation](#installation)
@@ -1122,6 +1123,26 @@ The OS-name table is case-insensitive and accepts an optional `Win` prefix (`Win
 > Passing the flags on a non-PE target compiles cleanly but the values are silently ignored. `--fpcsignature` works on every target.
 
 See [unleashed/docs/binary-metadata.md](unleashed/docs/binary-metadata.md) for full per-flag rationale, the OS-name table, and cross-platform notes.
+
+---
+
+### Compile-Time Directives
+
+Source-level directives that perform compile-time work other than mode / modeswitch toggling. Always available - not gated by any modeswitch.
+
+- **`{$incfile NAME 'path'}`** - reads the file at `'path'` as raw bytes and emits `const NAME: String = '...';` at the directive site. Bytes are encoded as printable-ASCII runs joined to `#$nn` escapes for control and high-bit bytes. Path is resolved like `{$I}`: absolute or searched in the current source dir, then the local and global includepath. Useful for baking small fixed assets (icons, schemas, lookup tables) directly into the binary without runtime file I/O.
+
+Example:
+```pas
+program demo;
+{$mode unleashed}
+{$incfile icon 'assets/app.ico'}
+begin
+  // `icon` is a String holding the bytes of assets/app.ico; length(icon) = file size
+end.
+```
+
+See [unleashed/docs/incfile.md](unleashed/docs/incfile.md) for the full reference.
 
 ---
 

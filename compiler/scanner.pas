@@ -3141,6 +3141,118 @@ type
          end;
       end;
 
+    { $incfile NAME 'path' - read file at 'path' as binary, emit
+      `const NAME: String = '...'+#$nn+...;` at the directive site.
+      Path is searched like $I: absolute, current source dir, then includepath. }
+    procedure dir_incfile;
+      const
+        hexchars : array[0..15] of char = '0123456789abcdef';
+        chars_per_line = 64;
+      var
+        args      : string;
+        varname   : string;
+        pathspec  : TCmdStr;
+        path,name : TCmdStr;
+        foundfile : TCmdStr;
+        f         : file;
+        filebytes : longint;
+        bytesread : longint;
+        raw       : ansistring;
+        code      : ansistring;
+        line      : ansistring;
+        i         : longint;
+        b         : byte;
+        printable : boolean;
+        instring  : boolean;
+      begin
+        current_scanner.skipspace;
+        args := current_scanner.readcomment;
+        varname := GetToken(args, ' ');
+        if varname = '' then
+          begin
+            Comment(V_Error, 'incfile: missing variable name and file path');
+            exit;
+          end;
+        pathspec := TCmdStr(GetToken(args, ' '));
+        if pathspec = '' then
+          begin
+            Comment(V_Error, 'incfile: missing file path');
+            exit;
+          end;
+        pathspec := FixFileName(pathspec);
+        path := ExtractFilePath(pathspec);
+        name := ExtractFileName(pathspec);
+        if not findincludefile(path, name, foundfile) then
+          begin
+            Message1(scan_f_cannot_open_includefile, pathspec);
+            exit;
+          end;
+        assign(f, foundfile);
+        {$push}{$i-}
+        reset(f, 1);
+        {$pop}
+        if IOResult <> 0 then
+          begin
+            Message1(scan_f_cannot_open_includefile, foundfile);
+            exit;
+          end;
+        filebytes := FileSize(f);
+        SetLength(raw, filebytes);
+        bytesread := 0;
+        if filebytes > 0 then
+          BlockRead(f, raw[1], filebytes, bytesread);
+        close(f);
+        if bytesread <> filebytes then
+          SetLength(raw, bytesread);
+        if length(raw) = 0 then
+          code := 'const ' + varname + ': String = '''';' + LineEnding
+        else
+          begin
+            code := 'const ' + varname + ': String = ' + LineEnding;
+            line := '';
+            instring := false;
+            for i := 1 to length(raw) do
+              begin
+                { continuation line - join with `+` to previous chunk }
+                if (line = '') and (i > 1) then
+                  line := line + '+';
+                b := byte(raw[i]);
+                { printable ASCII except apostrophe (needs escaping) }
+                printable := (b >= 32) and (b <= 126) and (b <> $27);
+                if printable and not instring then
+                  begin
+                    line := line + '''';
+                    instring := true;
+                  end;
+                if (not printable) and instring then
+                  begin
+                    line := line + '''';
+                    instring := false;
+                  end;
+                if printable then
+                  line := line + chr(b)
+                else if b <= $f then
+                  line := line + '#$' + hexchars[b]
+                else
+                  line := line + '#$' + hexchars[b shr 4] + hexchars[b and $f];
+                if length(line) >= chars_per_line then
+                  begin
+                    if instring then
+                      line := line + '''';
+                    line := line + LineEnding;
+                    code := code + line;
+                    instring := false;
+                    line := '';
+                  end;
+              end;
+            if instring then
+              line := line + '''';
+            code := code + line + ';' + LineEnding;
+          end;
+        current_scanner.substitutemacro('incfile_' + varname, @code[1], length(code),
+          current_scanner.line_no, current_scanner.inputfile.ref_index, true);
+      end;
+
     procedure dir_rttiexpose;
       begin
         current_scanner.skipspace;
@@ -7513,6 +7625,7 @@ exit_label:
         AddDirective('DEFINE',directive_all, @dir_define);
         AddDirective('UNDEF',directive_all, @dir_undef);
         AddDirective('RTTIEXPOSE',directive_all, @dir_rttiexpose);
+        AddDirective('INCFILE',directive_all, @dir_incfile);
 
         AddConditional('IF',directive_all, @dir_if);
         AddConditional('IFDEF',directive_all, @dir_ifdef);

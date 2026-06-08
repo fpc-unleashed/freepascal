@@ -118,6 +118,12 @@ Three CLI flags that override metadata fields the compiler embeds into the produ
 
 CLI-only; no directive form.
 
+## [Embed file at compile time - `$incfile`](incfile.md)
+
+`{$incfile NAME 'path'}` reads the file at `'path'` as raw bytes and emits a `const NAME: String = '...';` at the directive site, with non-printable bytes encoded as `#$nn` escapes. Path resolution matches `{$I}` (absolute or searched in source dir / includepath). Useful for baking small assets (icons, schemas, lookup tables) directly into the binary without runtime file I/O.
+
+Directive only; available in every mode.
+
 ## [Introduced Functions, Procedures and Intrinsics](introduced-functions.md)
 
 Reference table of identifiers FPC Unleashed adds on top of stock FPC and that user code can call without an extra `uses`: compile-time intrinsics (`OffsetOf`, `BitOffsetOf`, `AlignOf`, `BitAlignOf`, extended `BitSizeOf`), and the aligned heap allocator in the `system` unit (`GetMemAligned`, `AllocMemAligned`, `ReAllocMemAligned`, `FreeMemAligned`). Each row lists the signature, category (intrinsic / RTL `system` / other RTL unit), gating modeswitch, and the feature page that covers the surrounding context.
