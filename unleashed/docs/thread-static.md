@@ -89,7 +89,9 @@ The inline form returns the guarded init node straight into the statement stream
 
 ## No const-init fast path
 
-Regular `static` short-circuits a compile-time-constant initializer into the typed-constant data segment - no guard, no BSS, no runtime branch. **Thread-static cannot do that.** FPC's TLS layout has no per-thread template, so even a literal `threadstatic x := 5;` needs the guarded runtime assignment to apply per thread. The cost is one branch on first use per thread - free thereafter.
+Regular `static` short-circuits a compile-time-constant initializer into the typed-constant data segment - no guard, no BSS, no runtime branch. **Thread-static cannot do that for a non-zero value.** FPC's TLS layout has no per-thread template, so a literal `threadstatic x := 5;` needs the guarded runtime assignment to apply per thread. The cost is one branch on first use per thread - free thereafter.
+
+The one case that does match `static`: an initializer that folds to all-zero bytes (`= 0`, `= nil`, `= false`, `= ''`, empty set). The per-thread block is zero-allocated by the RTL, so the value is already there - the compiler drops the guard and the assignment entirely, exactly as if no initializer were given. A non-zero constant still needs the guard, because the only way to put a non-zero value into a freshly zeroed per-thread block is to run code once per thread.
 
 ## Differences from related features
 
