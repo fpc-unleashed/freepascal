@@ -181,17 +181,17 @@ end;
 
 function TRBTree<T,KCOMP>.RotateSingle(ARoot: PRBTreeNode; const ADir: Boolean): PRBTreeNode;
 var
-  t : PRBTreeNode;
+  tmp : PRBTreeNode;
 begin
-  t := ARoot^.Links[not ADir];
+  tmp := ARoot^.Links[not ADir];
 
-  ARoot^.Links[not ADir] := t^.Links[ADir];
-  t^.Links[ADir] := ARoot;
+  ARoot^.Links[not ADir] := tmp^.Links[ADir];
+  tmp^.Links[ADir] := ARoot;
 
   ARoot^.Red := True;
-  t^.Red := False;
+  tmp^.Red := False;
 
-  Result := t;
+  Result := tmp;
 end;
 
 class function TRBTree<T,KCOMP>.TreeCreateIterator() : PBaseIterator;static;
@@ -373,7 +373,7 @@ end;
 function TRBTree<T,KCOMP>.Insert(const AData: TRBTreeNodeData): PRBTreeNode;
 var
   head : TRBTreeNode;
-  g, t : PRBTreeNode; // Grandparent & parent
+  g, tp : PRBTreeNode; // Grandparent & parent
   p, q : PRBTreeNode; // Iterator & parent
   dir, last, dir2 : Boolean;
   cp : TRBTreeNodeComparator;
@@ -389,11 +389,11 @@ begin
     last := False;
 
     // Set up helpers
-    t := @head;
+    tp := @head;
     g := nil;
     p := nil;
-    t^.Links[True] := Root;
-    q := t^.Links[True];
+    tp^.Links[True] := Root;
+    q := tp^.Links[True];
 
   // Search down the tree
     cp := Comparator;
@@ -411,11 +411,11 @@ begin
 
       // Fix red violation
       if IsRed(q) and IsRed(p) then begin
-        dir2 := (t^.Links[True] = g);
+        dir2 := (tp^.Links[True] = g);
         if (q = p^.Links[last]) then
-          t^.Links[dir2] := RotateSingle(g, not last)
+          tp^.Links[dir2] := RotateSingle(g, not last)
         else
-          t^.Links[dir2] := RotateDouble(g, not last );
+          tp^.Links[dir2] := RotateDouble(g, not last );
       end;
 
       // Stop if found
@@ -429,7 +429,7 @@ begin
 
       // Update helpers
       if (g <> nil) then
-        t := g;
+        tp := g;
       g := p;
       p := q;
       q := q^.Links[dir];
