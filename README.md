@@ -18,6 +18,7 @@
   - [Flexible Array Members](#flexible-array-members)
   - [Composable Records](#composable-records)
   - [Static Variables](#static-variables)
+  - [Thread-Static Variables](#thread-static-variables)
   - [Scoped Cleanup (defer, autofree, scoped with)](#scoped-cleanup)
   - [For-Step](#for-step)
   - [Tweaks](#tweaks)
@@ -55,6 +56,7 @@ The following modeswitches are enabled automatically:
 | `inlinevars`                       | Declare variables inline anywhere inside a `begin..end` block |
 | `staticsection`                    | Body-level `static` declaration block (typed-const-style, writeable, optional initializer) |
 | `inlinestatic`                     | Inline `static name := expr;` declarations anywhere inside a body |
+| `threadstatic`                     | Inline `threadstatic name := expr;` declarations - per-thread storage via TLS |
 | `tuples`                           | Anonymous tuple types, literals, and destructuring            |
 | `match`                            | Pattern matching with first-match semantics                   |
 | `multivarinit`                     | Initialize several variables of the same type with one value  |
@@ -556,6 +558,33 @@ Initialization runs once on the first reach via a hidden Boolean guard set true 
 `static` is rejected at unit / program level - use plain `var`, which already gives program lifetime and is visible at that scope.
 
 See [unleashed/docs/static-section.md](unleashed/docs/static-section.md) for the full reference: type inference rules, initializer semantics, guard behaviour on exceptions and recursion, multi-name declarations, and edge cases.
+
+---
+
+### Thread-Static Variables
+
+**Activate:** available in Unleashed mode (modeswitch `threadstatic`).
+
+Inline `threadstatic name := expr;` declares a **per-thread** variable with program lifetime and block-local source scope. Each thread sees its own copy via FPC's TLS infrastructure; the init expression runs once per thread on first reach, guarded by a per-thread Boolean.
+
+```pascal
+function NextId: Integer;
+begin
+  threadstatic next := 1000;   // per-thread counter
+  Result := next;
+  Inc(next);
+end;
+```
+
+Two TThread workers calling `NextId` see two independent counters. Within one thread the value survives between calls; across threads there is no bleed.
+
+The init runs exactly once per thread: if the expression raises, that thread's variable keeps its zero bytes and the guard stays set, so subsequent calls in that thread skip the init - no retry. Other threads still run their own init independently.
+
+Unlike regular `static`, a compile-time-constant initializer like `threadstatic x := 5;` does **not** fold into the data segment. TLS has no per-thread template, so even a literal needs the guarded runtime assignment to apply per thread. One branch on first use per thread, free thereafter.
+
+The sym lives in its declaring routine's local symtable, so it follows normal Pascal scoping; the parser also registers it on a module-level list so `InsertThreadvars` walks it into `FPC_THREADVARTABLES` at startup.
+
+See [unleashed/docs/thread-static.md](unleashed/docs/thread-static.md) for the full reference: type inference rules, storage layout, guard behaviour, TLS registration, and current limitations (inline form only, no const-init template).
 
 ---
 
