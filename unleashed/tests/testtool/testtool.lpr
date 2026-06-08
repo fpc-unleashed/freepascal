@@ -613,6 +613,11 @@ begin
       begin
         if (GFilter <> '') and not ContainsText(full, GFilter) then continue;
         if (GExclude <> '') and ContainsText(full, GExclude) then continue;
+        // skip support units (file starts with `unit <name>;`) - they are
+        // helpers consumed by a program test and not test entry points
+        var head := ReadFileHead(full, 256);
+        var first := Trim(head);
+        if StartsText('unit ', first) then continue;
         List.Add(full);
       end;
     until FindNext(sr) <> 0;
