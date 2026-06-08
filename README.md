@@ -56,7 +56,7 @@ The following modeswitches are enabled automatically:
 | `inlinevars`                       | Declare variables inline anywhere inside a `begin..end` block |
 | `staticsection`                    | Body-level `static` declaration block (typed-const-style, writeable, optional initializer) |
 | `inlinestatic`                     | Inline `static name := expr;` declarations anywhere inside a body |
-| `threadstatic`                     | Inline `threadstatic name := expr;` declarations - per-thread storage via TLS |
+| `threadstatic`                     | `threadstatic` per-thread variables via TLS - inline statement or declaration section |
 | `tuples`                           | Anonymous tuple types, literals, and destructuring            |
 | `match`                            | Pattern matching with first-match semantics                   |
 | `multivarinit`                     | Initialize several variables of the same type with one value  |
@@ -565,18 +565,26 @@ See [unleashed/docs/static-section.md](unleashed/docs/static-section.md) for the
 
 **Activate:** available in Unleashed mode (modeswitch `threadstatic`).
 
-Inline `threadstatic name := expr;` declares a **per-thread** variable with program lifetime and block-local source scope. Each thread sees its own copy via FPC's TLS infrastructure; the init expression runs once per thread on first reach, guarded by a per-thread Boolean.
+`threadstatic` declares a **per-thread** variable with program lifetime and block-local source scope. Each thread sees its own copy via FPC's TLS infrastructure; the init expression runs once per thread on first reach, guarded by a per-thread Boolean. It comes in two forms with identical semantics: an inline statement and a declaration section before the body.
 
 ```pascal
 function NextId: Integer;
 begin
-  threadstatic next := 1000;   // per-thread counter
+  threadstatic next := 1000;   // inline form, per-thread counter
+  Result := next;
+  Inc(next);
+end;
+
+function NextId2: Integer;
+threadstatic
+  next: Integer = 1000;        // section form, same per-thread counter
+begin
   Result := next;
   Inc(next);
 end;
 ```
 
-Two TThread workers calling `NextId` see two independent counters. Within one thread the value survives between calls; across threads there is no bleed.
+The section form sits before the body like a `var` / `static` section and supports several names per declaration (each its own per-thread copy) and bare zero-init (`threadstatic n: Integer;`). Two TThread workers calling `NextId` see two independent counters. Within one thread the value survives between calls; across threads there is no bleed.
 
 The init runs exactly once per thread: if the expression raises, that thread's variable keeps its zero bytes and the guard stays set, so subsequent calls in that thread skip the init - no retry. Other threads still run their own init independently.
 
@@ -584,7 +592,7 @@ Unlike regular `static`, a compile-time-constant initializer like `threadstatic 
 
 The sym lives in its declaring routine's local symtable, so it follows normal Pascal scoping; the parser also registers it on a module-level list so `InsertThreadvars` walks it into `FPC_THREADVARTABLES` at startup.
 
-See [unleashed/docs/thread-static.md](unleashed/docs/thread-static.md) for the full reference: type inference rules, storage layout, guard behaviour, TLS registration, and current limitations (inline form only, no const-init template).
+See [unleashed/docs/thread-static.md](unleashed/docs/thread-static.md) for the full reference: both syntax forms, type inference rules, storage layout, guard behaviour, TLS registration, and current limitations (no const-init template).
 
 ---
 

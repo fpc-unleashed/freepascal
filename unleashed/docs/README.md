@@ -10,7 +10,7 @@ Enabled via `{$modeswitch inlinevars}`.
 
 ## [Thread-Static Variables](thread-static.md)
 
-Inline `threadstatic name := expr;` declares a per-thread variable with program lifetime and block-local source scope (the sym lives in the declaring routine's localst, so it is invisible to sibling routines, the same as `var`). Each thread sees its own copy via FPC's TLS infrastructure (`FPC_THREADVAR_RELOCATE`, `FPC_THREADVARTABLES`); init runs once per thread on first reach via a per-thread Boolean guard, so a raised init leaves that thread's variable zeroed and is not retried for that thread. The const-init data-segment fast path that regular `static` uses does not apply - TLS has no per-thread template, so even a literal `threadstatic x := 5;` is a runtime per-thread assignment.
+`threadstatic` declares a per-thread variable with program lifetime and block-local source scope (the sym lives in the declaring routine's localst, so it is invisible to sibling routines, the same as `var`). Two forms with identical semantics: an inline statement (`threadstatic name := expr;` anywhere in a body) and a declaration section before the body (parallel to `var` / `static`, supporting multiple names and zero-init). Each thread sees its own copy via FPC's TLS infrastructure (`FPC_THREADVAR_RELOCATE`, `FPC_THREADVARTABLES`); init runs once per thread on first reach via a per-thread Boolean guard, so a raised init leaves that thread's variable zeroed and is not retried for that thread. The const-init data-segment fast path that regular `static` uses does not apply - TLS has no per-thread template, so even a literal `threadstatic x := 5;` is a runtime per-thread assignment.
 
 Enabled via `{$modeswitch threadstatic}` (on by default in `unleashed`).
 
