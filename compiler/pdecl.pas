@@ -1187,7 +1187,10 @@ implementation
            { Generic type declaration? }
            if isgeneric then
              begin
-               if assigned(current_genericdef) then
+               { unleashed allows nested generic declarations (generic method
+                 inside a generic class, generic type inside a generic body) }
+               if assigned(current_genericdef) and
+                  not (m_unleashed in current_settings.modeswitches) then
                  Message(parser_f_no_generic_inside_generic);
 
                consume(_LSHARPBRACKET);
