@@ -5815,6 +5815,22 @@ implementation
                p2:=factor(false,[])
              else
                p2:=sub_expr(succ(pred_level),flags+[ef_accept_equal],nil);
+             { a generic specialization on the right of a binary operator is
+               parsed lazily into a bare specializen node, because "<" has a
+               lower precedence than e.g. "+" so factor returns before the
+               "<types>" is consumed. resolve it here before the operator node
+               is built, otherwise the specializen survives to code generation
+               and triggers an internal error. comparison operators and as/is
+               keep their own handling of the "<" ambiguity }
+             if (m_implicit_generics in current_settings.modeswitches) and
+                (current_scanner.token in [_LT,_LSHARPBRACKET]) and
+                assigned(p2) and (p2.nodetype=specializen) and
+                not (oldt in [_LT,_GT,_LTE,_GTE,_EQ,_NE,_OP_AS,_OP_IS]) then
+               begin
+                 consume(current_scanner.token);
+                 ptmp:=factor(false,[]);
+                 maybe_handle_specialization(p2,ptmp,p2.fileinfo);
+               end;
              case oldt of
                _PLUS :
                  p1:=caddnode.create(addn,p1,p2);
@@ -5832,15 +5848,12 @@ implementation
                  begin
                    if maybe_handle_specialization(p1,p2,filepos) then
                      begin
-                       { with p1 now set we are in reality directly behind the
-                         call to "factor" thus we need to call down to that
-                         again }
-                       { This is disabled until specializations on the right
-                         hand side work as well, because
-                         "not working expressions" is better than "half working
-                         expressions" }
-                       {factornode:=p1;
-                       goto SubExprStart;}
+                       { p1 now holds the resolved specialization; we are in
+                         reality directly behind the call to "factor", so
+                         restart so the rest of the expression (operators that
+                         follow the specialization) is parsed against it }
+                       factornode:=p1;
+                       goto SubExprStart;
                      end
                    else
                      begin
