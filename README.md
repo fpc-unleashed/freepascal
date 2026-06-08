@@ -1133,20 +1133,24 @@ Pick the binary for your host, run it, choose an install directory, tick the cro
 unleashed.git=https://github.com/fpc-unleashed/freepascal.git
 ```
 
-And, for Lazarus Unleashed (with **autocomplete support** for some of the new features), add the following under `[ALIASlazURL]`:  
+And, for Lazarus Unleashed (with **autocomplete support** for the new features/syntax), add the following under `[ALIASlazURL]`:  
 
 ```ini
 [ALIASlazURL]
 unleashed.git=https://github.com/fpc-unleashed/lazarus.git
 ```
 
-3. Reopen **fpcupdeluxe**, uncheck **GitLab**, and select `fpc-unleashed.git` as your FPC version.
-4. Choose any Lazarus version you like.
+3. Reopen **fpcupdeluxe**, uncheck **GitLab**
+4. As **FPC version** select `unleashed.git`
+5. As **Lazarus version** select `unleashed.git`
+6. Go to "**Setup+**" and tick "Docked Lazarus IDE"
+7. Click **Install/update FPC+Lazarus**
+8. Optionally install cross-compilers via the `Cross` tab
+
+> [!IMPORTANT]
+> Due to recent changes in the Unleashed IDE, the [b]Docked Lazarus IDE[/b] option in fpcupdeluxe is [b]required[/b]. The default window layout and several other settings are tuned for the docked mode - install without it and you'll have to rearrange the windows (and tweak a few other things) by hand.
 
 ![fpcupdeluxe](unleashed/img/installation_fpcupdeluxe.png)
-
-5. Click **Install/update FPC+Lazarus**.
-6. Optionally install cross-compilers via the `Cross` tab.
 
 ### Option 3: Upgrade an existing fpcupdeluxe setup
 
