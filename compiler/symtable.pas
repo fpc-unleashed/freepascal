@@ -2647,12 +2647,17 @@ implementation
         if not is_funcret_sym(sym) and
            (defowner.typ=procdef) and
            assigned(tprocdef(defowner).struct) and
-           (tprocdef(defowner).owner.defowner=tprocdef(defowner).struct) and
-           (
-            not(m_duplicate_names in current_settings.modeswitches) or
-            is_object(tprocdef(defowner).struct)
-           ) then
-          result:=tprocdef(defowner).struct.symtable.checkduplicate(hashedid,sym);
+           (tprocdef(defowner).owner.defowner=tprocdef(defowner).struct) then
+          begin
+            hsym:=tsym(tprocdef(defowner).struct.symtable.FindWithHash(hashedid));
+            { duplicate-names modes let a local shadow a regular class member,
+              but never a generic type parameter: the variable's own type would
+              otherwise resolve back to the shadowing variable }
+            if not(m_duplicate_names in current_settings.modeswitches) or
+               is_object(tprocdef(defowner).struct) or
+               (assigned(hsym) and (sp_generic_para in hsym.symoptions)) then
+              result:=tprocdef(defowner).struct.symtable.checkduplicate(hashedid,sym);
+          end;
       end;
 
 
