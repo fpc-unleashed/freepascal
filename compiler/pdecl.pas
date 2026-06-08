@@ -40,6 +40,7 @@ interface
     procedure const_dec(out had_generic:boolean);
     procedure consts_dec(in_structure, allow_typed_const: boolean;out had_generic:boolean);
     procedure static_dec(out had_generic:boolean);
+    procedure threadstatic_dec(out had_generic:boolean);
     procedure label_dec;
     procedure type_dec(out had_generic:boolean);
     procedure types_dec(in_structure: boolean;out had_generic:boolean;var rtti_attrs_def: trtti_attribute_list);
@@ -62,7 +63,7 @@ implementation
        { symtable }
        symconst,symbase,symcpu,symcreat,defutil,defcmp,symtable,symutil,
        { pass 1 }
-       ninl,ncon,nobj,ngenutil,nld,nmem,ncal,nset,pass_1,
+       ninl,ncon,nobj,ngenutil,nld,nmem,ncal,nset,nbas,nflw,nmat,pass_1,
        { parser }
        scanner,
        pbase,pexpr,ptype,ptconst,pdecsub,pdecvar,pdecobj,pgenutil,pparautl,
@@ -615,6 +616,190 @@ implementation
          finally
            if not old_writable then
              exclude(current_settings.localswitches,cs_typed_const_writable);
+           block_type:=old_block_type;
+         end;
+      end;
+
+
+    procedure threadstatic_dec(out had_generic:boolean);
+      var
+         orgname : TIDString;
+         hdef : tdef;
+         sym : tstaticvarsym;
+         old_block_type : tblock_type;
+         names : array of TIDString;
+         positions : array of tfileposinfo;
+         syms : array of tstaticvarsym;
+         namecount,ni : longint;
+         initexpr : tnode;
+         curstat : tstatementnode;
+
+      { create a per-thread static var in the current localst (regular Pascal
+        scoping) and register it on the module list so InsertThreadvars walks
+        it into FPC_THREADVARTABLES - without that the BSS slot keeps a zero
+        TLS handle and FPC_THREADVAR_RELOCATE returns garbage }
+      function make_tsvar(const aname:TIDString;adef:tdef;const apos:tfileposinfo):tstaticvarsym;
+        var
+          storepos : tfileposinfo;
+        begin
+          storepos:=current_tokenpos;
+          current_tokenpos:=apos;
+          result:=cstaticvarsym.create(aname,vs_value,adef,[]);
+          result.visibility:=symtablestack.top.currentvisibility;
+          result.varstate:=vs_initialised;
+          include(result.varoptions,vo_is_typed_const);
+          include(result.varoptions,vo_is_thread_var);
+          symtablestack.top.insertsym(result);
+          if not assigned(current_module.extra_threadvar_syms) then
+            current_module.extra_threadvar_syms:=tfplist.create;
+          current_module.extra_threadvar_syms.add(result);
+          result.register_sym;
+          cnodeutils.insertbssdata(result);
+          current_tokenpos:=storepos;
+        end;
+
+      { emit `if not guard then begin guard:=true; v:=ie end` and append it to
+        the routine's threadstatic init code; the guard is itself a threadvar
+        so each thread runs the init once on first entry }
+      procedure emit_guarded_init(v:tstaticvarsym;ie:tnode);
+        var
+          gsym : tstaticvarsym;
+          ib : tblocknode;
+          ist : tstatementnode;
+        begin
+          gsym:=cstaticvarsym.create('$threadstatic_guard_'+v.realname,vs_value,pasbool8type,[]);
+          include(gsym.symoptions,sp_internal);
+          include(gsym.varoptions,vo_is_internal);
+          include(gsym.varoptions,vo_is_typed_const);
+          include(gsym.varoptions,vo_is_thread_var);
+          symtablestack.top.insertsym(gsym);
+          current_module.extra_threadvar_syms.add(gsym);
+          gsym.register_sym;
+          gsym.varstate:=vs_initialised;
+          cnodeutils.insertbssdata(gsym);
+          ib:=internalstatements(ist);
+          addstatement(ist,cassignmentnode.create(
+            cloadnode.create(gsym,gsym.owner),
+            cordconstnode.create(1,pasbool8type,false)));
+          addstatement(ist,cassignmentnode.create(
+            cloadnode.create(v,v.owner),
+            ie));
+          if not assigned(current_procinfo.threadstatic_initcode) then
+            current_procinfo.threadstatic_initcode:=internalstatements(curstat)
+          else
+            curstat:=laststatement(tblocknode(current_procinfo.threadstatic_initcode));
+          addstatement(curstat,cifnode.create(
+            cnotnode.create(cloadnode.create(gsym,gsym.owner)),
+            ib,nil));
+        end;
+
+      begin
+         had_generic:=false;
+         { consume the soft 'threadstatic' keyword (scanner: _ID + idtoken=_THREADSTATIC) }
+         consume(_ID);
+         { per-thread storage only makes sense inside a routine body; at unit /
+           program level a plain `threadvar` already gives the same lifetime }
+         if (not assigned(current_procinfo)) or
+            (current_procinfo.procdef.localst.symtablelevel<normal_function_level) then
+           begin
+             Comment(V_Error,'threadstatic is only allowed in function/procedure bodies');
+             consume_all_until(_SEMICOLON);
+             exit;
+           end;
+         old_block_type:=block_type;
+         block_type:=bt_var;
+         try
+           repeat
+             namecount:=0;
+             names:=nil;
+             positions:=nil;
+             repeat
+               setlength(names,namecount+1);
+               setlength(positions,namecount+1);
+               names[namecount]:=current_scanner.orgpattern;
+               positions[namecount]:=current_tokenpos;
+               inc(namecount);
+               consume(_ID);
+             until not try_to_consume(_COMMA);
+             orgname:=names[0];
+             case current_scanner.token of
+               _COLON:
+                 begin
+                   { name [, name2, ...] : Type [ = Value ] }
+                   block_type:=bt_var_type;
+                   consume(_COLON);
+                   read_anon_type(hdef,false,nil);
+                   block_type:=bt_var;
+                   setlength(syms,namecount);
+                   for ni:=0 to namecount-1 do
+                     begin
+                       check_allowed_for_var_or_const(hdef,false);
+                       syms[ni]:=make_tsvar(names[ni],hdef,positions[ni]);
+                     end;
+                   if try_to_consume(_EQ) then
+                     begin
+                       { runtime per-thread init for each name; no data-segment
+                         fast path because TLS has no per-thread template }
+                       block_type:=old_block_type;
+                       initexpr:=comp_expr([ef_accept_equal]);
+                       block_type:=bt_var;
+                       for ni:=0 to namecount-1 do
+                         if ni<namecount-1 then
+                           emit_guarded_init(syms[ni],initexpr.getcopy)
+                         else
+                           emit_guarded_init(syms[ni],initexpr);
+                     end;
+                   { no value -> per-thread BSS zero-init handled by the RTL }
+                   consume(_SEMICOLON);
+                 end;
+
+               _ASSIGNMENT:
+                 begin
+                   { name := Value with type inference (single name only) }
+                   if namecount>1 then
+                     Message(parser_e_initialized_only_one_var);
+                   consume(_ASSIGNMENT);
+                   block_type:=old_block_type;
+                   initexpr:=comp_expr([ef_accept_equal]);
+                   block_type:=bt_var;
+                   if (not assigned(initexpr.resultdef)) or (initexpr.resultdef=generrordef) then
+                     begin
+                       Comment(V_Error,'cannot infer type for threadstatic declaration');
+                       initexpr.free;
+                       consume(_SEMICOLON);
+                       continue;
+                     end;
+                   hdef:=initexpr.resultdef;
+                   { same inference rules as inline var: char promotes to default
+                     string type, sub-32-bit integers promote to LongInt }
+                   if is_conststring_array(hdef) or
+                      (not(nf_explicit in initexpr.flags) and is_char(hdef)) then
+                     begin
+                       if m_default_unicodestring in current_settings.modeswitches then
+                         hdef:=cunicodestringtype
+                       else if m_default_ansistring in current_settings.modeswitches then
+                         hdef:=getansistringdef
+                       else
+                         hdef:=cshortstringtype;
+                     end;
+                   if not(nf_explicit in initexpr.flags) and is_integer(hdef) and
+                      (torddef(hdef).ordtype in [s8bit,u8bit,s16bit,u16bit]) then
+                     hdef:=s32inttype;
+                   sym:=make_tsvar(orgname,hdef,positions[0]);
+                   emit_guarded_init(sym,initexpr);
+                   consume(_SEMICOLON);
+                 end;
+
+               else
+                 begin
+                   Message(parser_e_syntax_error);
+                   consume_all_until(_SEMICOLON);
+                   if current_scanner.token=_SEMICOLON then
+                     consume(_SEMICOLON);
+                 end;
+             end;
+           until current_scanner.token<>_ID;
+         finally
            block_type:=old_block_type;
          end;
       end;
