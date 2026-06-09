@@ -776,7 +776,7 @@ end.
 Two placeholder forms:
 
 - `{expr}` - auto-format by type. Scalars (int / float / string / bool / char / enum) pass through. Class instances dispatch to `expr.ToString`, class refs to `ClassName`. Arrays unroll into `[e0, e1, ...]`.
-- `{expr:mask}` - mask is the raw text from the first `:` after the expression up to the closing `}`. Picked by mask shape and expr type: `%...` -> `Format`, date/time mask -> `FormatDateTime`, numeric mask on float -> `FormatFloat`, `xN`/`XN` on ordinal -> `IntToHex`. The `Format`/`FormatXxx`/`IntToHex` dispatch requires `uses SysUtils`.
+- `{expr:mask}` - mask is the raw text from the first `:` after the expression up to the closing `}`. Picked by mask shape and expr type: `%...` -> `Format`, date/time mask -> `FormatDateTime`, `xN`/`XN` on an ordinal -> `IntToHex`, any other numeric mask on a float or integer -> `FormatFloat` (so `{n:000}` zero-pads). The `Format`/`FormatXxx`/`IntToHex` dispatch requires `uses SysUtils`.
 
 Default locale is **invariant** (English names, `.` decimal). Prefix mask with `L` to opt into the system locale: `{f:L0.00}`.
 
