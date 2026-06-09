@@ -57,9 +57,12 @@ Booleans render as `TRUE` / `FALSE` (Pascal's `WriteStr` default). Enums render 
 | any                             | starts with `%`             | `Format(mask, [expr])`       | `uses SysUtils` (provides `Format`)         |
 | `TDateTime` / `TDate` / `TTime` | non-`%` (e.g. `yyyy-mm-dd`) | `FormatDateTime(mask, expr)` | `uses SysUtils` (provides `FormatDateTime`) |
 | float (non-date/time)           | non-`%` (e.g. `0.00`)       | `FormatFloat(mask, expr)`    | `uses SysUtils` (provides `FormatFloat`)    |
-| ordinal                         | `xN` / `XN`                 | `IntToHex(expr, N)`          | `uses SysUtils` (provides `IntToHex`)       |
+| integer                         | `xN` / `XN`                 | `IntToHex(expr, N)`          | `uses SysUtils` (provides `IntToHex`)       |
+| integer                         | any other (e.g. `000`, `#,##0`) | `FormatFloat(mask, expr)` | `uses SysUtils` (provides `FormatFloat`)    |
 | string + non-`%` mask           | -                           | error (use `%-40s`)          | -                                       |
-| ordinal + non-`%`/`x` mask      | -                           | error (use `%d` or `x4`)     | -                                       |
+| other (record/enum/bool/...)    | non-`%` mask                | error (use `%s` / give a ToString) | -                                  |
+
+Integers reuse `FormatFloat` for numeric masks, so `{n:000}` zero-pads, `{n:#,##0}` adds thousand separators, and `{n:0.00}` promotes to a fractional form - matching the way `0`/`#`/`,` masks read in other languages. The value goes through `Extended`, so an `Int64` / `QWord` above 2^53 loses precision; use a `%d` or `%.Nd` `Format` mask for those (those keep full integer precision). As with floats, characters a `FormatFloat` mask does not recognise pass through literally, so a typo'd mask renders verbatim rather than erroring.
 
 The compiler emits a clear error pointing at the missing function and unit when the required unit is not in scope.
 

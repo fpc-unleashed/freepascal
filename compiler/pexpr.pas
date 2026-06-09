@@ -3956,6 +3956,11 @@ implementation
         else if is_ordinal(p.resultdef) and (length(mask)>=1) and
                 (mask[1] in ['x','X']) then
           funcname:='INTTOHEX'
+        else if is_integer(p.resultdef) then
+          // numeric masks (0, 000, 0.00, #,##0) on integers go through
+          // FormatFloat; the value promotes to Extended (values above
+          // 2^53 lose precision - use a %d / %.Nd mask for those)
+          funcname:='FORMATFLOAT'
         else if is_stringlike(p.resultdef) and (length(mask)>0) and
                 (mask[1]='%') then
           funcname:='FORMAT'
