@@ -582,6 +582,26 @@ implementation
                      def:=generrordef;
                    end;
 
+               _TYPE :
+                 { unleashed: Type(expr) intrinsic in type position. yields the
+                   static type of expr without evaluating it. }
+                 if m_unleashed in current_settings.modeswitches then
+                   begin
+                     consume(_TYPE);
+                     if current_scanner.token=_LKLAMMER then
+                       def:=parse_type_intrinsic_body
+                     else
+                       begin
+                         message(type_e_type_id_expected);
+                         def:=generrordef;
+                       end;
+                   end
+                 else
+                   begin
+                     message(type_e_type_id_expected);
+                     def:=generrordef;
+                   end;
+
                else
                  begin
                    message(type_e_type_id_expected);
@@ -2351,6 +2371,37 @@ implementation
            name:=newsym.RealName
          else
            name:='';
+         { unleashed: Type(expr) intrinsic in named-type position. three cases:
+             - hadtypetoken=false, token=_TYPE: regular type-position like
+               `var y: Type(x)`, `array of Type(x)`, `^Type(x)`. consume the
+               type keyword ourselves.
+             - hadtypetoken=true, token=_LKLAMMER: caller (a type-block strong-
+               alias parser) already ate `Type` thinking it was the strong-alias
+               keyword. reset hadtypetoken so the strong-alias copy is skipped.
+             - hadtypetoken=true, token=_TYPE: form `= type Type(expr)`, where
+               the first `type` was the strong-alias marker and the second is
+               the intrinsic. keep hadtypetoken=true so the strong-alias copy
+               is applied to the resulting def. }
+         if m_unleashed in current_settings.modeswitches then
+           begin
+             if hadtypetoken and (current_scanner.token=_LKLAMMER) then
+               begin
+                 hadtypetoken:=false;
+                 def:=parse_type_intrinsic_body;
+                 exit;
+               end
+             else if current_scanner.token=_TYPE then
+               begin
+                 consume(_TYPE);
+                 if current_scanner.token=_LKLAMMER then
+                   begin
+                     def:=parse_type_intrinsic_body;
+                     exit;
+                   end;
+                 { fall through; the consumed _TYPE was an error in this
+                   position, recover via standard error path below }
+               end;
+           end;
          { type a = type ..,; syntax is allowed only with type syms and apparently helpers, see below }
          if hadtypetoken and
              (
