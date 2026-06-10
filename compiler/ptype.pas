@@ -1360,10 +1360,10 @@ implementation
              current_structdef:=crecorddef.create(recst.name^,recst);
            end;
          result:=current_structdef;
-         { insert in symtablestack - wrap the entire body in try-finally so
-           a parse-time exception (Fatal syntax error etc.) inside the body
-           doesn't leave the stack with the record's symtable still on top,
-           which would trip internalerror(200601232) in the outer pop later }
+         { insert in symtablestack; wrap the body in try-finally. the finally
+           uses remove() not pop(): a Fatal syntax error in the body can leave
+           an inner parser's symtable on top (e.g. `f: function;` leaks the
+           procvar parast), so pop(recst) would trip internalerror(200601232) }
          symtablestack.push(recst);
          try
 
@@ -1649,7 +1649,7 @@ implementation
          insert_struct_hidden_paras(trecorddef(current_structdef));
          { restore symtable stack }
          finally
-           symtablestack.pop(recst);
+           symtablestack.remove(recst);
          end;
          if trecorddef(current_structdef).is_packed and is_managed_type(current_structdef) then
            Message(type_e_no_packed_inittable);
