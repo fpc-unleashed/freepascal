@@ -68,6 +68,12 @@ Builtin `SwapValues(a, b)` that swaps two same-typed assignable variables with a
 
 Unleashed-mode only; no separate modeswitch.
 
+## [Type() Intrinsic](type-intrinsic.md)
+
+Compile-time `Type(expr)` that yields the static type of an expression without evaluating it. Works in every type-bearing position: `var y: Type(x);`, fields, parameters, function results, typecasts (`Type(x)(v)`), arguments to `SizeOf` / `High` / `Low` / `Default`, and derived types (`array of Type(x)`, `^Type(x)`, `set of Type(x)`, generic specialisation arguments). The operand is parsed and type-checked but never reaches code generation, so `Type(a[0])` is safe on an empty dynamic array, `Type(SomeFunc())` does not call `SomeFunc`, and range checks never fire on the operand. Composes with inline-var type inference, so a single `var z := ...` site can drive multiple downstream declarations spelled `Type(z)`. Disambiguated from the `type` keyword purely by the trailing `(`, so `type X = type Y` strong aliases and ordinary type sections keep working unchanged.
+
+Unleashed-mode only; no separate modeswitch.
+
 ## [Indexed Labels & Lazy Labels](indexed-labels.md)
 
 Declare arrays of labels with numeric ranges (`label state[0..4]`) or string keys (`label action['start', 'stop']`) and jump to them by index. Useful for dispatch tables and state machines.
