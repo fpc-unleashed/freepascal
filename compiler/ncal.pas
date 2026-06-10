@@ -5339,12 +5339,13 @@ implementation
         { We don't need temps for parameters that are already temps, except if
           the passed temp could be put in a regvar while the parameter inside
           the routine cannot be (e.g., because its address is taken in the
-          routine), or if the temp is a const and the parameter gets modified }
+          routine), or if the parameter gets modified: the temp may outlive
+          the call (e.g. a caller local turned into a temp by an outer
+          inlining), so writing to it would change the caller's value }
         if (para.left.nodetype=temprefn) and
            (not(ti_may_be_in_reg in ttemprefnode(para.left).tempflags) or
             not(tparavarsym(para.parasym).varregable in [vr_none,vr_addr])) and
-           (not(ti_const in ttemprefnode(para.left).tempflags) or
-            (tparavarsym(para.parasym).varstate in [vs_initialised,vs_declared,vs_read])) then
+           (tparavarsym(para.parasym).varstate in [vs_initialised,vs_declared,vs_read]) then
           exit(false);
 
         { We need a temp if the passed value will not be in memory, while
