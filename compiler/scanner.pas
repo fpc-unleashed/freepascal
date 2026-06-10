@@ -215,6 +215,11 @@ interface
 
           current_commentstyle : tcommentstyle; { needed to use read_comment from directives }
 
+          { string interpolation state. interp_stack holds outer modes for
+            nested $'...' literals inside an interpolation expression. }
+          interp_mode : (im_none, im_string, im_expr, im_returning_end);
+          interp_stack : array of byte;
+
           constructor Create(const fn:string; is_macro: boolean = false);
           destructor Destroy;override;
         { File buffer things }
@@ -302,6 +307,12 @@ interface
           procedure skipdelphicomment;
           procedure skipoldtpcomment(read_first_char:boolean);
           procedure readtoken(allowrecordtoken:boolean);
+          // read raw mask text after `:` inside `{expr:mask}` up to the
+          // terminating `}`. consumes the `}` and sets the current token
+          // to _INTERP_EXPR_END so the parser can resume normally
+          function read_interp_mask:ansistring;
+          { pop interp_mode from stack, or set to im_none if no outer level }
+          procedure exit_interp_level;
           function  readpreproc:ttoken;
           function  readpreprocint(var value:int64;const place:string):boolean;
           function  readpreprocset(conform_to:tsetdef;var value:tnormalset;const place:string):boolean;
@@ -6394,6 +6405,48 @@ type
                                Token Scanner
 ****************************************************************************}
 
+    function tscannerfile.read_interp_mask:ansistring;
+      begin
+        result:='';
+        // c is the first char of mask (right after the `:`); stop at the
+        // matching `}`, end-of-line or EOF. line breaks inside a mask are
+        // rejected to keep error messages local
+        while not (c in ['}',#0,#10,#13,#26]) do
+          begin
+            result:=result+c;
+            readchar;
+          end;
+        if c<>'}' then
+          Message(scan_f_string_exceeds_line);
+        // consume the closing `}` and synthesize _INTERP_EXPR_END so the
+        // parser can call consume(_INTERP_EXPR_END) right after this
+        readchar;
+        interp_mode:=im_string;
+        token:=_INTERP_EXPR_END;
+      end;
+
+
+    procedure tscannerfile.exit_interp_level;
+      var
+        top : sizeint;
+      begin
+        top:=length(interp_stack)-1;
+        if top>=0 then
+          begin
+            case interp_stack[top] of
+              1: interp_mode:=im_string;
+              2: interp_mode:=im_expr;
+              3: interp_mode:=im_returning_end;
+            else
+              interp_mode:=im_none;
+            end;
+            setlength(interp_stack,top);
+          end
+        else
+          interp_mode:=im_none;
+      end;
+
+
     procedure tscannerfile.readtoken(allowrecordtoken:boolean);
       var
         low,high,mid : longint;
@@ -6401,6 +6454,7 @@ type
         firstdigitread: boolean;
         had_newline,first_multiline : boolean;
         trimcount : word;
+        interp_len : longint;
        label
          exit_label;
       begin
@@ -6426,6 +6480,106 @@ type
            setnexttoken;
            goto exit_label;
          end;
+
+      { string interpolation state machine }
+        if interp_mode=im_returning_end then
+          begin
+            token:=_INTERP_END;
+            exit_interp_level;
+            goto exit_label;
+          end;
+        if interp_mode=im_string then
+          begin
+            interp_len:=0;
+            cstringpattern:='';
+            repeat
+              case c of
+                '''':
+                  begin
+                    readchar;
+                    // doubled '' is a literal apostrophe, not end-of-string
+                    if c='''' then
+                      begin
+                        inc(interp_len);
+                        if interp_len>length(cstringpattern) then
+                          setlength(cstringpattern,length(cstringpattern)+256);
+                        cstringpattern[interp_len]:='''';
+                        readchar;
+                        continue;
+                      end;
+                    if interp_len>0 then
+                      begin
+                        setlength(cstringpattern,interp_len);
+                        token:=_INTERP_FRAG;
+                        interp_mode:=im_returning_end;
+                      end
+                    else
+                      begin
+                        token:=_INTERP_END;
+                        exit_interp_level;
+                      end;
+                    goto exit_label;
+                  end;
+                '{':
+                  begin
+                    readchar;
+                    if c='{' then
+                      begin
+                        inc(interp_len);
+                        if interp_len>length(cstringpattern) then
+                          setlength(cstringpattern,length(cstringpattern)+256);
+                        cstringpattern[interp_len]:='{';
+                        readchar;
+                      end
+                    else
+                      begin
+                        interp_mode:=im_expr;
+                        if interp_len>0 then
+                          begin
+                            setlength(cstringpattern,interp_len);
+                            token:=_INTERP_FRAG;
+                            goto exit_label;
+                          end;
+                        break;
+                      end;
+                  end;
+                '}':
+                  begin
+                    readchar;
+                    if c='}' then
+                      begin
+                        inc(interp_len);
+                        if interp_len>length(cstringpattern) then
+                          setlength(cstringpattern,length(cstringpattern)+256);
+                        cstringpattern[interp_len]:='}';
+                        readchar;
+                      end
+                    else
+                      begin
+                        Message(scan_f_string_exceeds_line);
+                        exit_interp_level;
+                        token:=_INTERP_END;
+                        goto exit_label;
+                      end;
+                  end;
+                #10,#13,#26:
+                  begin
+                    Message(scan_f_string_exceeds_line);
+                    interp_mode:=im_none;
+                    token:=_INTERP_END;
+                    goto exit_label;
+                  end;
+                else
+                  begin
+                    inc(interp_len);
+                    if interp_len>length(cstringpattern) then
+                      setlength(cstringpattern,length(cstringpattern)+256);
+                    cstringpattern[interp_len]:=c;
+                    readchar;
+                  end;
+              end;
+            until false;
+          end;
 
       { Skip all spaces and comments }
         repeat
@@ -6459,6 +6613,15 @@ type
       { Save current token position, for EOF its already loaded }
         if c<>#26 then
           gettokenpos;
+
+      { close interpolation expression on right brace }
+        if (interp_mode=im_expr) and (c='}') then
+          begin
+            readchar;
+            interp_mode:=im_string;
+            token:=_INTERP_EXPR_END;
+            goto exit_label;
+          end;
 
       { Check first for a identifier/keyword, this is 20+% faster (PFV) }
         if c in ['A'..'Z','a'..'z','_'] then
@@ -6579,6 +6742,23 @@ type
 
              '$' :
                begin
+                 if (m_interpolated_strings in current_settings.modeswitches) and
+                    (interp_mode in [im_none,im_expr]) and
+                    ({$ifdef CHECK_INPUTPOINTER_LIMITS}get_inputpointer_char{$else}inputpointer^{$endif}='''') then
+                   begin
+                     // nested interp inside an expression of the outer one:
+                     // stash the outer mode so we can pop back to it
+                     if interp_mode=im_expr then
+                       begin
+                         setlength(interp_stack,length(interp_stack)+1);
+                         interp_stack[length(interp_stack)-1]:=2; { im_expr }
+                       end;
+                     readchar; { consume $, c is now ' }
+                     readchar; { consume ', c is now first string char }
+                     interp_mode:=im_string;
+                     token:=_INTERP_START;
+                     goto exit_label;
+                   end;
                  readnumber;
                  token:=_INTCONST;
                  goto exit_label;
