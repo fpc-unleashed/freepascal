@@ -1858,11 +1858,21 @@ parser_e_field_bitsize_not_allowed_on_enum=03410_E_"bitsize N" is not allowed on
 % field as `size N`. Use `(...) of T` to pick a narrower storage
 % type for the enum itself.
 %
+parser_e_interp_fmt_unit=03411_E_String interpolation format requires function "$1" in unit "$2" - add it to uses clause
+% The format mask after \var{:} in a string interpolation depends on a runtime
+% function (such as \var{FormatDateTime} or \var{Format}) that is not visible in
+% the current scope. Add the named unit to the \var{uses} clause.
+parser_e_interp_fmt_bad_type=03412_E_String interpolation format "$1" is not supported for this type
+% The mask after \var{:} cannot be applied to the expression's type. Supported
+% masks: \var{\%...} for any type (dispatches to \var{Format}), \var{xN} for
+% ordinals (\var{IntToHex}), date/time masks for \var{TDateTime}/\var{TDate}/\var{TTime}
+% (\var{FormatDateTime}), numeric masks for floats (\var{FormatFloat}).
+%
 % \end{description}
 %
 # Type Checking
 #
-# 03410 is the last used parser one
+# 03412 is the last used parser one
 #
 # 04136 is the last used one
 #

@@ -30,7 +30,8 @@ interface
 
     type
        TInlineNodeFlag = (
-         inf_inlineconst
+         inf_inlineconst,
+         inf_from_interpolation
        );
 
        TInlineNodeFlags = set of TInlineNodeFlag;
@@ -1061,12 +1062,26 @@ implementation
                   else
                     begin
                       if not assigned(lenpara) then
-                        lenpara := ccallparanode.create(
-                          cordconstnode.create(int64(-32767),s32inttype,false),nil);
+                        begin
+                          if inf_from_interpolation in inlinenodeflags then
+                            { interpolation: use fixed-point with no leading space }
+                            lenpara := ccallparanode.create(
+                              cordconstnode.create(0,s32inttype,false),nil)
+                          else
+                            lenpara := ccallparanode.create(
+                              cordconstnode.create(int64(-32767),s32inttype,false),nil);
+                        end;
                       { also create a default fracpara if necessary }
                       if not assigned(fracpara) then
-                        fracpara := ccallparanode.create(
-                          cordconstnode.create(int64(-1),s32inttype,false),nil);
+                        begin
+                          if inf_from_interpolation in inlinenodeflags then
+                            { interpolation: use enough decimal digits }
+                            fracpara := ccallparanode.create(
+                              cordconstnode.create(20,s32inttype,false),nil)
+                          else
+                            fracpara := ccallparanode.create(
+                              cordconstnode.create(int64(-1),s32inttype,false),nil);
+                        end;
                       { add it to the lenpara }
                       lenpara.right := fracpara;
                       if not is_currency(para.left.resultdef) then

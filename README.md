@@ -22,6 +22,7 @@
   - [For-Step](#for-step)
   - [Tweaks](#tweaks)
   - [Multiline Strings](#multiline-strings)
+  - [String Interpolation](#string-interpolation)
   - [Array Equality](#array-equality)
   - [Strip RTTI](#strip-rtti)
   - [Indexed Labels](#indexed-labels)
@@ -65,9 +66,11 @@ The following modeswitches are enabled automatically:
 | `underscoreisseparator`            | Allow underscores in numeric literals (`1_000_000`)           |
 | `duplicatelocals`                  | Allow reusing identifiers in limited scopes                   |
 | `multilinestrings`                 | Allow multi-line string literals without manual concatenation |
+| `interpolatedstrings`              | `$'Hello {name}, age {age:%2d}'` placeholders                 |
 | `stringordcast`                    | Cast a string literal to an ordinal type (`dword('RIFF')`)    |
 | `autofree`                         | `defer STATEMENT`, `autofree EXPR`, scoped `with var x := ...` |
 | `flexiblearrays`                   | C99-style flexible array member as last record field (`array[] of T`) |
+| `typehelpers` + `multihelpers`     | Multiple type helpers per type, including primitive types     |
 
 > [!NOTE]
 > For the best code-completion experience, we recommend using **[Lazarus Unleashed](https://github.com/fpc-unleashed/lazarus)** - a fork of Lazarus with full support for unleashed mode. If you are using stock Lazarus, enable the mode via `-Munleashed` in the project's Custom Options instead of placing `{$mode unleashed}` directly in the source file, to avoid autocomplete issues and incorrect Code Insight behavior.
@@ -743,6 +746,41 @@ const
 A Delphi-11-style textblock literal. The opener (`'''` followed by a newline) and the closer (`'''` on its own line) must each sit alone; the indentation of the closing delimiter defines the column that gets stripped from every content line.
 
 The two forms differ in tokenization, indentation handling, and how they compose in expressions. See [unleashed/docs/multiline-strings.md](unleashed/docs/multiline-strings.md) for the details. (Stock FPC actually accepts these too but never documented them.)
+
+---
+
+### String Interpolation
+
+**Activate:** `{$modeswitch interpolatedstrings}` (default in `{$mode unleashed}`)
+
+Embed expressions inside a string literal using `$'...'` and `{expr}` placeholders. No manual `+` chains, no `IntToStr`, no `Format` calls.
+
+```pas
+uses SysUtils;
+var
+  name: string = 'Alice';
+  age: integer = 30;
+  pi: double = 3.14159;
+begin
+  WriteLn($'Hello {name}, you are {age} years old.');
+  // Hello Alice, you are 30 years old.
+
+  WriteLn($'pi rounded = {pi:%.2f}');
+  // pi rounded = 3.14
+
+  WriteLn($'date = {Now:yyyy-mm-dd}');
+  // date = 2026-05-29
+end.
+```
+
+Two placeholder forms:
+
+- `{expr}` - auto-format by type. Scalars (int / float / string / bool / char / enum) pass through. Class instances dispatch to `expr.ToString`, class refs to `ClassName`. Arrays unroll into `[e0, e1, ...]`.
+- `{expr:mask}` - mask is the raw text from the first `:` after the expression up to the closing `}`. Picked by mask shape and expr type: `%...` -> `Format`, date/time mask -> `FormatDateTime`, `xN`/`XN` on an ordinal -> `IntToHex`, any other numeric mask on a float or integer -> `FormatFloat` (so `{n:000}` zero-pads). The `Format`/`FormatXxx`/`IntToHex` dispatch requires `uses SysUtils`.
+
+Default locale is **invariant** (English names, `.` decimal). Prefix mask with `L` to opt into the system locale: `{f:L0.00}`.
+
+See [unleashed/docs/string-interpolation.md](unleashed/docs/string-interpolation.md) for the full type x mask dispatch table, escaping rules (`''`, `{{` / `}}`, nested `$'...'`), diagnostics, and notes for users coming from C# / Python f-string / JavaScript template literals.
 
 ---
 

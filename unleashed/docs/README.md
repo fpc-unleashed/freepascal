@@ -94,6 +94,12 @@ Two delimiter forms for string literals spanning multiple source lines without m
 
 Enabled via `{$modeswitch multilinestrings}`.
 
+## [String Interpolation](string-interpolation.md)
+
+Embed expressions inside a string literal using `$'Hello {name}, age {age:%2d}'`. Two placeholder forms: bare `{expr}` (auto-format by type) and `{expr:mask}` where the mask is the raw text after the first `:` (Format / FormatDateTime / FormatFloat / IntToHex picked by type and mask shape). Default locale is invariant (`L` prefix opts into the system locale). The page covers the full type x mask dispatch table, escaping rules, required units, and notes for users coming from C# / Python / JavaScript.
+
+Enabled via `{$modeswitch interpolatedstrings}`.
+
 ## [Strip RTTI](strip-rtti.md)
 
 Replaces type-name strings emitted into RTTI / VMT structures with empty strings, so an ASCII dump of the binary no longer reveals the program's internal type structure. Comes with three whitelisting mechanisms: the `expose` keyword (per-declaration), the `{$rttiexpose}` directive (per-unit glob list), and the `--rttiexpose=` CLI flag (global glob list). The whitelisting decision is precomputed once per type at parse time and stored as a flag on the `tdef`, so RTTI emit stays cheap.

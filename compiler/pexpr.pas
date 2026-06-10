@@ -3909,6 +3909,249 @@ implementation
       end;
 
 
+    { build a runtime call for an interpolation format spec: expr as 'mask'.
+      dispatches to Format / FormatDateTime / FormatFloat / IntToHex
+      based on expr type and mask shape. by default uses locale-invariant
+      settings (`.` decimal, `,` thousand, English names); prefix `L` in
+      the mask opts into the system locale via DefaultFormatSettings. }
+    function handle_interp_format(p:tnode;const inmask:ansistring):tnode;
+      var
+        funcname,unitname,tname : string;
+        srsym,fssym : tsym;
+        srsymtable,fsst : tsymtable;
+        paras,arrp,fsnode : tnode;
+        digits : longint;
+        code : integer;
+        is_datetime,use_locale : boolean;
+        mask : ansistring;
+      begin
+        result:=p;
+        if not assigned(p.resultdef) then
+          do_typecheckpass(p);
+        if not assigned(p.resultdef) then
+          exit;
+
+        mask:=inmask;
+        // 'L' prefix = opt into DefaultFormatSettings (locale-aware)
+        use_locale:=(length(mask)>=1) and (mask[1]='L');
+        if use_locale then
+          delete(mask,1,1);
+
+        // TDateTime/TDate/TTime are `type Double` aliases in `system`;
+        // route them to FormatDateTime regardless of mask shape
+        is_datetime:=false;
+        if (p.resultdef.typ=floatdef) and assigned(p.resultdef.typesym) then
+          begin
+            tname:=upper(p.resultdef.typesym.realname);
+            is_datetime:=(tname='TDATETIME') or (tname='TDATE') or (tname='TTIME');
+          end;
+
+        { pick function by mask shape and expr type }
+        if (length(mask)>0) and (mask[1]='%') then
+          funcname:='FORMAT'
+        else if is_datetime then
+          funcname:='FORMATDATETIME'
+        else if is_real(p.resultdef) then
+          funcname:='FORMATFLOAT'
+        else if is_ordinal(p.resultdef) and (length(mask)>=1) and
+                (mask[1] in ['x','X']) then
+          funcname:='INTTOHEX'
+        else if is_integer(p.resultdef) then
+          // numeric masks (0, 000, 0.00, #,##0) on integers go through
+          // FormatFloat; the value promotes to Extended (values above
+          // 2^53 lose precision - use a %d / %.Nd mask for those)
+          funcname:='FORMATFLOAT'
+        else if is_stringlike(p.resultdef) and (length(mask)>0) and
+                (mask[1]='%') then
+          funcname:='FORMAT'
+        else
+          begin
+            Message1(parser_e_interp_fmt_bad_type,mask);
+            exit;
+          end;
+
+        { map known format functions to their canonical unit for the hint }
+        if (funcname='FORMATDATETIME') or (funcname='FORMATFLOAT') or
+           (funcname='INTTOHEX') or (funcname='FORMAT') then
+          unitname:='SYSUTILS'
+        else
+          unitname:='';
+
+        if not searchsym(funcname,srsym,srsymtable) or (srsym.typ<>procsym) then
+          begin
+            Message2(parser_e_interp_fmt_unit,funcname,unitname);
+            exit;
+          end;
+
+        { build TFormatSettings.Invariant call node if we need the invariant
+          overload (IntToHex has no locale arg) }
+        fsnode:=nil;
+        if (not use_locale) and (funcname<>'INTTOHEX') then
+          begin
+            if searchsym('TFORMATSETTINGS',fssym,fsst) and (fssym.typ=typesym) then
+              fsnode:=ccallnode.createinternmethod(
+                ctypenode.create(ttypesym(fssym).typedef),
+                'INVARIANT',nil);
+          end;
+
+        { parameters prepended in source order: arg1 first, arg2 second, ...
+          the chain ends up reversed and reverseparameters flips it back
+          when building the call }
+        if funcname='INTTOHEX' then
+          begin
+            { IntToHex(value, digits) - digits from mask[2..] }
+            val(copy(mask,2,length(mask)-1),digits,code);
+            if (code<>0) or (digits<0) then
+              digits:=0;
+            paras:=nil;
+            paras:=ccallparanode.create(p,paras);
+            paras:=ccallparanode.create(cordconstnode.create(digits,s32inttype,false),paras);
+          end
+        else if funcname='FORMAT' then
+          begin
+            { Format(mask, [expr][, fs]) }
+            arrp:=carrayconstructornode.create(p,nil);
+            include(tarrayconstructornode(arrp).arrayconstructornodeflags,acnf_allow_array_constructor);
+            paras:=nil;
+            paras:=ccallparanode.create(cstringconstnode.createstr(mask),paras);
+            paras:=ccallparanode.create(arrp,paras);
+            if assigned(fsnode) then
+              paras:=ccallparanode.create(fsnode,paras);
+          end
+        else
+          begin
+            { FormatDateTime(mask, dt[, fs]) or FormatFloat(mask, val[, fs]) }
+            paras:=nil;
+            paras:=ccallparanode.create(cstringconstnode.createstr(mask),paras);
+            paras:=ccallparanode.create(p,paras);
+            if assigned(fsnode) then
+              paras:=ccallparanode.create(fsnode,paras);
+          end;
+
+        result:=ccallnode.create(paras,tprocsym(srsym),srsymtable,nil,[],nil);
+      end;
+
+
+    // wrap classref / class / record / advanced record / type-helper ToString
+    // through `expr.ClassName` or `expr.ToString`, falling back to a compile-
+    // time string literal with the typename.
+    function build_interp_type_dispatch(p:tnode):tnode;
+      var
+        sym : tsym;
+        symt : tsymtable;
+        tn : ansistring;
+      begin
+        result:=p;
+        if p.resultdef.typ=classrefdef then
+          begin
+            result:=ccallnode.createinternmethod(p,'CLASSNAME',nil);
+            exit;
+          end;
+        if p.resultdef.typ in [objectdef,recorddef] then
+          begin
+            sym:=search_struct_member(tabstractrecorddef(p.resultdef),'TOSTRING');
+            if assigned(sym) and (sym.typ=procsym) then
+              begin
+                result:=ccallnode.create(nil,tprocsym(sym),sym.owner,p,[],nil);
+                exit;
+              end;
+          end
+        else
+          if search_objectpascal_helper(p.resultdef,nil,'TOSTRING',sym,symt) and
+             (sym.typ=procsym) then
+            begin
+              result:=ccallnode.create(nil,tprocsym(sym),symt,p,[],nil);
+              exit;
+            end;
+        tn:=p.resultdef.typename;
+        if tn<>'' then
+          begin
+            p.free;
+            result:=cstringconstnode.createstr(tn);
+            exit;
+          end;
+        Message1(parser_e_interp_fmt_bad_type,'anonymous type');
+      end;
+
+
+    // flatten `{expr}` into one or more fragments appended to interp_paras.
+    // scalars pass through unchanged (WriteStr handles them at the outer
+    // interp block). arrays are unrolled into `'[', e0, ', ', e1, ..., ']'`.
+    // class / record / object go through type dispatch which yields a string.
+    procedure handle_interp_elem(p:tnode;var interp_paras:tnode;var interp_count:longint);
+
+        procedure add_frag(f:tnode);
+        begin
+          interp_paras:=ccallparanode.create(f,interp_paras);
+          inc(interp_count);
+        end;
+
+      var
+        arrdef : tarraydef;
+        ac,nextac : tarrayconstructornode;
+        cnt,i,lo : sizeint;
+        elem : tnode;
+        first : boolean;
+      begin
+        if p.nodetype=arrayconstructorn then
+          begin
+            add_frag(cstringconstnode.createstr('['));
+            ac:=tarrayconstructornode(p);
+            first:=true;
+            while assigned(ac) do
+              begin
+                elem:=ac.left;
+                if not assigned(elem) then break;
+                ac.left:=nil;
+                if not first then
+                  add_frag(cstringconstnode.createstr(', '));
+                handle_interp_elem(elem,interp_paras,interp_count);
+                first:=false;
+                nextac:=tarrayconstructornode(ac.right);
+                ac:=nextac;
+              end;
+            add_frag(cstringconstnode.createstr(']'));
+            p.free;
+            exit;
+          end;
+        if not assigned(p.resultdef) then
+          do_typecheckpass(p);
+        if not assigned(p.resultdef) then
+          begin
+            add_frag(p);
+            exit;
+          end;
+        if is_ordinal(p.resultdef) or is_real(p.resultdef) or is_stringlike(p.resultdef) then
+          begin
+            add_frag(p);
+            exit;
+          end;
+        if (p.resultdef.typ=arraydef) and
+           not is_conststring_array(p.resultdef) and
+           (is_normal_array(p.resultdef) or is_array_constructor(p.resultdef) or
+            is_open_array(p.resultdef)) then
+          begin
+            add_frag(cstringconstnode.createstr('['));
+            arrdef:=tarraydef(p.resultdef);
+            cnt:=arrdef.elecount;
+            lo:=arrdef.lowrange;
+            for i:=0 to cnt-1 do
+              begin
+                if i>0 then
+                  add_frag(cstringconstnode.createstr(', '));
+                elem:=cvecnode.create(
+                  p.getcopy,
+                  cordconstnode.create(lo+i,s32inttype,false));
+                handle_interp_elem(elem,interp_paras,interp_count);
+              end;
+            add_frag(cstringconstnode.createstr(']'));
+            p.free;
+            exit;
+          end;
+        add_frag(build_interp_type_dispatch(p));
+      end;
+
+
     function factor(getaddr:boolean;flags:texprflags) : tnode;
 
          {---------------------------------------------
@@ -4780,6 +5023,13 @@ implementation
          nodechanged  : boolean;
          oldprocvardef : tprocvardef;
          oldfuncrefdef : tobjectdef;
+         interp_paras : tnode;
+         interp_count : longint;
+         interp_has_expr : boolean;
+         interp_stmt : tstatementnode;
+         interp_temp : ttempcreatenode;
+         interp_last : tnode;
+         interp_inl : tinlinenode;
       begin
         { can't keep a copy of p1 and compare pointers afterwards, because
           p1 may be freed and reallocated in the same place!  }
@@ -5192,6 +5442,91 @@ implementation
                   begin
                     p1:=ctypenode.create(hdef);
                   end;
+               end;
+
+             _INTERP_START :
+               begin
+                 consume(_INTERP_START);
+                 interp_paras:=nil;
+                 interp_count:=0;
+                 interp_has_expr:=false;
+                 while current_scanner.token<>_INTERP_END do
+                   begin
+                     if current_scanner.token=_INTERP_FRAG then
+                       begin
+                         p1:=cstringconstnode.createpchar(pchar(current_scanner.cstringpattern),
+                           length(current_scanner.cstringpattern),nil);
+                         consume(_INTERP_FRAG);
+                       end
+                     else
+                       begin
+                         interp_has_expr:=true;
+                         if current_scanner.token=_INTERP_EXPR_END then
+                           begin
+                             { empty interpolation braces - report error, skip }
+                             Message(parser_e_illegal_expression);
+                             consume(_INTERP_EXPR_END);
+                             continue;
+                           end;
+                         p1:=comp_expr([ef_accept_equal]);
+                         // format mask: `{expr:mask}` - everything after the
+                         // first `:` up to the closing `}` is the raw mask
+                         if current_scanner.token=_COLON then
+                           begin
+                             p1:=handle_interp_format(p1,current_scanner.read_interp_mask);
+                             interp_paras:=ccallparanode.create(p1,interp_paras);
+                             inc(interp_count);
+                           end
+                         else
+                           handle_interp_elem(p1,interp_paras,interp_count);
+                         consume(_INTERP_EXPR_END);
+                         continue;
+                       end;
+                     interp_paras:=ccallparanode.create(p1,interp_paras);
+                     inc(interp_count);
+                   end;
+                 consume(_INTERP_END);
+                 if interp_count=0 then
+                   p1:=cstringconstnode.createpchar(pchar(''),0,nil)
+                 else if not interp_has_expr then
+                   begin
+                     { all literals - use Concat or return single string }
+                     if interp_count=1 then
+                       begin
+                         p1:=tcallparanode(interp_paras).left;
+                         tcallparanode(interp_paras).left:=nil;
+                         interp_paras.free;
+                       end
+                     else
+                       p1:=cinlinenode.create(in_concat_x,false,interp_paras);
+                   end
+                 else
+                   begin
+                     { has expressions - generate WriteStr(temp, fragments...) }
+                     interp_temp:=ctempcreatenode.create(cansistringtype,
+                       cansistringtype.size,tt_persistent,true);
+                     { append temp destination at end of chain (reverseparameters
+                       in handle_read_write will move it to front) }
+                     interp_last:=interp_paras;
+                     while assigned(tcallparanode(interp_last).right) do
+                       interp_last:=tcallparanode(interp_last).right;
+                     tcallparanode(interp_last).right:=ccallparanode.create(
+                       ctemprefnode.create(interp_temp),nil);
+                     p1:=internalstatements(interp_stmt);
+                     addstatement(interp_stmt,interp_temp);
+                     interp_inl:=cinlinenode.create(
+                       in_writestr_x,false,interp_paras);
+                     include(interp_inl.inlinenodeflags,inf_from_interpolation);
+                     addstatement(interp_stmt,interp_inl);
+                     addstatement(interp_stmt,ctempdeletenode.create_normal_temp(
+                       interp_temp));
+                     addstatement(interp_stmt,ctemprefnode.create(interp_temp));
+                   end;
+                 if current_scanner.token in postfixoperator_tokens then
+                   begin
+                     again:=true;
+                     postfixoperators(p1,again,getaddr);
+                   end;
                end;
 
              _CSTRING :

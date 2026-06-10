@@ -324,7 +324,11 @@ type
     _SYSV_ABI_CDECL,
     _LESSTHANOREQUAL,
     _SYSV_ABI_DEFAULT,
-    _GREATERTHANOREQUAL
+    _GREATERTHANOREQUAL,
+    _INTERP_START,
+    _INTERP_EXPR_END,
+    _INTERP_END,
+    _INTERP_FRAG
   );
 
   { sub_expr(opmultiply) is need to get -1 ** 4 to be
@@ -676,7 +680,11 @@ var
       (str:'SYSV_ABI_CDECL';special:false;keyword:[m_none];op:NOTOKEN),
       (str:'LESSTHANOREQUAL';special:false;keyword:[m_none];op:NOTOKEN),    { delphi operator name }
       (str:'SYSV_ABI_DEFAULT';special:false;keyword:[m_none];op:NOTOKEN),
-      (str:'GREATERTHANOREQUAL';special:false;keyword:[m_none];op:NOTOKEN)  { delphi operator name }
+      (str:'GREATERTHANOREQUAL';special:false;keyword:[m_none];op:NOTOKEN), { delphi operator name }
+      (str:'$'''             ;special:true ;keyword:[m_none];op:NOTOKEN),
+      (str:'}'                ;special:true ;keyword:[m_none];op:NOTOKEN),
+      (str:''''               ;special:true ;keyword:[m_none];op:NOTOKEN),
+      (str:''                 ;special:true ;keyword:[m_none];op:NOTOKEN)
   );
 
 
