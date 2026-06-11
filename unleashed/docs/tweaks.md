@@ -102,6 +102,24 @@ Just the parser. When the comparison-level expression sees `is` followed by `not
 
 Outside unleashed mode the parser rejects both: `obj is not T` is read as `obj is (not T)` and triggers an operator error, and `x not in S` produces a syntax error at `not`.
 
+## Default-on switches
+
+Three module-level switches that are off by default in `objfpc`/`fpc` are turned on automatically by `{$mode unleashed}`, so the constructs they gate work out of the box:
+
+| Switch              | Directive / flag           | What it enables                                  |
+|---------------------|----------------------------|--------------------------------------------------|
+| goto support        | `{$goto on}` / `-Sg`       | `label` declarations and `goto`                  |
+| C-style operators   | `{$coperators on}` / `-Sc` | `+=`, `-=`, `*=`, `/=` (see [compound-assignment.md](compound-assignment.md)) |
+| macros              | `{$macro on}` / `-Sm`      | text-substitution macros (`$define name := value`) |
+
+(`inline` is on too, but that comes from the `objfpc` base mode, not an unleashed addition.)
+
+You can still turn any of them back off locally with the `off` form of the directive, e.g. `{$goto off}`.
+
+### What unleashed actually changes
+
+The mode handler includes `cs_support_goto`, `cs_support_c_operators` and `cs_support_macro` in the module switches whenever `m_unleashed` is set, mirroring how `delphi`/`tp7`/`mac` already default `goto` on.
+
 ## Future tweaks
 
 This page is the catalogue for small unleashed-only semantic adjustments. As more of them land, they get appended here with the same shape: what the standard does, what unleashed changes, and how to opt back into the standard when you really need it.
