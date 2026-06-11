@@ -658,6 +658,14 @@ implementation
                  include(init_settings.moduleswitches,cs_support_goto);
              end;
 
+           { unleashed enables goto/label, C-style operators and macros by default }
+           if m_unleashed in current_settings.modeswitches then
+             begin
+               current_settings.moduleswitches:=current_settings.moduleswitches+[cs_support_goto,cs_support_c_operators,cs_support_macro];
+               if changeinit then
+                 init_settings.moduleswitches:=init_settings.moduleswitches+[cs_support_goto,cs_support_c_operators,cs_support_macro];
+             end;
+
            { support pointer math by default in fpc/objfpc modes }
            if ([m_fpc,m_objfpc] * current_settings.modeswitches <> []) then
              begin
