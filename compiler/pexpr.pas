@@ -71,6 +71,13 @@ interface
       of the specialization are used) }
     procedure post_comp_expr_gendef(var def: tdef);
 
+    { unleashed: parse the `(expr)` body of the compile-time Type() intrinsic.
+      caller has already consumed the leading `Type` keyword. consumes the
+      parentheses and returns the static type of the inner expression without
+      evaluating it (no codegen, no side effects). returns generrordef on a
+      parse or typecheck error. }
+    function parse_type_intrinsic_body: tdef;
+
 implementation
 
     uses
@@ -5773,7 +5780,34 @@ implementation
                      { recover }
                      consume(current_scanner.token);
                    end;
-               end
+               end;
+
+             _TYPE :
+               { unleashed: Type(expr) intrinsic in expression position. covers
+                 typecasts `Type(x)(value)` as well as use as a type argument to
+                 High/Low/SizeOf/Default. the type keyword has no other valid
+                 meaning here, so we commit to the intrinsic once we see it. }
+               if m_unleashed in current_settings.modeswitches then
+                 begin
+                   consume(_TYPE);
+                   if current_scanner.token=_LKLAMMER then
+                     begin
+                       hdef:=parse_type_intrinsic_body;
+                       p1:=handle_factor_typenode(hdef,getaddr,again,nil,ef_type_only in flags);
+                     end
+                   else
+                     begin
+                       Message(parser_e_illegal_expression);
+                       p1:=cerrornode.create;
+                     end;
+                 end
+               else
+                 begin
+                   Message(parser_e_illegal_expression);
+                   p1:=cerrornode.create;
+                   { recover }
+                   consume(current_scanner.token);
+                 end
 
              else if not statement_expr(p1) then
                begin
@@ -5825,6 +5859,25 @@ implementation
           def:=ttypenode(p1).typedef
         else
           def:=generrordef;
+      end;
+
+
+    function parse_type_intrinsic_body: tdef;
+      var
+        p1 : tnode;
+      begin
+        result:=generrordef;
+        consume(_LKLAMMER);
+        p1:=comp_expr([ef_accept_equal]);
+        if assigned(p1) then
+          begin
+            if not assigned(p1.resultdef) then
+              typecheckpass(p1);
+            if assigned(p1.resultdef) and (p1.resultdef.typ<>errordef) then
+              result:=p1.resultdef;
+            p1.free;
+          end;
+        consume(_RKLAMMER);
       end;
 
 {****************************************************************************

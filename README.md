@@ -1139,6 +1139,7 @@ Smaller, targeted improvements that unlock Pascal patterns standard FPC modes re
 | `array[N] of T` shorthand    | `array[N]` = `array[0..N-1]`; multi-dim and ranges mix freely      | `array[10] of integer`, `array[3, 'a'..'z']`     | unleashed-only                      |
 | Compound `+=` on properties  | `prop += x` (stock rejects with "Variable identifier expected")    | `f.Count += 5`                                   | unleashed-only                      |
 | `inc` / `dec` on properties  | `inc(prop, n)` rewritten to getter + setter                        | `inc(c.N, 5)`                                    | unleashed-only                      |
+| `Type()` intrinsic           | Static type of an expression, operand unevaluated                  | `var y: Type(x)`, `Type(a[0])`                   | unleashed-only                      |
 
 Full descriptions, edge cases, and limitations in [unleashed/docs/extra-improvements.md](unleashed/docs/extra-improvements.md).
 
