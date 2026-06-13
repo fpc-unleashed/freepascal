@@ -117,6 +117,11 @@ interface
       true) }
     function read_proc(flags:tread_proc_flags; usefwpd: tprocdef):tprocdef;
 
+    { parses `begin..end` as a parameterless anonymous procedure (for the
+      `async begin..end` block form) and returns its procdef; positioned at the
+      `begin` token }
+    function read_async_block:tprocdef;
+
     { parses only the body of a non nested routine; needs a correctly setup pd }
     procedure read_proc_body(pd:tprocdef);
 
@@ -2992,6 +2997,41 @@ implementation
         read_proc_body(nil,pd);
         current_procinfo:=old_current_procinfo;
         current_module.procinfo:=old_module_procinfo;
+      end;
+
+
+    function read_async_block:tprocdef;
+      var
+        pd : tprocdef;
+        old_current_procinfo : tprocinfo;
+        old_current_structdef : tabstractrecorddef;
+      begin
+        { build the paramless anonymous procdef the same way parse_proc_dec does
+          (current_procinfo reset), then let read_proc parse the body }
+        result:=nil;
+        old_current_procinfo:=current_procinfo;
+        old_current_structdef:=current_structdef;
+        current_procinfo:=nil;
+        current_structdef:=nil;
+        if parse_proc_head(nil,potype_procedure,[ppf_anonymous],nil,nil,pd) then
+          begin
+            if assigned(pd) then
+              begin
+                parse_proc_dec_finish(pd,[ppf_anonymous],nil);
+                { the usefwpd path of read_proc skips the calling-convention
+                  setup, so do it here (this also fills pd.paras) }
+                handle_calling_convention(pd,hcc_default_actions_impl);
+              end;
+            current_procinfo:=old_current_procinfo;
+            current_structdef:=old_current_structdef;
+            if assigned(pd) then
+              result:=read_proc([rpf_anonymous],pd);
+          end
+        else
+          begin
+            current_procinfo:=old_current_procinfo;
+            current_structdef:=old_current_structdef;
+          end;
       end;
 
 

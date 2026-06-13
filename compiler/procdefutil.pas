@@ -43,6 +43,10 @@ function adjust_funcref(var def:tdef;sym,dummysym:tsym):boolean;
   `await` lowers to }
 function get_future_intf_def(elemdef:tdef):tobjectdef;
 
+{ the function-reference interface for a parameterless anonymous procedure
+  (used to convert an `async begin..end` block into a captured funcref) }
+function async_block_funcref(pd:tprocdef):tobjectdef;
+
 { rewrites `async`/`await` nodes in a routine body into the future-impl factory
   call and the `__Await` method call; no-op for routines without them }
 procedure lower_async(pi:tprocinfo);
@@ -147,7 +151,30 @@ implementation
     end;
 
 
+  function async_refs_local(var n:tnode;arg:pointer):foreachnoderesult;
+    var
+      found : pboolean absolute arg;
+      sym : tsym;
+    begin
+      result:=fen_false;
+      if not assigned(current_procinfo) then
+        exit;
+      if n.nodetype=loadn then
+        begin
+          sym:=tloadnode(n).symtableentry;
+          if assigned(sym) and
+             ((sym.owner=current_procinfo.procdef.localst) or
+              (sym.owner=current_procinfo.procdef.parast)) then
+            found^:=true;
+        end
+      else if n.nodetype=loadparentfpn then
+        found^:=true;
+    end;
+
+
   function resolve_async_future(left:tnode;isblock:boolean):tdef;
+    var
+      refslocal : boolean;
     begin
       if isblock then
         begin
@@ -155,8 +182,9 @@ implementation
           result:=get_future_intf_def(nil);
           exit;
         end;
-      { the call form needs a routine call to run on the worker thread }
-      if not assigned(left) or not (left.nodetype in [calln,inlinen]) then
+      { the call form runs a routine call (calln) or a statement-shaped intrinsic
+        like writeln (inlinen / a synthesized blockn) on the worker thread }
+      if not assigned(left) or not (left.nodetype in [calln,inlinen,blockn]) then
         begin
           if assigned(left) then
             MessagePos(left.fileinfo,parser_e_async_needs_call)
@@ -164,6 +192,19 @@ implementation
             Message(parser_e_async_needs_call);
           result:=generrordef;
           exit;
+        end;
+      { a statement intrinsic (writeln etc.) is moved to the worker verbatim, so
+        it must not read the spawning routine's locals - require the block form }
+      if left.nodetype in [inlinen,blockn] then
+        begin
+          refslocal:=false;
+          foreachnodestatic(pm_postprocess,left,@async_refs_local,@refslocal);
+          if refslocal then
+            begin
+              MessagePos(left.fileinfo,parser_e_async_stmt_captures_local);
+              result:=generrordef;
+              exit;
+            end;
         end;
       if not assigned(left.resultdef) or is_void(left.resultdef) then
         result:=get_future_intf_def(nil)
@@ -245,7 +286,9 @@ implementation
       elemdef,
       selfdef : tdef;
       isvoid,
-      ismethod : boolean;
+      ismethod,
+      isinline : boolean;
+      inlinework : tnode;
       argnodes,
       argdefs,
       argfields,
@@ -348,35 +391,52 @@ implementation
       futureintf:=tobjectdef(an.resultdef);
       if not is_future_intf(futureintf) then
         exit;
-      if not assigned(an.left) or (an.left.nodetype<>calln) then
+      if not assigned(an.left) or not (an.left.nodetype in [calln,inlinen,blockn]) then
         exit;
-      origcall:=tcallnode(an.left);
-      an.left:=nil;
-      elemdef:=origcall.resultdef;
-      isvoid:=(elemdef=nil) or is_void(elemdef);
-      origprocsym:=origcall.symtableprocentry;
-      origst:=origcall.symtableproc;
-      ismethod:=assigned(origcall.methodpointer);
+      origcall:=nil;
+      origprocsym:=nil;
+      origst:=nil;
+      elemdef:=nil;
+      ismethod:=false;
       selfdef:=nil;
-
-      { collect the call arguments (detaching them so they move to the factory
-        call), recording each one's type for the snapshot field and parameter }
       argnodes:=tfplist.create;
       argdefs:=tfplist.create;
       argfields:=tfplist.create;
       spawnargsyms:=tfplist.create;
-      cpn:=tcallparanode(origcall.left);
-      while assigned(cpn) do
+      { a statement-shaped intrinsic (writeln etc.) is moved to the worker as-is
+        and yields a bare future; a routine call snapshots its arguments }
+      isinline:=an.left.nodetype<>calln;
+      if isinline then
         begin
-          { skip compiler-inserted hidden parameters (e.g. the managed-result
-            buffer); the rebuilt call regenerates them at its own firstpass }
-          if not (assigned(cpn.parasym) and (vo_is_hidden_para in cpn.parasym.varoptions)) then
+          inlinework:=an.left;
+          an.left:=nil;
+          isvoid:=true;
+        end
+      else
+        begin
+          inlinework:=nil;
+          origcall:=tcallnode(an.left);
+          an.left:=nil;
+          elemdef:=origcall.resultdef;
+          isvoid:=(elemdef=nil) or is_void(elemdef);
+          origprocsym:=origcall.symtableprocentry;
+          origst:=origcall.symtableproc;
+          ismethod:=assigned(origcall.methodpointer);
+          { collect the call arguments (detaching them so they move to the
+            factory call), recording each type for the snapshot field/parameter }
+          cpn:=tcallparanode(origcall.left);
+          while assigned(cpn) do
             begin
-              argnodes.add(cpn.left);
-              argdefs.add(cpn.left.resultdef);
-              cpn.left:=nil;
+              { skip compiler-inserted hidden parameters (e.g. the managed-result
+                buffer); the rebuilt call regenerates them at its own firstpass }
+              if not (assigned(cpn.parasym) and (vo_is_hidden_para in cpn.parasym.varoptions)) then
+                begin
+                  argnodes.add(cpn.left);
+                  argdefs.add(cpn.left.resultdef);
+                  cpn.left:=nil;
+                end;
+              cpn:=tcallparanode(cpn.right);
             end;
-          cpn:=tcallparanode(cpn.right);
         end;
 
       { the impl class and all its methods live at module level (and are
@@ -416,17 +476,23 @@ implementation
       thunkpd.localst.insertsym(implsym);
       excloc:=nil;
 
-      { rebuild the original call against the snapshot fields. the parameter
-        chain is in reverse source order (first node = last argument) }
-      newparams:=nil;
-      for i:=0 to argfields.count-1 do
-        newparams:=ccallparanode.create(impl_field(tfieldvarsym(argfields[i])),newparams);
-      if ismethod then
-        workcall:=ccallnode.create(newparams,origprocsym,origst,impl_field(fSelf),[],nil)
+      if isinline then
+        { the statement intrinsic carries its own (literal) operands; run it directly }
+        workcall:=inlinework
       else
-        workcall:=ccallnode.create(newparams,origprocsym,origst,nil,[],nil);
-      if not isvoid then
-        workcall:=cassignmentnode.create(impl_field(fRes),workcall);
+        begin
+          { rebuild the original call against the snapshot fields. the parameter
+            chain is in reverse source order (first node = last argument) }
+          newparams:=nil;
+          for i:=0 to argfields.count-1 do
+            newparams:=ccallparanode.create(impl_field(tfieldvarsym(argfields[i])),newparams);
+          if ismethod then
+            workcall:=ccallnode.create(newparams,origprocsym,origst,impl_field(fSelf),[],nil)
+          else
+            workcall:=ccallnode.create(newparams,origprocsym,origst,nil,[],nil);
+          if not isvoid then
+            workcall:=cassignmentnode.create(impl_field(fRes),workcall);
+        end;
 
       body:=internalstatements(stmt);
       addstatement(stmt,cassignmentnode.create(cloadnode.create(implsym,implsym.owner),
@@ -519,8 +585,10 @@ implementation
         reverse-order chain the snapshotted self ends up last ---- }
       callparams:=nil;
       if ismethod then
-        callparams:=ccallparanode.create(origcall.methodpointer,nil);
-      origcall.methodpointer:=nil;
+        begin
+          callparams:=ccallparanode.create(origcall.methodpointer,nil);
+          origcall.methodpointer:=nil;
+        end;
       for i:=0 to argnodes.count-1 do
         callparams:=ccallparanode.create(tnode(argnodes[i]),callparams);
       result:=ccallnode.create(callparams,tprocsym(spawnpd.procsym),clsdef.symtable,
@@ -530,7 +598,199 @@ implementation
       argdefs.free;
       argfields.free;
       spawnargsyms.free;
-      origcall.free;
+      if assigned(origcall) then
+        origcall.free;
+    end;
+
+
+  { `async begin..end` -> $async$N.__Spawn(<anonymous proc reference>): the block
+    was parsed into a function reference whose capturer holds the referenced
+    locals by reference, so the worker runs it and sees later mutations. always
+    a bare future (no result). }
+  function build_one_async_block(an:tasyncnode;ctx:pasynclowerctx):tnode;
+    var
+      clsdef,
+      futureintf : tobjectdef;
+      procnode : tnode;
+      procreftype : tdef;
+      fEvent,fExc,fKeep,fProc : tfieldvarsym;
+      thunkpd,spawnpd,awaitpd : tprocdef;
+      implsym : tlocalvarsym;
+      pparam,procparam : tparavarsym;
+      excloc : tlocalvarsym;
+      body,thenblk,workcall : tnode;
+      stmt,thenstmt : tstatementnode;
+      clsname : tsymstr;
+
+    function add_field(const fname:string;ftype:tdef):tfieldvarsym;
+      begin
+        result:=cfieldvarsym.create(fname,vs_value,ftype,[]);
+        clsdef.symtable.insertsym(result);
+        tabstractrecordsymtable(clsdef.symtable).addfield(result,vis_public);
+      end;
+
+    function new_method(const mname:string;rettype:tdef;isstatic:boolean):tprocdef;
+      var
+        oldstack : tsymtablestack;
+      begin
+        oldstack:=symtablestack;
+        symtablestack:=nil;
+        result:=cprocdef.create(normal_function_level,false);
+        result.struct:=clsdef;
+        if assigned(rettype) then
+          begin
+            result.proctypeoption:=potype_function;
+            result.returndef:=rettype;
+          end
+        else
+          begin
+            result.proctypeoption:=potype_procedure;
+            result.returndef:=voidtype;
+          end;
+        result.proccalloption:=pocall_default;
+        include(result.procoptions,po_hascallingconvention);
+        if isstatic then
+          begin
+            include(result.procoptions,po_classmethod);
+            include(result.procoptions,po_staticmethod);
+          end
+        else
+          include(result.procoptions,po_virtualmethod);
+        exclude(result.procoptions,po_delphi_nested_cc);
+        result.forwarddef:=false;
+        result.procsym:=cprocsym.create(mname);
+        result.visibility:=vis_public;
+        clsdef.symtable.insertsym(result.procsym);
+        clsdef.symtable.insertdef(result);
+        symtablestack:=oldstack;
+      end;
+
+    procedure finish_method(pd:tprocdef);
+      var
+        oldstack : tsymtablestack;
+      begin
+        oldstack:=symtablestack;
+        symtablestack:=nil;
+        handle_calling_convention(pd,hcc_default_actions_impl);
+        proc_add_definition(pd);
+        insert_funcret_local(pd);
+        pd.calcparas;
+        symtablestack:=oldstack;
+      end;
+
+    function self_field(pd:tprocdef;f:tfieldvarsym):tnode;
+      var
+        s : tsym;
+      begin
+        s:=async_find_self(pd);
+        result:=csubscriptnode.create(f,cloadnode.create(s,s.owner));
+      end;
+
+    function impl_field(f:tfieldvarsym):tnode;
+      begin
+        result:=csubscriptnode.create(f,cloadnode.create(implsym,implsym.owner));
+      end;
+
+    function rtl(const name:string;params:tnode):tnode;
+      begin
+        result:=ccallnode.createintern(name,params);
+      end;
+
+    begin
+      result:=an;
+      futureintf:=tobjectdef(an.resultdef);
+      if not is_future_intf(futureintf) then
+        exit;
+      procnode:=an.left;
+      an.left:=nil;
+      if not assigned(procnode) or not assigned(procnode.resultdef) then
+        exit;
+      procreftype:=procnode.resultdef;
+
+      inc(ctx^.counter);
+      clsname:='$async$'+tostr(ctx^.pi.procdef.defid)+'$'+tostr(ctx^.counter);
+      clsdef:=cobjectdef.create(odt_class,clsname,
+        tobjectdef(search_system_type('TINTERFACEDOBJECT').typedef),false);
+      current_module.localsymtable.insertdef(clsdef);
+      current_module.localsymtable.insertsym(ctypesym.create(clsname,clsdef));
+      clsdef.register_implemented_interface(futureintf,true);
+
+      fEvent:=add_field('__event',search_system_type('PRTLEVENT').typedef);
+      fExc:=add_field('__exc',class_tobject);
+      fKeep:=add_field('__keepalive',interface_iunknown);
+      fProc:=add_field('__proc',procreftype);
+
+      { ---- __Thunk: invoke the captured reference on the worker thread ---- }
+      thunkpd:=new_method('__Thunk',ptrsinttype,true);
+      pparam:=cparavarsym.create('p',10,vs_value,voidpointertype,[]);
+      thunkpd.parast.insertsym(pparam);
+      finish_method(thunkpd);
+      implsym:=clocalvarsym.create('__impl',vs_value,clsdef,[]);
+      thunkpd.localst.insertsym(implsym);
+      workcall:=ccallnode.create_procvar(nil,impl_field(fProc));
+      body:=internalstatements(stmt);
+      addstatement(stmt,cassignmentnode.create(cloadnode.create(implsym,implsym.owner),
+        ctypeconvnode.create_internal(cloadnode.create(pparam,pparam.owner),clsdef)));
+      addstatement(stmt,ctryexceptnode.create(
+        workcall,
+        nil,
+        cassignmentnode.create(impl_field(fExc),
+          ctypeconvnode.create_internal(rtl('ACQUIREEXCEPTIONOBJECT',nil),class_tobject))));
+      addstatement(stmt,rtl('RTLEVENTSETEVENT',ccallparanode.create(impl_field(fEvent),nil)));
+      addstatement(stmt,cassignmentnode.create(impl_field(fKeep),cnilnode.create));
+      addstatement(stmt,cassignmentnode.create(cloadnode.create(thunkpd.funcretsym,thunkpd.funcretsym.owner),
+        cordconstnode.create(0,ptrsinttype,false)));
+      async_defer_method(thunkpd,body);
+
+      { ---- __Await: join, then re-raise any captured exception ---- }
+      awaitpd:=new_method('__Await',nil,false);
+      finish_method(awaitpd);
+      excloc:=clocalvarsym.create('__e',vs_value,class_tobject,[]);
+      awaitpd.localst.insertsym(excloc);
+      body:=internalstatements(stmt);
+      addstatement(stmt,rtl('RTLEVENTWAITFOR',ccallparanode.create(self_field(awaitpd,fEvent),nil)));
+      addstatement(stmt,rtl('RTLEVENTSETEVENT',ccallparanode.create(self_field(awaitpd,fEvent),nil)));
+      thenblk:=internalstatements(thenstmt);
+      addstatement(thenstmt,cassignmentnode.create(cloadnode.create(excloc,excloc.owner),self_field(awaitpd,fExc)));
+      addstatement(thenstmt,cassignmentnode.create(self_field(awaitpd,fExc),cnilnode.create));
+      addstatement(thenstmt,craisenode.create(cloadnode.create(excloc,excloc.owner),nil,nil));
+      addstatement(stmt,cifnode.create(
+        caddnode.create(unequaln,self_field(awaitpd,fExc),cnilnode.create),
+        thenblk,
+        nil));
+      async_defer_method(awaitpd,body);
+
+      { ---- __Spawn: store the reference, arm the event, spawn ---- }
+      spawnpd:=new_method('__Spawn',futureintf,true);
+      procparam:=cparavarsym.create('aproc',10,vs_value,procreftype,[]);
+      spawnpd.parast.insertsym(procparam);
+      finish_method(spawnpd);
+      implsym:=clocalvarsym.create('__impl',vs_value,clsdef,[]);
+      spawnpd.localst.insertsym(implsym);
+      body:=internalstatements(stmt);
+      addstatement(stmt,cassignmentnode.create(cloadnode.create(implsym,implsym.owner),
+        ccallnode.create(nil,tprocsym(class_tobject.symtable.find('CREATE')),clsdef.symtable,
+          cloadvmtaddrnode.create(ctypenode.create(clsdef)),[],nil)));
+      addstatement(stmt,cassignmentnode.create(impl_field(fProc),
+        cloadnode.create(procparam,procparam.owner)));
+      addstatement(stmt,cassignmentnode.create(impl_field(fEvent),rtl('RTLEVENTCREATE',nil)));
+      addstatement(stmt,cassignmentnode.create(impl_field(fKeep),cloadnode.create(implsym,implsym.owner)));
+      addstatement(stmt,rtl('BEGINTHREAD',
+        ccallparanode.create(
+          ctypeconvnode.create_internal(cloadnode.create(implsym,implsym.owner),voidpointertype),
+          ccallparanode.create(
+            ctypeconvnode.create_proc_to_procvar(cloadnode.create_procvar(thunkpd.procsym,thunkpd,thunkpd.procsym.owner)),
+            nil))));
+      addstatement(stmt,cassignmentnode.create(
+        cloadnode.create(spawnpd.funcretsym,spawnpd.funcretsym.owner),cloadnode.create(implsym,implsym.owner)));
+      async_defer_method(spawnpd,body);
+
+      build_vmt(clsdef);
+
+      result:=ccallnode.create(ccallparanode.create(procnode,nil),tprocsym(spawnpd.procsym),clsdef.symtable,
+        cloadvmtaddrnode.create(ctypenode.create(clsdef)),[],nil);
+
+      an.free;
     end;
 
 
@@ -542,7 +802,12 @@ implementation
       if n.nodetype=awaitn then
         n:=build_one_await(tawaitnode(n))
       else if n.nodetype=asyncn then
-        n:=build_one_async_call(tasyncnode(n),ctx);
+        begin
+          if tasyncnode(n).isblock then
+            n:=build_one_async_block(tasyncnode(n),ctx)
+          else
+            n:=build_one_async_call(tasyncnode(n),ctx);
+        end;
     end;
 
 
@@ -851,6 +1116,12 @@ implementation
       addsymref(sym);
 
       build_vmt(result);
+    end;
+
+
+  function async_block_funcref(pd:tprocdef):tobjectdef;
+    begin
+      result:=funcref_intf_for_proc(pd,fileinfo_to_suffix(pd.fileinfo));
     end;
 
 
