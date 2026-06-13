@@ -1892,6 +1892,11 @@ parser_e_await_needs_future=03427_E_`await` requires a future expression
 % `await` joins the worker thread behind a future and yields its result. The
 % operand must be a `future of T` (or a bare `future`) produced by `async` or
 % returned from a routine. It cannot be applied to an ordinary value.
+parser_e_async_stmt_captures_local=03429_E_`async` on a statement that reads local variables; wrap it in `async begin ... end` to capture them
+% A bare statement intrinsic such as `async writeln(x)` runs on the worker
+% thread with its operands evaluated there; it cannot reach a local variable of
+% the spawning routine. Use the block form `async begin ... end`, which captures
+% referenced locals by reference, or pass the value through a routine call.
 parser_e_future_needs_await=03428_E_future value used without `await` - call `await` to read its result
 % A `future of T` is an opaque handle to a pending thread result, not a T. To
 % read the computed value (and block until the worker finishes), apply `await`.
@@ -1936,7 +1941,7 @@ parser_e_auto_property_init_context=03425_E_Property initializer requires an acc
 %
 # Type Checking
 #
-# 03428 is the last used parser one
+# 03429 is the last used parser one
 #
 # 04136 is the last used one
 #
