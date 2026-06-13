@@ -57,6 +57,33 @@ interface
        end;
        tdefernodeclass = class of tdefernode;
 
+       { parser-only marker for `async <call>` / `async begin..end`. left is the
+         called expression (a call) or the captured anonymous-procedure value
+         (block form). pass_typecheck resolves the resulting `future of T` type;
+         async lowering rewrites it into a factory call before firstpass. should
+         never reach pass_1 - internalerror if it does. }
+       tasyncnode = class(tunarynode)
+          { true for the `async begin..end` block form (left is a funcref value),
+            false for the `async <call>` form (left is a call) }
+          isblock : boolean;
+          constructor create(l:tnode;ablock:boolean);virtual;
+          function pass_1 : tnode;override;
+          function pass_typecheck:tnode;override;
+          function dogetcopy : tnode;override;
+       end;
+       tasyncnodeclass = class of tasyncnode;
+
+       { parser-only marker for `await <future>`. left is the future expression.
+         pass_typecheck sets the result type to the awaited T (voidtype for a
+         bare future); async lowering rewrites it into the `__Await` call before
+         firstpass. should never reach pass_1 - internalerror if it does. }
+       tawaitnode = class(tunarynode)
+          constructor create(l:tnode);virtual;
+          function pass_1 : tnode;override;
+          function pass_typecheck:tnode;override;
+       end;
+       tawaitnodeclass = class of tawaitnode;
+
        terrornode = class(tnode)
           constructor create;virtual;
           function pass_1 : tnode;override;
@@ -358,7 +385,16 @@ interface
     var
        cnothingnode : tnothingnodeclass = tnothingnode;
        cdefernode : tdefernodeclass = tdefernode;
+       casyncnode : tasyncnodeclass = tasyncnode;
+       cawaitnode : tawaitnodeclass = tawaitnode;
        cerrornode : terrornodeclass = terrornode;
+
+    var
+       { resolves the `future of T` interface for an `async` operand (and emits
+         the `async needs a call/block` diagnostic). the synthesis lives in
+         procdefutil, which uses nbas, so it is assigned at init to break the
+         unit cycle. left is the typechecked operand, isblock selects the form }
+       asyncfutureresolver : function(left:tnode;isblock:boolean):tdef = nil;
        cspecializenode : tspecializenodeclass = tspecializenode;
        cfinalizetempsnode: tfinalizetempsnodeclass = tfinalizetempsnode;
        casmnode : tasmnodeclass = tasmnode;
@@ -518,6 +554,90 @@ implementation
       begin
         // Should never reach pass_1: statement_block rewrites all defernodes.
         internalerror(2026043001);
+        result:=nil;
+      end;
+
+{*****************************************************************************
+                             TASYNCNODE
+*****************************************************************************}
+
+    constructor tasyncnode.create(l:tnode;ablock:boolean);
+      begin
+        inherited create(asyncn,l);
+        isblock:=ablock;
+      end;
+
+
+    function tasyncnode.dogetcopy : tnode;
+      begin
+        result:=inherited dogetcopy;
+        tasyncnode(result).isblock:=isblock;
+      end;
+
+
+    function tasyncnode.pass_typecheck:tnode;
+      begin
+        // the future type (and the `async needs a call/block` diagnostic) is
+        // resolved by procdefutil, which owns the interface synthesis; async
+        // lowering then rewrites this node before firstpass.
+        result:=nil;
+        if assigned(left) then
+          typecheckpass(left);
+        if assigned(asyncfutureresolver) then
+          resultdef:=asyncfutureresolver(left,isblock)
+        else
+          resultdef:=generrordef;
+        if not assigned(resultdef) then
+          resultdef:=generrordef;
+      end;
+
+
+    function tasyncnode.pass_1 : tnode;
+      begin
+        // should never reach pass_1: async lowering rewrites all asyncnodes.
+        internalerror(2026061302);
+        result:=nil;
+      end;
+
+{*****************************************************************************
+                             TAWAITNODE
+*****************************************************************************}
+
+    constructor tawaitnode.create(l:tnode);
+      begin
+        inherited create(awaitn,l);
+      end;
+
+
+    function tawaitnode.pass_typecheck:tnode;
+      var
+        eldef : tdef;
+      begin
+        // resolve the awaited result type from the future operand; async
+        // lowering rewrites this node into the `__Await` call before firstpass.
+        result:=nil;
+        if assigned(left) then
+          typecheckpass(left);
+        if not assigned(left) or not assigned(left.resultdef) or
+           not is_future_intf(left.resultdef) then
+          begin
+            MessagePos(fileinfo,parser_e_await_needs_future);
+            resultdef:=generrordef;
+            exit;
+          end;
+        eldef:=get_future_element_def(left.resultdef);
+        if not assigned(eldef) or is_void(eldef) then
+          // bare `future`: await is a statement, yields no value
+          resultdef:=voidtype
+        else
+          resultdef:=eldef;
+      end;
+
+
+    function tawaitnode.pass_1 : tnode;
+      begin
+        // should never reach pass_1: async lowering rewrites all awaitnodes.
+        internalerror(2026061303);
         result:=nil;
       end;
 

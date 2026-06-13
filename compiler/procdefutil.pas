@@ -143,6 +143,31 @@ implementation
     end;
 
 
+  function resolve_async_future(left:tnode;isblock:boolean):tdef;
+    begin
+      if isblock then
+        begin
+          { `async begin..end` yields no value - a bare future }
+          result:=get_future_intf_def(nil);
+          exit;
+        end;
+      { the call form needs a routine call to run on the worker thread }
+      if not assigned(left) or not (left.nodetype in [calln,inlinen]) then
+        begin
+          if assigned(left) then
+            MessagePos(left.fileinfo,parser_e_async_needs_call)
+          else
+            Message(parser_e_async_needs_call);
+          result:=generrordef;
+          exit;
+        end;
+      if not assigned(left.resultdef) or is_void(left.resultdef) then
+        result:=get_future_intf_def(nil)
+      else
+        result:=get_future_intf_def(left.resultdef);
+    end;
+
+
   function create_outline_procdef(const basesymname: string; astruct: tabstractrecorddef; potype: tproctypeoption; resultdef: tdef): tprocdef;
     var
       st:TSymTable;
@@ -1845,5 +1870,9 @@ implementation
     end;
 
 
+initialization
+  { break the nbas -> procdefutil cycle: nbas calls this to resolve an `async`
+    operand's future type during typecheck }
+  asyncfutureresolver:=@resolve_async_future;
 end.
 

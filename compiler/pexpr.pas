@@ -4476,6 +4476,40 @@ implementation
                exit;
              end;
 
+           { `await <future>` is a prefix operator joining a worker thread. it
+             binds at factor level, so `await x + 1` is `(await x) + 1`. only
+             intercept when no `await` symbol is in scope, so a user-declared
+             `await` keeps resolving normally. }
+           if (current_scanner.token=_ID) and
+              (m_asyncawait in current_settings.modeswitches) and
+              (current_scanner.pattern='AWAIT') then
+             begin
+               searchsym(current_scanner.pattern,srsym,srsymtable);
+               if not assigned(srsym) then
+                 begin
+                   consume(_ID);
+                   p1:=cawaitnode.create(factor(false,[]));
+                   again:=false;
+                   exit;
+                 end;
+             end;
+
+           { `async <call>` is a prefix operator spawning the call on a worker
+             thread and yielding a future. same soft-keyword guard as `await`. }
+           if (current_scanner.token=_ID) and
+              (m_asyncawait in current_settings.modeswitches) and
+              (current_scanner.pattern='ASYNC') then
+             begin
+               searchsym(current_scanner.pattern,srsym,srsymtable);
+               if not assigned(srsym) then
+                 begin
+                   consume(_ID);
+                   p1:=casyncnode.create(factor(false,[]),false);
+                   again:=false;
+                   exit;
+                 end;
+             end;
+
            { the two-argument SwapValues(a,b) is a bitwise swap builtin that needs no
              unit beyond System. only intercept when no SwapValues symbol is in scope,
              so a user-declared SwapValues keeps resolving normally. }
