@@ -38,6 +38,11 @@ function create_outline_procdef(const basesymname: string; astruct: tabstractrec
 procedure convert_to_funcref_intf(const n:tidstring;var def:tdef);
 function adjust_funcref(var def:tdef;sym,dummysym:tsym):boolean;
 
+{ synthesized COM interface for `future of T` (elemdef) or bare `future`
+  (elemdef=nil); interned per-module, exposes a single `__Await` method that
+  `await` lowers to }
+function get_future_intf_def(elemdef:tdef):tobjectdef;
+
 { functionality related to capturing local variables for anonymous functions }
 
 function get_or_create_capturer(pd:tprocdef):tsym;
@@ -58,6 +63,84 @@ implementation
     symbase,symsym,symtable,defutil,defcmp,
     htypechk,
     pparautl,psub;
+
+
+  function get_future_intf_def(elemdef:tdef):tobjectdef;
+
+    function add_await_method(intf:tobjectdef;rettype:tdef):tprocdef;
+      var
+        oldstack : tsymtablestack;
+      begin
+        oldstack:=symtablestack;
+        symtablestack:=nil;
+        result:=cprocdef.create(normal_function_level,false);
+        result.struct:=intf;
+        if assigned(rettype) then
+          begin
+            result.proctypeoption:=potype_function;
+            result.returndef:=rettype;
+          end
+        else
+          begin
+            result.proctypeoption:=potype_procedure;
+            result.returndef:=voidtype;
+          end;
+        result.proccalloption:=pocall_default;
+        include(result.procoptions,po_hascallingconvention);
+        include(result.procoptions,po_virtualmethod);
+        exclude(result.procoptions,po_staticmethod);
+        exclude(result.procoptions,po_classmethod);
+        exclude(result.procoptions,po_delphi_nested_cc);
+        result.forwarddef:=false;
+        result.procsym:=cprocsym.create('__Await');
+        result.visibility:=vis_public;
+        intf.symtable.insertsym(result.procsym);
+        intf.symtable.insertdef(result);
+        handle_calling_convention(result,hcc_default_actions_intf_struct);
+        proc_add_definition(result);
+        result.calcparas;
+        symtablestack:=oldstack;
+      end;
+
+    var
+      name : tsymstr;
+      sym : tsym;
+      symowner : tsymtable;
+    begin
+      { intern in a table that lives for the whole module and is present in both
+        the interface and the implementation: a unit's globalsymtable (also
+        visible to importers), or a program's localsymtable }
+      if assigned(current_module.globalsymtable) then
+        symowner:=current_module.globalsymtable
+      else
+        symowner:=current_module.localsymtable;
+      if assigned(elemdef) then
+        name:='$FUTURE$'+tostr(elemdef.defid)
+      else
+        name:='$FUTURE$VOID';
+      { symtable stores `$`-prefixed names without the leading `$` (marks them
+        inaccessible to users), so search under the stripped key }
+      sym:=tsym(symowner.find(copy(name,2,length(name))));
+      if assigned(sym) then
+        begin
+          if (sym.typ<>typesym) or not is_future_intf(ttypesym(sym).typedef) then
+            internalerror(2026061301);
+          result:=tobjectdef(ttypesym(sym).typedef);
+          exit;
+        end;
+
+      result:=cobjectdef.create(odt_interfacecom,name,interface_iunknown,false);
+      include(result.objectoptions,oo_has_virtual);
+
+      sym:=ctypesym.create(name,result);
+      symowner.insertsym(sym);
+      symowner.insertdef(result);
+      addsymref(sym);
+
+      add_await_method(result,elemdef);
+
+      build_vmt(result);
+    end;
 
 
   function create_outline_procdef(const basesymname: string; astruct: tabstractrecorddef; potype: tproctypeoption; resultdef: tdef): tprocdef;

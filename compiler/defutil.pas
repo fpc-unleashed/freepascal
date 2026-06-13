@@ -432,6 +432,14 @@ interface
       without arguments }
     function invokable_has_argless_invoke(def:tobjectdef):boolean;
 
+    { returns true if def is a synthesized `future of T` (or bare `future`)
+      interface, recognized by its internal name prefix }
+    function is_future_intf(def:tdef):boolean;
+
+    { returns the awaited result type T of a future interface (voidtype for a
+      bare `future`), or nil if def is not a future }
+    function get_future_element_def(def:tdef):tdef;
+
     { resolves a field-name chain `path[0].path[1]...` starting at start_def.
       bit_total receives the cumulative offset in bits (records' fieldoffset
       is in bits when bitpacked, in bytes otherwise; helper unifies to bits).
@@ -2138,6 +2146,33 @@ implementation
     function is_block(def: tdef): boolean;
       begin
         result:=(def.typ=procvardef) and (po_is_block in tprocvardef(def).procoptions)
+      end;
+
+
+    function is_future_intf(def:tdef):boolean;
+      begin
+        { recognized by the internal `$FUTURE$` name prefix, mirroring the
+          enumerable-interface trick - avoids spending a tobjectoption bit. the
+          `$` prefix cannot collide with a user identifier }
+        result:=(def.typ=objectdef) and
+                (tobjectdef(def).objecttype=odt_interfacecom) and
+                assigned(tobjectdef(def).objname) and
+                (copy(tobjectdef(def).objname^,1,8)='$FUTURE$');
+      end;
+
+
+    function get_future_element_def(def:tdef):tdef;
+      var
+        sym : tsym;
+      begin
+        { T is carried by the return type of the single `__Await` method;
+          a bare `future` has a `procedure __Await`, hence voidtype }
+        result:=nil;
+        if not is_future_intf(def) then
+          exit;
+        sym:=tsym(tobjectdef(def).symtable.find('__AWAIT'));
+        if assigned(sym) and (sym.typ=procsym) and (tprocsym(sym).procdeflist.count>0) then
+          result:=tprocdef(tprocsym(sym).procdeflist[0]).returndef;
       end;
 
 
