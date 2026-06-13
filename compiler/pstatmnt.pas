@@ -4378,7 +4378,7 @@ implementation
                include them as well
              }
              if not(p.nodetype in [nothingn,errorn,calln,ifn,assignn,breakn,inlinen,
-                                   continuen,labeln,blockn,exitn,goton]) or
+                                   continuen,labeln,blockn,exitn,goton,asyncn,awaitn]) or
                 ((p.nodetype=inlinen) and
                  not tinlinenode(p).may_ignore_result) or
                 ((p.nodetype=calln) and

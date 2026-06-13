@@ -1012,6 +1012,45 @@ implementation
       end;
 
 
+    { code-generate the module-level `async` thread-entry thunks collected during
+      lowering; deferred to here so taking their address never captures a frame }
+    procedure implement_async_thunks(curr: tmodule);
+      var
+        i : longint;
+        tpi : tcgprocinfo;
+        tpd : tprocdef;
+      begin
+        if not assigned(curr.async_thunks) then
+          exit;
+        for i:=0 to curr.async_thunks.count-1 do
+          begin
+            tpi:=tcgprocinfo(curr.async_thunks[i]);
+            tpd:=tpi.procdef;
+            tpd.forwarddef:=false;
+            include(tpi.flags,pi_do_call);
+            curr.procinfo:=tpi;
+            current_procinfo:=tpi;
+            tpi.entrypos:=tpd.fileinfo;
+            tpi.entryswitches:=current_settings.localswitches;
+            tpi.exitpos:=tpd.fileinfo;
+            tpi.exitswitches:=current_settings.localswitches;
+            tpd.aliasnames.insert(tpd.mangledname);
+            alloc_proc_symbol(tpd);
+            symtablestack.push(tpd.parast);
+            symtablestack.push(tpd.localst);
+            typecheckpass(tpi.code);
+            symtablestack.pop(tpd.localst);
+            symtablestack.pop(tpd.parast);
+            tpi.generate_code_tree;
+            tpi.resetprocdef;
+            current_procinfo:=nil;
+            curr.procinfo:=nil;
+          end;
+        curr.async_thunks.free;
+        curr.async_thunks:=nil;
+      end;
+
+
 
     { Insert _GLOBAL_OFFSET_TABLE_ symbol if system uses it }
 
@@ -1728,6 +1767,8 @@ type
              finalize_procinfo.resetprocdef;
              release_main_proc(module,finalize_procinfo);
            end;
+
+         implement_async_thunks(module);
 
          symtablestack.pop(module.localsymtable);
          symtablestack.pop(module.globalsymtable);
@@ -2854,6 +2895,7 @@ type
         main_procinfo.generate_code_tree;
         main_procinfo.resetprocdef;
         release_main_proc(curr,main_procinfo);
+        implement_async_thunks(curr);
         if assigned(init_procinfo) then
           begin
             { initialization can be implicit only }
