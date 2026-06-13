@@ -993,7 +993,12 @@ implementation
                 end;
               else
                 begin
-                  CGMessagePos(para.fileinfo,type_e_cant_read_write_type);
+                  { a `future of T` is an opaque thread handle, not a value;
+                    point at `await` instead of the generic read/write error }
+                  if is_future_intf(para.left.resultdef) then
+                    CGMessagePos(para.fileinfo,parser_e_future_needs_await)
+                  else
+                    CGMessagePos(para.fileinfo,type_e_cant_read_write_type);
                   error_para := true;
                 end;
             end;

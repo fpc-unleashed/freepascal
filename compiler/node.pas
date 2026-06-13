@@ -111,7 +111,9 @@ interface
           objcprotocoln,    { node for an Objective-C @protocol() expression (returns metaclass associated with protocol) }
           specializen,      { parser-only node to handle Delphi-mode inline specializations }
           finalizetempsn,   { Internal node used to clean up code generator temps (warning: must NOT create additional tepms that may need to be finalised!) }
-          defern            { parser-only marker for `defer STATEMENT;` - rewritten away in statement_block before typecheck }
+          defern,           { parser-only marker for `defer STATEMENT;` - rewritten away in statement_block before typecheck }
+          asyncn,           { parser-only marker for `async <call>` / `async begin..end` - rewritten into a future-impl factory call during async lowering, before firstpass }
+          awaitn            { parser-only marker for `await <future>` - rewritten into the future's `__Await` method call during async lowering, before firstpass }
        );
 
        tnodetypeset = set of tnodetype;
@@ -196,7 +198,9 @@ interface
           'objcprotocoln',
           'specializen',
           'finalizetempsn',
-          'defern');
+          'defern',
+          'asyncn',
+          'awaitn');
 
       { a set containing all const nodes }
       nodetype_const = [niln,
