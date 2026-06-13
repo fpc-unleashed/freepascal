@@ -50,6 +50,12 @@ Enabled via `{$modeswitch autofree}`.
 
 Enabled via `{$modeswitch lock}`.
 
+## [Async / Await - thread futures](async-await.md)
+
+`async <call>` / `async begin..end` runs work on a fresh worker thread and returns a `future of T` (or a bare `future`); `await f` blocks until the worker finishes and reads its result. This is the `std::async` model (one thread per `async`, one join per `await`), not C# async - there is no function coloring and no event loop. The call form snapshots the call's arguments by value at the spawn point; the block form captures referenced locals by reference through the function-reference machinery, so the future may outlive the routine that spawned it. Awaiting is repeatable (the result is cached, the event re-armed). A worker exception is re-raised on the caller at the first `await`; a fire-and-forget future swallows it. Built entirely on `system`-unit thread primitives (`BeginThread`, `RTLEvent*`, `AcquireExceptionObject`) with no RTL changes; on Unix the program needs a threading driver (`cthreads`).
+
+Enabled via `{$modeswitch asyncawait}`.
+
 ## [Multi-Variable Initialization](multi-var-init.md)
 
 Initialize several variables of the same type in one declaration, e.g. `a, b, c: integer = 42;`. Works in `var`, typed constants, and inline `var`. Each variable gets an independent copy of the value - assigning to one does not affect the others.
