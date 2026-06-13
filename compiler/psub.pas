@@ -2793,6 +2793,10 @@ implementation
              { Finish type checking pass }
              do_typecheckpass(code);
 
+             { rewrite any `async`/`await` into the future-impl factory call and
+               the `__Await` method call (no-op without them) }
+             lower_async(self);
+
              if assigned(procdef.parentfpinitblock) then
                begin
                  if assigned(tblocknode(procdef.parentfpinitblock).left) then
