@@ -217,8 +217,13 @@ implementation
     pasynclowerctx = ^tasynclowerctx;
     tasynclowerctx = record
       pi : tprocinfo;
-      counter : longint;
     end;
+
+  var
+    { monotonic sequence for naming the per-call-site future-impl classes; a
+      routine's defid is not unique here (unregistered defs share defid_not_registered),
+      so the name must not be derived from it }
+    asyncimplseq : longint = 0;
 
 
   { queue a synthesized module-level method for typecheck + code generation at
@@ -442,8 +447,8 @@ implementation
       { the impl class and all its methods live at module level (and are
         code-generated at module finish) so nothing captures the caller frame:
         the worker thread holds only a raw pointer and a static thunk address }
-      inc(ctx^.counter);
-      clsname:='$async$'+tostr(ctx^.pi.procdef.defid)+'$'+tostr(ctx^.counter);
+      inc(asyncimplseq);
+      clsname:='$async$'+tostr(asyncimplseq);
       clsdef:=cobjectdef.create(odt_class,clsname,
         tobjectdef(search_system_type('TINTERFACEDOBJECT').typedef),false);
       current_module.localsymtable.insertdef(clsdef);
@@ -707,8 +712,8 @@ implementation
         exit;
       procreftype:=procnode.resultdef;
 
-      inc(ctx^.counter);
-      clsname:='$async$'+tostr(ctx^.pi.procdef.defid)+'$'+tostr(ctx^.counter);
+      inc(asyncimplseq);
+      clsname:='$async$'+tostr(asyncimplseq);
       clsdef:=cobjectdef.create(odt_class,clsname,
         tobjectdef(search_system_type('TINTERFACEDOBJECT').typedef),false);
       current_module.localsymtable.insertdef(clsdef);
@@ -820,7 +825,6 @@ implementation
       if not assigned(tcgprocinfo(pi).code) then
         exit;
       ctx.pi:=pi;
-      ctx.counter:=0;
       foreachnodestatic(pm_postprocess,tcgprocinfo(pi).code,@lower_async_node,@ctx);
     end;
 
