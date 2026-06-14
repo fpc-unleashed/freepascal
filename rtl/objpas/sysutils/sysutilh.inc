@@ -101,8 +101,6 @@ type
    PWordarray = ^TWordArray;
    TWordArray = array[0..{$ifdef CPU16}16382{$else}16383{$endif}] of Word;
 
-   TBytes = array of Byte;
-
    { exceptions }
    Exception = class(TObject)
     private
