@@ -761,6 +761,8 @@ type
 
   TBoundArray = array of SizeInt;
 
+  TBytes = array of Byte;
+
 {$ifdef CPU16}
   TPCharArray = packed array[0..(MaxSmallint div SizeOf(PAnsiChar))-1] of PAnsiChar;
 {$else CPU16}
