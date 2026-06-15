@@ -167,6 +167,8 @@ implementation
         p : tpropertysym;
         _deprecatedmsg: pshortstring;
         _symoptions: tsymoptions;
+        autopropfield : tfieldvarsym;
+        autoprop_ro,autoprop_wo : boolean;
       begin
         { check for a class, record or helper }
         if not((is_class_or_interface_or_dispinterface(current_structdef) or is_record(current_structdef) or
@@ -174,8 +176,29 @@ implementation
                (not(m_tp7 in current_settings.modeswitches) and (is_object(current_structdef)))) then
           Message(parser_e_syntax_error);
         consume(_PROPERTY);
-        p:=read_property_dec(is_classproperty,current_structdef);
+        p:=read_property_dec(is_classproperty,current_structdef,autopropfield);
         consume(_SEMICOLON);
+        { accessor-less property direction directive: `property X: T; readonly;`
+          drops the write side, `writeonly;` the read side. only meaningful for a
+          synthesized backing field, so gated on it being present }
+        if assigned(autopropfield) and (m_autoproperties in current_settings.modeswitches) then
+          begin
+            autoprop_ro:=false;
+            autoprop_wo:=false;
+            while true do
+              if try_to_consume(_READONLY) then
+                begin autoprop_ro:=true; consume(_SEMICOLON); end
+              else if try_to_consume(_WRITEONLY) then
+                begin autoprop_wo:=true; consume(_SEMICOLON); end
+              else
+                break;
+            if autoprop_ro and autoprop_wo then
+              Message(parser_e_auto_property_readonly_writeonly)
+            else if autoprop_ro then
+              p.propaccesslist[palt_write].clear
+            else if autoprop_wo then
+              p.propaccesslist[palt_read].clear;
+          end;
         if try_to_consume(_DEFAULT) then
           begin
             if oo_has_default_property in current_structdef.objectoptions then
