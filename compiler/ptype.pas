@@ -2162,7 +2162,11 @@ implementation
                              highval:=tordconstnode(pt).value;
                              if highval<1 then
                                begin
-                                 Message(parser_e_array_lower_less_than_upper_bound);
+                                 { a generic const parameter has no concrete value
+                                   yet; skip the error and let specialization build
+                                   the real range }
+                                 if not (nf_generic_para in pt.flags) then
+                                   Message(parser_e_array_lower_less_than_upper_bound);
                                  highval:=1;
                                end;
                              lowval:=0;
