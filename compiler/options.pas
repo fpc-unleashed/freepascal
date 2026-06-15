@@ -5559,6 +5559,13 @@ begin
       include(init_settings.globalswitches,cs_link_extern);
     end;
 
+  { expose the build kind as a define: DEBUG when debug info is generated,
+    RELEASE otherwise. Lets source react to -g without a separate -dDEBUG }
+  if cs_debuginfo in init_settings.moduleswitches then
+    def_system_macro('DEBUG')
+  else
+    def_system_macro('RELEASE');
+
   { turn off stripping if compiling with debuginfo or profile }
   if (
       (cs_debuginfo in init_settings.moduleswitches) or
