@@ -465,6 +465,30 @@ implementation
       end;
 
 
+    { seed auto-property backing fields with their initializer values; runs at
+      constructor entry right after allocation, so the user body can override }
+    procedure add_auto_property_inits(structdef: tabstractrecorddef; var newstatement: tstatementnode);
+      var
+        od      : tobjectdef;
+        i       : longint;
+        fieldvs : tfieldvarsym;
+      begin
+        if structdef.typ<>objectdef then
+          exit;
+        od:=tobjectdef(structdef);
+        if not assigned(od.auto_prop_init_fields) then
+          exit;
+        for i:=0 to od.auto_prop_init_fields.count-1 do
+          begin
+            fieldvs:=tfieldvarsym(od.auto_prop_init_fields[i]);
+            addstatement(newstatement,
+              cassignmentnode.create(
+                csubscriptnode.create(fieldvs,load_self_node),
+                tnode(od.auto_prop_init_values[i]).getcopy));
+          end;
+      end;
+
+
     function generate_bodyentry_block:tnode;
       var
         srsym        : tsym;
@@ -582,6 +606,8 @@ implementation
                         cnilnode.create),
                     cexitnode.create(nil),
                     nil));
+                { seed auto-property backing fields before the user body runs }
+                add_auto_property_inits(current_structdef,newstatement);
               end;
 
             { maybe call BeforeDestruction for classes }

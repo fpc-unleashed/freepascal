@@ -1884,12 +1884,19 @@ parser_e_property_is_read_only=03422_E_Cannot assign to read-only property "$1"
 parser_e_property_is_write_only=03423_E_Cannot read write-only property "$1"
 % The property has a write accessor but no read accessor, so it can only be written.
 % A bare property tagged \var{writeonly} after its semicolon is write-only by design.
+parser_e_auto_property_init_const=03424_E_Property initializer must be a constant expression
+% The value after \var{=} in an accessor-less property declaration is assigned to
+% the backing field at construction and must be a compile-time constant.
+parser_e_auto_property_init_context=03425_E_Property initializer requires an accessor-less property in a class or object
+% A \var{= value} initializer only applies to a bare property that synthesizes a
+% backing field. It is not allowed with an explicit read/write, on an indexed
+% property, or in a record.
 %
 % \end{description}
 %
 # Type Checking
 #
-# 03423 is the last used parser one
+# 03425 is the last used parser one
 #
 # 04136 is the last used one
 #

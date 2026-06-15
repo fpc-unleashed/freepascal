@@ -405,6 +405,7 @@ implementation
          readprocdef,
          writeprocdef : tprocdef;
          autofield : tfieldvarsym;
+         autoinitnode : tnode;
       begin
          result:=nil;
          autopropfield:=nil;
@@ -591,6 +592,22 @@ implementation
          if not(is_dispinterface(astruct)) then
            begin
              gotreadorwrite:=false;
+             autoinitnode:=nil;
+             { accessor-less property initializer: `property X: T = constexpr;`
+               the value seeds the synthesized backing field at construction }
+             if (m_autoproperties in current_settings.modeswitches) and
+                (current_scanner.token=_EQ) then
+               begin
+                 consume(_EQ);
+                 autoinitnode:=comp_expr([ef_accept_equal]);
+                 inserttypeconv(autoinitnode,p.propdef);
+                 if not is_constnode(autoinitnode) then
+                   begin
+                     Message(parser_e_auto_property_init_const);
+                     autoinitnode.free;
+                     autoinitnode:=nil;
+                   end;
+               end;
              { parse accessors }
              if try_to_consume(_READ) then
                begin
@@ -669,6 +686,20 @@ implementation
                              addsymref(autofield);
                              p.add_getter_or_setter_for_sym(palt_write,autofield,autofield.vardef,writeprocdef);
                              autopropfield:=autofield;
+                             { record the initializer so the constructor seeds
+                               the field; only classes/objects (not records)
+                               have a construction hook }
+                             if assigned(autoinitnode) and (astruct.typ=objectdef) then
+                               begin
+                                 if not assigned(tobjectdef(astruct).auto_prop_init_fields) then
+                                   begin
+                                     tobjectdef(astruct).auto_prop_init_fields:=TFPList.Create;
+                                     tobjectdef(astruct).auto_prop_init_values:=TFPObjectList.Create(true);
+                                   end;
+                                 tobjectdef(astruct).auto_prop_init_fields.Add(autofield);
+                                 tobjectdef(astruct).auto_prop_init_values.Add(autoinitnode);
+                                 autoinitnode:=nil;
+                               end;
                            end;
                        end;
                    end
@@ -678,6 +709,15 @@ implementation
            end
          else
            parse_dispinterface(p,readprocdef,writeprocdef,paranr);
+
+         { an initializer that could not be attached (explicit accessor, indexed,
+           or a record) is a misuse }
+         if assigned(autoinitnode) then
+           begin
+             Message(parser_e_auto_property_init_context);
+             autoinitnode.free;
+             autoinitnode:=nil;
+           end;
 
          { stored is not allowed for dispinterfaces, records or class properties }
          if assigned(astruct) and not(is_dispinterface(astruct) or is_record(astruct)) and not is_classproperty then
