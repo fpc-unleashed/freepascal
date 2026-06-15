@@ -162,6 +162,28 @@ implementation
       end;
 
 
+    function struct_has_own_constructor(structdef: tabstractrecorddef): boolean;
+      var
+        i, j : longint;
+        sym  : tsym;
+        pd   : tprocdef;
+      begin
+        result:=false;
+        for i:=0 to structdef.symtable.symlist.count-1 do
+          begin
+            sym:=tsym(structdef.symtable.symlist[i]);
+            if sym.typ<>procsym then
+              continue;
+            for j:=0 to tprocsym(sym).procdeflist.count-1 do
+              begin
+                pd:=tprocdef(tprocsym(sym).procdeflist[j]);
+                if (pd.proctypeoption=potype_constructor) and (pd.struct=structdef) then
+                  exit(true);
+              end;
+          end;
+      end;
+
+
     procedure struct_property_dec(is_classproperty:boolean;var rtti_attrs_def: trtti_attribute_list);
       var
         p : tpropertysym;
@@ -1778,6 +1800,12 @@ implementation
                   jvm_wrap_virtual_class_methods(tobjectdef(current_structdef));
 {$endif}
                 end;
+              { a class carrying auto-property initializers but no constructor of
+                its own needs an inherited one so the initializers get applied }
+              if is_class(current_structdef) and
+                 assigned(tobjectdef(current_structdef).auto_prop_init_fields) and
+                 not struct_has_own_constructor(current_structdef) then
+                add_missing_parent_constructors_intf(tobjectdef(current_structdef),false,vis_none);
               { need method to hold the initialization code for typed constants? }
               if (target_info.system in systems_typed_constants_node_init) and
                  not is_any_interface_kind(current_structdef) then

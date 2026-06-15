@@ -563,6 +563,11 @@ interface
           }
           hiddenclassdef : tobjectdef;
           hiddenclassdefref : tderef;
+          { auto-properties: synthesized backing fields (tfieldvarsym) and their
+            initializer value nodes (tnode), applied at construction. transient,
+            only used while compiling the declaring unit, never serialized }
+          auto_prop_init_fields : TFPList;
+          auto_prop_init_values : TFPObjectList;
           constructor create(ot:tobjecttyp;const n:string;c:tobjectdef;doregister:boolean);virtual;
           constructor ppuload(ppufile:tcompilerppufile);
           destructor  destroy;override;
@@ -8383,6 +8388,8 @@ implementation
              freemem(vmcallstaticinfo);
              vmcallstaticinfo:=nil;
            end;
+         auto_prop_init_fields.free;
+         auto_prop_init_values.free;
          inherited destroy;
       end;
 
