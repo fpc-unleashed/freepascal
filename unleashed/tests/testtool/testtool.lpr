@@ -3,6 +3,7 @@ program testtool;
 {$mode unleashed}
 
 uses
+  {$IFDEF UNIX}cthreads, termio,{$ENDIF}
   {$IFDEF WINDOWS}Windows,{$ENDIF}
   SysUtils, Classes, Process, StrUtils, SyncObjs;
 
