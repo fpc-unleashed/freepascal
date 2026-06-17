@@ -110,8 +110,8 @@ interface
           objcselectorn,    { node for an Objective-C message selector }
           objcprotocoln,    { node for an Objective-C @protocol() expression (returns metaclass associated with protocol) }
           specializen,      { parser-only node to handle Delphi-mode inline specializations }
-          finalizetempsn,       { Internal node used to clean up code generator temps (warning: must NOT create additional tepms that may need to be finalised!) }
-          defern                { FPC Unleashed: parser-only marker for `defer STATEMENT;` - rewritten away in statement_block before typecheck }
+          finalizetempsn,   { Internal node used to clean up code generator temps (warning: must NOT create additional tepms that may need to be finalised!) }
+          defern            { parser-only marker for `defer STATEMENT;` - rewritten away in statement_block before typecheck }
        );
 
        tnodetypeset = set of tnodetype;

@@ -159,7 +159,8 @@ implementation
              'objselectorn',
              'objcprotocoln',
              'specializen',
-             'finalizetemps'
+             'finalizetemps',
+             'defern'
              );
       var
         p: pchar;
