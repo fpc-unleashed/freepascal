@@ -12,6 +12,7 @@
   - [Unleashed Mode](#unleashed-mode)
   - [Statement Expressions](#statement-expressions)
   - [Inline Variables](#inline-variables)
+  - [Out-Variables](#out-variables)
   - [Anonymous Tuples](#anonymous-tuples)
   - [Match Statement](#match-statement)
   - [Multi-Variable Initialization](#multi-variable-initialization)
@@ -59,6 +60,7 @@ The following modeswitches are enabled automatically:
 | ---------------------------------- | ------------------------------------------------------------- |
 | `statementexpressions`             | Use `if`, `case`, and `try` as expressions                    |
 | `inlinevars`                       | Declare variables inline anywhere inside a `begin..end` block |
+| `outvar`                           | `Foo(var x)` declares a type-inferred variable at an `out` argument; `_` discards the output |
 | `staticsection`                    | Body-level `static` declaration block (typed-const-style, writeable, optional initializer) |
 | `inlinestatic`                     | Inline `static name := expr;` declarations anywhere inside a body |
 | `threadstatic`                     | `threadstatic` (alias `tstatic`) per-thread variables via TLS - inline statement or declaration section |
@@ -269,6 +271,48 @@ The plain `const K = expr` form requires a compile-time evaluable expression and
 
 > [!NOTE]
 > Untyped numeric inline variables default to a 32-bit signed integer (`integer`).
+
+---
+
+### Out-Variables
+
+**Activate:** available in Unleashed mode (modeswitch `outvar`).
+
+Declare a variable inline at an `out`-argument position, with its type inferred from the parameter, or throw the output away with `_`. No more pre-declaring a throwaway variable just to satisfy a `Try*` routine.
+
+#### What it does
+
+Calling a routine with an `out` parameter normally forces a declaration somewhere above, even when the value is needed only after the call or not at all. `var name` at the argument declares the variable right there; `_` skips it entirely.
+
+```pascal
+function TryParse(s: string; out value: integer): boolean; ...
+procedure SplitName(full: string; out first, last: string); ...
+
+begin
+  // declared at the call, type inferred from the out parameter
+  if TryParse('42', var n) then
+    writeln(n);           // n: integer, stays in scope afterwards
+
+  SplitName('Ada Lovelace', var fn, var ln);
+  writeln(fn, ' ', ln);
+
+  // only the boolean result matters: discard the out value
+  if TryParse('99', _) then
+    writeln('parses fine');
+end.
+```
+
+The variable lands in the enclosing block, like an inline `var`, and behaves as any local from then on: assignable, addressable, finalized at scope end (managed types included, discards too).
+
+#### Rules
+
+- Accepted only at an **`out`** parameter; `var`, `const`, and value parameters reject both forms.
+- The type is resolved after overload selection, so overloads differing only in the out type are ambiguous.
+- `var name` with a name already in scope is a duplicate-identifier error, exactly like a second declaration.
+- A declared identifier `_` always wins: `_` is a discard only when nothing named `_` is in scope, so existing code keeps its meaning.
+- Compiler intrinsics (`Write`, `Read`, `Str`, ...) have no `out` parameters and take no discards.
+
+See [unleashed/docs/out-var.md](unleashed/docs/out-var.md) for the full reference.
 
 ---
 
