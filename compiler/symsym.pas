@@ -1053,13 +1053,20 @@ implementation
            end;
          if sp_generic_dummy in symoptions then
            begin
+             { a generic overload added in the implementation to a routine
+               that is non-generic in the interface leaves the exported dummy
+               without built derefs; such overloads stay unit-local and are
+               not exported, so write none }
              if not assigned(fgenprocsymovldsderefs) then
-               internalerror(2021010301);
-             ppufile.putword(fgenprocsymovldsderefs.count);
-             for i:=0 to fgenprocsymovldsderefs.count-1 do
+               ppufile.putword(0)
+             else
                begin
-                 d.dataidx:=ptrint(fgenprocsymovldsderefs[i]);
-                 ppufile.putderef(d);
+                 ppufile.putword(fgenprocsymovldsderefs.count);
+                 for i:=0 to fgenprocsymovldsderefs.count-1 do
+                   begin
+                     d.dataidx:=ptrint(fgenprocsymovldsderefs[i]);
+                     ppufile.putderef(d);
+                   end;
                end;
            end;
          writeentry(ppufile,ibprocsym);
