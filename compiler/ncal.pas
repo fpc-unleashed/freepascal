@@ -234,7 +234,8 @@ interface
 
        tcallparaflag = (
           cpf_is_colon_para,
-          cpf_varargs_para       { belongs this para to varargs }
+          cpf_varargs_para,      { belongs this para to varargs }
+          cpf_outvar_decl        { left is an inline out-var/discard decl, bound to the out parameter type }
        );
        tcallparaflags = set of tcallparaflag;
 
@@ -3918,6 +3919,7 @@ implementation
         currpara : tparavarsym;
         hiddentree : tnode;
         paradef  : tdef;
+        outvarsym : tabstractnormalvarsym;
       begin
         pt:=tcallparanode(left);
         oldppt:=pcallparanode(@left);
@@ -4026,6 +4028,19 @@ implementation
            if not assigned(pt) then
              internalerror(200310052);
            pt.parasym:=currpara;
+           if cpf_outvar_decl in pt.callparaflags then
+             begin
+               { the out parameter type is now known: give the inferred out-var
+                 its real type, allocate storage if it lives at unit/program level,
+                 re-typecheck its load node, then clear the flag }
+               outvarsym:=tabstractnormalvarsym(tloadnode(pt.left).symtableentry);
+               outvarsym.vardef:=currpara.vardef;
+               if outvarsym.typ=staticvarsym then
+                 cnodeutils.insertbssdata(tstaticvarsym(outvarsym));
+               pt.left.resultdef:=nil;
+               typecheckpass(pt.left);
+               exclude(pt.callparaflags,cpf_outvar_decl);
+             end;
            oldppt:=pcallparanode(@pt.right);
            pt:=tcallparanode(pt.right);
          end;

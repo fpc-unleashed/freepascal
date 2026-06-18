@@ -3330,6 +3330,15 @@ implementation
                    end;
                end;
 
+              { inline out-var / discard argument: matches an out parameter of
+                any type and nothing else; type is bound after this candidate wins }
+              if cpf_outvar_decl in pt.callparaflags then
+                begin
+                  check_valid_var:=false;
+                  if assigned(currpara) and (currpara.varspez=vs_out) then
+                    eq:=te_exact;
+                end
+              else
               { varargs are always equal, but not exact }
               if (po_varargs in hp^.data.procoptions) and
                  (currparanr>hp^.data.minparacount) and
