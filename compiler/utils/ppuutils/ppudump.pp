@@ -2555,7 +2555,8 @@ const
          'm_lock',                { thread-safe locking: `lock(v) do stmt` / `trylock ... wait N do ... else ...` }
          'm_asyncawait',          { `async expr` runs on a worker thread yielding `future of T`; `await f` joins }
          'm_parallelfor',         { run `for parallel ... do` body across worker threads }
-         'm_int128'               { 128 bit integer types Int128/UInt128 with literals beyond 64 bit }
+         'm_int128',              { 128 bit integer types Int128/UInt128 with literals beyond 64 bit }
+         'm_out_var'              { inline out-variable declaration and `_` discard at call sites }
        );
        { optimizer }
        optimizerswitchname : array[toptimizerswitch] of string[50] =
