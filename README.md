@@ -29,6 +29,7 @@
   - [Lazy Label Declarations](#lazy-label-declarations)
   - [Compound Assignment for Pascal Operators](#compound-assignment-for-pascal-operators)
   - [Custom Binary Metadata](#custom-binary-metadata)
+  - [Compile-Time Directives](#compile-time-directives)
   - [Extra Improvements](#extra-improvements)
   - [Detailed Documentation](#detailed-documentation)
 - [Installation](#installation)
@@ -1122,6 +1123,31 @@ The OS-name table is case-insensitive and accepts an optional `Win` prefix (`Win
 > Passing the flags on a non-PE target compiles cleanly but the values are silently ignored. `--fpcsignature` works on every target.
 
 See [unleashed/docs/binary-metadata.md](unleashed/docs/binary-metadata.md) for full per-flag rationale, the OS-name table, and cross-platform notes.
+
+---
+
+### Compile-Time Directives
+
+Source-level directives that bake a file into the binary as compile-time data (distinct from `{$include}`, which splices a file in as source code). Always available - not gated by any modeswitch. Each comes in a 2-arg form (named constant) and a 1-arg form (bare value expression for inline use); the path resolves like `{$I}`.
+
+- **`{$embedstr NAME 'path'}`** - emits `const NAME: String = '...';`. Bytes go into printable-ASCII runs joined to `#$nn` escapes. The 1-arg `{$embedstr 'path'}` emits just the String expression, usable anywhere a String value fits.
+- **`{$embedbytes NAME 'path'}`** - emits `const NAME: array[0..N-1] of byte = ($aa,...);`. The 1-arg `{$embedbytes 'path'}` emits a bare `[$aa,...]` array literal usable in `array of byte` expression contexts.
+
+Use `$embedstr` for text or a buffer to `move` out of, `$embedbytes` when an API wants raw `array of byte` (binary protocols, hash inputs, decoder feed). Both avoid runtime file I/O - the data is in the binary.
+
+```pas
+program demo;
+{$mode unleashed}
+{$embedstr banner 'banner.txt'}
+{$embedbytes preset 'config/default.bin'}
+begin
+  WriteLn(banner); // named String const
+  WriteLn('preset first byte: $', HexStr(preset[0], 2));
+  SendFrame({$embedbytes 'frame.bin'}); // 1-arg, inline array of byte
+end.
+```
+
+See [unleashed/docs/embed.md](unleashed/docs/embed.md) for the full reference, including the encoding, empty-file behavior, and inference caveats.
 
 ---
 
