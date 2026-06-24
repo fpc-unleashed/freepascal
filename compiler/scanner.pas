@@ -3141,6 +3141,219 @@ type
          end;
       end;
 
+    { shared front-end for $embedstr / $embedbytes: parse `[NAME] 'path'`,
+      resolve the path like $I (absolute, current source dir, then includepath)
+      and read the file into `raw`. one token -> expr_only (no varname),
+      two tokens -> NAME + path. returns false and emits a diagnostic on error. }
+    function read_embed_args(const dirname:string;out varname:string;
+                             out expr_only:boolean;out raw:ansistring):boolean;
+      var
+        args      : string;
+        token1    : string;
+        token2    : string;
+        pathspec  : TCmdStr;
+        path,name : TCmdStr;
+        foundfile : TCmdStr;
+        f         : file;
+        filebytes : longint;
+        bytesread : longint;
+      begin
+        result := false;
+        varname := '';
+        expr_only := true;
+        raw := '';
+        current_scanner.skipspace;
+        args := current_scanner.readcomment;
+        token1 := GetToken(args, ' ');
+        if token1 = '' then
+          begin
+            Comment(V_Error, dirname + ': missing arguments');
+            exit;
+          end;
+        token2 := GetToken(args, ' ');
+        if token2 = '' then
+          pathspec := TCmdStr(token1)
+        else
+          begin
+            expr_only := false;
+            varname := token1;
+            pathspec := TCmdStr(token2);
+          end;
+        pathspec := FixFileName(pathspec);
+        path := ExtractFilePath(pathspec);
+        name := ExtractFileName(pathspec);
+        if not findincludefile(path, name, foundfile) then
+          begin
+            Message1(scan_f_cannot_open_includefile, pathspec);
+            exit;
+          end;
+        assign(f, foundfile);
+        {$push}{$i-}
+        reset(f, 1);
+        {$pop}
+        if IOResult <> 0 then
+          begin
+            Message1(scan_f_cannot_open_includefile, foundfile);
+            exit;
+          end;
+        filebytes := FileSize(f);
+        SetLength(raw, filebytes);
+        bytesread := 0;
+        if filebytes > 0 then
+          BlockRead(f, raw[1], filebytes, bytesread);
+        close(f);
+        if bytesread <> filebytes then
+          SetLength(raw, bytesread);
+        result := true;
+      end;
+
+    { $embedstr NAME 'path' -> emit `const NAME: String = '...'+#$nn+...;`
+      $embedstr 'path'      -> emit just the string expression `'...'+#$nn+...`
+                               so it can sit anywhere a String value fits.
+      printable bytes go into single-quoted runs, the rest as #$nn escapes. }
+    procedure dir_embedstr;
+      const
+        hexchars : array[0..15] of char = '0123456789abcdef';
+        chars_per_line = 64;
+      var
+        varname   : string;
+        expr_only : boolean;
+        raw       : ansistring;
+        code      : ansistring;
+        line      : ansistring;
+        i         : longint;
+        b         : byte;
+        printable : boolean;
+        instring  : boolean;
+      begin
+        if not read_embed_args('embedstr', varname, expr_only, raw) then
+          exit;
+        if length(raw) = 0 then
+          begin
+            if expr_only then
+              code := ''''''
+            else
+              code := 'const ' + varname + ': String = '''';' + LineEnding;
+          end
+        else
+          begin
+            if expr_only then
+              code := ''
+            else
+              code := 'const ' + varname + ': String = ' + LineEnding;
+            line := '';
+            instring := false;
+            for i := 1 to length(raw) do
+              begin
+                { continuation line - join with `+` to previous chunk }
+                if (line = '') and (i > 1) then
+                  line := line + '+';
+                b := byte(raw[i]);
+                { printable ASCII except apostrophe (needs escaping) }
+                printable := (b >= 32) and (b <= 126) and (b <> $27);
+                if printable and not instring then
+                  begin
+                    line := line + '''';
+                    instring := true;
+                  end;
+                if (not printable) and instring then
+                  begin
+                    line := line + '''';
+                    instring := false;
+                  end;
+                if printable then
+                  line := line + chr(b)
+                else if b <= $f then
+                  line := line + '#$' + hexchars[b]
+                else
+                  line := line + '#$' + hexchars[b shr 4] + hexchars[b and $f];
+                if length(line) >= chars_per_line then
+                  begin
+                    if instring then
+                      line := line + '''';
+                    line := line + LineEnding;
+                    code := code + line;
+                    instring := false;
+                    line := '';
+                  end;
+              end;
+            if instring then
+              line := line + '''';
+            if expr_only then
+              code := code + line
+            else
+              code := code + line + ';' + LineEnding;
+          end;
+        current_scanner.substitutemacro('embedstr', @code[1], length(code),
+          current_scanner.line_no, current_scanner.inputfile.ref_index, true);
+      end;
+
+    { $embedbytes NAME 'path' -> emit `const NAME: array[0..N-1] of byte = ($aa,...);`
+      $embedbytes 'path'      -> emit just the array literal `[$aa,$bb,...]`
+                                 usable where an `array of byte` value fits.
+      the 0..N-1 range form is standard Pascal, so the emitted const compiles
+      in every mode, not only unleashed. }
+    procedure dir_embedbytes;
+      const
+        hexchars : array[0..15] of char = '0123456789abcdef';
+        chars_per_line = 64;
+      var
+        varname   : string;
+        expr_only : boolean;
+        raw       : ansistring;
+        code      : ansistring;
+        line      : ansistring;
+        bs        : string;
+        i         : longint;
+        b         : byte;
+      begin
+        if not read_embed_args('embedbytes', varname, expr_only, raw) then
+          exit;
+        if length(raw) = 0 then
+          begin
+            if expr_only then
+              code := '[]'
+            else
+              code := 'const ' + varname + ': array of byte = ();' + LineEnding;
+          end
+        else
+          begin
+            if expr_only then
+              code := '['
+            else
+              code := 'const ' + varname + ': array[0..' + tostr(length(raw)-1) +
+                     '] of byte =' + LineEnding + '(';
+            line := '';
+            for i := 1 to length(raw) do
+              begin
+                b := byte(raw[i]);
+                if b <= $f then
+                  bs := '$' + hexchars[b]
+                else
+                  bs := '$' + hexchars[b shr 4] + hexchars[b and $f];
+                if length(line) > 0 then
+                  line := line + ',' + bs
+                else
+                  line := bs;
+                if length(line) >= chars_per_line then
+                  begin
+                    if i < length(raw) then
+                      line := line + ',';
+                    code := code + line + LineEnding;
+                    line := '';
+                  end;
+              end;
+            if line <> '' then
+              code := code + line;
+            if expr_only then
+              code := code + ']'
+            else
+              code := code + ');' + LineEnding;
+          end;
+        current_scanner.substitutemacro('embedbytes', @code[1], length(code),
+          current_scanner.line_no, current_scanner.inputfile.ref_index, true);
+      end;
+
     procedure dir_rttiexpose;
       begin
         current_scanner.skipspace;
@@ -7513,6 +7726,8 @@ exit_label:
         AddDirective('DEFINE',directive_all, @dir_define);
         AddDirective('UNDEF',directive_all, @dir_undef);
         AddDirective('RTTIEXPOSE',directive_all, @dir_rttiexpose);
+        AddDirective('EMBEDSTR',directive_all, @dir_embedstr);
+        AddDirective('EMBEDBYTES',directive_all, @dir_embedbytes);
 
         AddConditional('IF',directive_all, @dir_if);
         AddConditional('IFDEF',directive_all, @dir_ifdef);
