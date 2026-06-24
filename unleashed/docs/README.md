@@ -118,6 +118,12 @@ Three CLI flags that override metadata fields the compiler embeds into the produ
 
 CLI-only; no directive form.
 
+## [Embed file at compile time - `$embedstr` / `$embedbytes`](embed.md)
+
+`{$embedstr NAME 'path'}` emits `const NAME: String = '...';` and `{$embedbytes NAME 'path'}` emits `const NAME: array[0..N-1] of byte = (...);` at the directive site, reading the file as raw bytes. Each also has a 1-arg form (`{$embedstr 'path'}` / `{$embedbytes 'path'}`) that emits a bare value expression - a String or a `[$xx,...]` array literal - usable as an inline function argument or comparison operand. Path resolution matches `{$I}`. Use `$embedstr` for text / move-out-of buffers, `$embedbytes` when an API wants `array of byte`.
+
+Directive only; available in every mode.
+
 ## [Introduced Functions, Procedures and Intrinsics](introduced-functions.md)
 
 Reference table of identifiers FPC Unleashed adds on top of stock FPC and that user code can call without an extra `uses`: compile-time intrinsics (`OffsetOf`, `BitOffsetOf`, `AlignOf`, `BitAlignOf`, extended `BitSizeOf`), and the aligned heap allocator in the `system` unit (`GetMemAligned`, `AllocMemAligned`, `ReAllocMemAligned`, `FreeMemAligned`). Each row lists the signature, category (intrinsic / RTL `system` / other RTL unit), gating modeswitch, and the feature page that covers the surrounding context.
