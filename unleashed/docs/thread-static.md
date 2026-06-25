@@ -1,6 +1,6 @@
 # Thread-Static Variables
 
-`threadstatic` declares a per-thread variable with program lifetime and block-local source scope. Each thread sees its own copy; init runs once per thread on first reach via a per-thread guard. Two forms, same semantics: an inline statement (`threadstatic name := expr;` anywhere in a body) and a declaration section before the body (parallel to `var` / `static`).
+`threadstatic` declares a per-thread variable with program lifetime and block-local source scope. Each thread sees its own copy; init runs once per thread on first reach via a per-thread guard. Two forms, same semantics: an inline statement (`threadstatic name := expr;` anywhere in a body) and a declaration section before the body (parallel to `var` / `static`). `tstatic` is a short alias for `threadstatic`, accepted in every form (see [Short alias `tstatic`](#short-alias-tstatic)).
 
 Gated by modeswitch `THREADSTATIC`, enabled by default in `{$mode unleashed}`. Outside unleashed:
 
@@ -9,7 +9,7 @@ Gated by modeswitch `THREADSTATIC`, enabled by default in `{$mode unleashed}`. O
 {$modeswitch threadstatic}
 ```
 
-Allowed only inside a function / procedure / method body. The token is a soft keyword (not reserved in any mode), so a user identifier called `threadstatic` is not shadowed.
+Allowed only inside a function / procedure / method body. Both `threadstatic` and `tstatic` are soft keywords (not reserved in any mode), so user identifiers called `threadstatic` or `tstatic` are not shadowed, and `tstatic` is only a keyword when the modeswitch is active.
 
 ## Basic usage
 
@@ -62,6 +62,37 @@ The section uses `= expr` for the typed form (matching `var` / `const` / `static
 Because `threadstatic` is a soft keyword, place its section before any `const` / `var` / `threadvar` section in the same routine; a preceding one of those would consume the `threadstatic` identifier as a declaration name. A following `var` / `const` is fine. This is the same ordering rule as the `static` section.
 
 A section initializer is still a runtime per-thread assignment (no data-segment fast path, see below), so `expr` may be any expression, not only a compile-time constant. Both forms can be mixed in the same routine.
+
+## Short alias `tstatic`
+
+`tstatic` is a drop-in alias for `threadstatic`. It resolves to the same soft keyword, is gated on the same modeswitch and produces identical code, so it is accepted in every position the long form is.
+
+Inline statement form:
+
+```pas
+function NextId: Integer;
+begin
+  tstatic next := 1000;        // inferred, per-thread counter
+  tstatic seen: Boolean;       // explicit type, zero-init per thread
+  Result := next;
+  Inc(next);
+end;
+```
+
+Declaration section form:
+
+```pas
+function NextId: Integer;
+tstatic
+  next: Integer = 1000;        // explicit value per thread
+  a, b: Integer;               // multi-name, zero-init per thread
+begin
+  Result := next;
+  Inc(next);
+end;
+```
+
+The two spellings are interchangeable; pick one per routine for readability. A routine may use the section form once (under either spelling), plus any number of inline declarations in the body.
 
 ## Per-thread guard, init exactly once per thread
 

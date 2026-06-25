@@ -56,7 +56,7 @@ The following modeswitches are enabled automatically:
 | `inlinevars`                       | Declare variables inline anywhere inside a `begin..end` block |
 | `staticsection`                    | Body-level `static` declaration block (typed-const-style, writeable, optional initializer) |
 | `inlinestatic`                     | Inline `static name := expr;` declarations anywhere inside a body |
-| `threadstatic`                     | `threadstatic` per-thread variables via TLS - inline statement or declaration section |
+| `threadstatic`                     | `threadstatic` (alias `tstatic`) per-thread variables via TLS - inline statement or declaration section |
 | `tuples`                           | Anonymous tuple types, literals, and destructuring            |
 | `match`                            | Pattern matching with first-match semantics                   |
 | `multivarinit`                     | Initialize several variables of the same type with one value  |
@@ -565,7 +565,7 @@ See [unleashed/docs/static-section.md](unleashed/docs/static-section.md) for the
 
 **Activate:** available in Unleashed mode (modeswitch `threadstatic`).
 
-`threadstatic` declares a **per-thread** variable with program lifetime and block-local source scope. Each thread sees its own copy via FPC's TLS infrastructure; the init expression runs once per thread on first reach, guarded by a per-thread Boolean. It comes in two forms with identical semantics: an inline statement and a declaration section before the body.
+`threadstatic` declares a **per-thread** variable with program lifetime and block-local source scope. Each thread sees its own copy via FPC's TLS infrastructure; the init expression runs once per thread on first reach, guarded by a per-thread Boolean. It comes in two forms with identical semantics: an inline statement and a declaration section before the body. The short alias `tstatic` is interchangeable with `threadstatic` in both forms.
 
 ```pascal
 function NextId: Integer;
