@@ -2514,7 +2514,8 @@ const
          'm_composable_records',  { record composition: union, anonymous embed, expose, offsetof }
          'm_static_section',      { allow `static` declaration section in function/procedure bodies }
          'm_inline_static',       { allow `static x := ...` inline declarations inside statement blocks }
-         'm_interpolated_strings' { allow $'...' string interpolation syntax }
+         'm_interpolated_strings',{ allow $'...' string interpolation syntax }
+         'm_thread_static'        { allow `threadstatic x := ...` per-thread static via TLS }
        );
        { optimizer }
        optimizerswitchname : array[toptimizerswitch] of string[50] =

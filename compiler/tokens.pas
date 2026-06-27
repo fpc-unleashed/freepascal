@@ -314,6 +314,7 @@ type
     _NOSTACKFRAME,
     _OBJCCATEGORY,
     _OBJCPROTOCOL,
+    _THREADSTATIC,
     _WEAKEXTERNAL,
     _DISPINTERFACE,
     _UNIMPLEMENTED,
@@ -670,6 +671,7 @@ var
       (str:'NOSTACKFRAME'  ;special:false;keyword:[m_none];op:NOTOKEN),
       (str:'OBJCCATEGORY'  ;special:false;keyword:[m_objectivec1];op:NOTOKEN), { Objective-C category }
       (str:'OBJCPROTOCOL'  ;special:false;keyword:[m_objectivec1];op:NOTOKEN), { Objective-C protocol }
+      (str:'THREADSTATIC'  ;special:false;keyword:[m_none];op:NOTOKEN),
       (str:'WEAKEXTERNAL'  ;special:false;keyword:[m_none];op:NOTOKEN),
       (str:'DISPINTERFACE' ;special:false;keyword:[m_class];op:NOTOKEN),
       (str:'UNIMPLEMENTED' ;special:false;keyword:[m_none];op:NOTOKEN),

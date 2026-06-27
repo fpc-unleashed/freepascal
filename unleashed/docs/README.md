@@ -8,6 +8,12 @@ Declare variables at point of first use inside any statement block, with explici
 
 Enabled via `{$modeswitch inlinevars}`.
 
+## [Thread-Static Variables](thread-static.md)
+
+`threadstatic` declares a per-thread variable with program lifetime and block-local source scope (the sym lives in the declaring routine's localst, so it is invisible to sibling routines, the same as `var`). Two forms with identical semantics: an inline statement (`threadstatic name := expr;` anywhere in a body) and a declaration section before the body (parallel to `var` / `static`, supporting multiple names and zero-init). Each thread sees its own copy via FPC's TLS infrastructure (`FPC_THREADVAR_RELOCATE`, `FPC_THREADVARTABLES`); init runs once per thread on first reach via a per-thread Boolean guard, so a raised init leaves that thread's variable zeroed and is not retried for that thread. The const-init data-segment fast path that regular `static` uses does not apply to a non-zero value - TLS has no per-thread template, so `threadstatic x := 5;` is a runtime per-thread assignment. A zero-valued constant (`= 0`, `= nil`, `= false`, `= ''`) is the exception: the per-thread block is zero-allocated, so the guard is dropped.
+
+Enabled via `{$modeswitch threadstatic}` (on by default in `unleashed`). `tstatic` is a short alias for `threadstatic`, accepted in both the inline and section forms.
+
 ## [Static Variables](static-section.md)
 
 A writeable `static` storage class with program-wide lifetime but block-local scope - the same idea as C's `static int x;` inside a function. Two flavors: a `static` declaration section (parallel to `var` / `const`, compile-time initializers, zero runtime cost) and a single-statement `static name := expr;` inline form (anywhere in a body, runtime initializers via a one-shot guard set true before the assignment, so a raised init leaves the variable zeroed and is not retried). Allowed only inside function / procedure / method bodies; at unit / program level plain `var` already gives the same lifetime and is the right tool.
