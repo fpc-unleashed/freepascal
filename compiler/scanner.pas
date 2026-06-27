@@ -6875,6 +6875,10 @@ type
                     idtoken:=ttoken(high);
                   end;
             end;
+         { `tstatic` is a short alias for the `threadstatic` soft keyword }
+           if (idtoken=_ID) and (m_thread_static in current_settings.modeswitches)
+              and (pattern='TSTATIC') then
+             idtoken:=_THREADSTATIC;
          { Fold word-style compound assignments into dedicated tokens. These
            operators are always available and are not gated by $COPERATORS. }
            if (c='=') then

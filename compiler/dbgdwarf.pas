@@ -2563,7 +2563,9 @@ implementation
     procedure TDebugInfoDwarf.appendsym_var_with_name_type_offset(list:TAsmList; sym:tabstractnormalvarsym; const name: string; def: tdef; offset: pint; const flags: tdwarfvarsymflags);
       var
         templist : TAsmList;
+        tvlist : TAsmList;
         blocksize,size_of_int : longint;
+        tlsbasereg,tlsslotoff,mtlen,tvsize : longint;
         tag : tdwarf_tag;
         has_high_reg : boolean;
         dreg,dreghigh : shortint;
@@ -2575,6 +2577,7 @@ implementation
       begin
         blocksize:=0;
         dreghigh:=0;
+        tvlist:=nil;
         { external symbols can't be resolved at link time, so we
           can't generate stabs for them
 
@@ -2685,6 +2688,75 @@ implementation
 {$pop}
 
                             blocksize:=2+sizeof(puint);
+                          end
+                        else if target_info.system in [system_i386_win32,system_x86_64_win64] then
+                          begin
+                            { DW_AT_location stays a plain static address: valid
+                              single threaded and harmless to a debugger that cannot
+                              resolve the per-thread block. The real per-thread
+                              address goes into DW_AT_FPC_threadvar below. }
+                            templist.concat(tai_const.create_8bit(ord(DW_OP_addr)));
+                            templist.concat(tai_const.Create_type_name(aitconst_ptr_unaligned,sym.mangledname,
+                              offset+sizeof(pint)));
+                            blocksize:=1+sizeof(puint);
+                            { Per-thread expression. Single threaded the relocate
+                              handler is nil and the value is in the static template;
+                              otherwise the variable lives in the running thread's
+                              block reached through the TEB TLS slot array, mirroring
+                              the codegen fast path:
+                                block := [segbase + slotarrayoff + [[_FPC_TlsKey]] * ptrsize]
+                                addr := block + [mangledname] (+ field offset)
+                              segbase is the gs base (x86_64) or fs base (i386), and
+                              the slot array sits at $1480 / $0e10 respectively. }
+                            if target_info.system=system_x86_64_win64 then
+                              begin
+                                tlsbasereg:=59;
+                                tlsslotoff:=$1480;
+                              end
+                            else
+                              begin
+                                tlsbasereg:=58;
+                                tlsslotoff:=$0e10;
+                              end;
+                            mtlen:=1+Lengthuleb128(tlsbasereg)+LengthSleb128(tlsslotoff)+
+                                   2*(1+sizeof(puint))+11;
+                            if offset<>0 then
+                              inc(mtlen,1+Lengthuleb128(offset));
+                            tvlist:=TAsmList.create;
+                            tvlist.concat(tai_const.create_8bit(ord(DW_OP_addr)));
+                            tvlist.concat(tai_const.Create_type_name(aitconst_ptr_unaligned,'FPC_THREADVAR_RELOCATE',0));
+                            tvlist.concat(tai_const.create_8bit(ord(DW_OP_deref)));
+                            tvlist.concat(tai_const.create_8bit(ord(DW_OP_bra)));
+                            tvlist.concat(tai_const.create_16bit(sizeof(puint)+4));
+                            tvlist.concat(tai_const.create_8bit(ord(DW_OP_addr)));
+                            tvlist.concat(tai_const.Create_type_name(aitconst_ptr_unaligned,sym.mangledname,
+                              offset+sizeof(pint)));
+                            tvlist.concat(tai_const.create_8bit(ord(DW_OP_skip)));
+                            tvlist.concat(tai_const.create_16bit(mtlen));
+                            tvlist.concat(tai_const.create_8bit(ord(DW_OP_bregx)));
+                            tvlist.concat(tai_const.create_uleb128bit(tlsbasereg));
+                            tvlist.concat(tai_const.create_sleb128bit(tlsslotoff));
+                            tvlist.concat(tai_const.create_8bit(ord(DW_OP_addr)));
+                            tvlist.concat(tai_const.Create_type_name(aitconst_ptr_unaligned,'_FPC_TlsKey',0));
+                            tvlist.concat(tai_const.create_8bit(ord(DW_OP_deref)));
+                            tvlist.concat(tai_const.create_8bit(ord(DW_OP_deref_size)));
+                            tvlist.concat(tai_const.create_8bit(4));
+                            tvlist.concat(tai_const.create_8bit(ord(DW_OP_const1u)));
+                            tvlist.concat(tai_const.create_8bit(sizeof(puint)));
+                            tvlist.concat(tai_const.create_8bit(ord(DW_OP_mul)));
+                            tvlist.concat(tai_const.create_8bit(ord(DW_OP_plus)));
+                            tvlist.concat(tai_const.create_8bit(ord(DW_OP_deref)));
+                            tvlist.concat(tai_const.create_8bit(ord(DW_OP_addr)));
+                            tvlist.concat(tai_const.Create_type_name(aitconst_ptr_unaligned,sym.mangledname,0));
+                            tvlist.concat(tai_const.create_8bit(ord(DW_OP_deref_size)));
+                            tvlist.concat(tai_const.create_8bit(4));
+                            tvlist.concat(tai_const.create_8bit(ord(DW_OP_plus)));
+                            if offset<>0 then
+                              begin
+                                tvlist.concat(tai_const.create_8bit(ord(DW_OP_plus_uconst)));
+                                tvlist.concat(tai_const.create_uleb128bit(offset));
+                              end;
+                            tvsize:=2*(1+sizeof(puint))+7+mtlen;
                           end
                         else
                           begin
@@ -2846,6 +2918,15 @@ implementation
             ]);
         { append block data }
         current_asmdata.asmlists[al_dwarf_info].concatlist(templist);
+        { per-thread location for a windows relocate-model threadvar, read by
+          fpdebug; DW_AT_location above stays static for other debuggers }
+        if assigned(tvlist) then
+          begin
+            append_attribute(DW_AT_FPC_threadvar,DW_FORM_block1,[tvsize]);
+            current_asmdata.asmlists[al_dwarf_info].concatlist(tvlist);
+            tvlist.free;
+            tvlist:=nil;
+          end;
         { Mark self as artificial for methods, because gdb uses the fact
           whether or not the first parameter of a method is artificial to
           distinguish regular from static methods (since there are no

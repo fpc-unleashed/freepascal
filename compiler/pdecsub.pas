@@ -3244,6 +3244,14 @@ var
            not (po_classmethod in pd.procoptions) then
           exit;
 
+      { same for `threadstatic`, so the per-thread section parser sees it
+        instead of it being swallowed as an unknown procedure directive }
+        if (current_scanner.idtoken=_THREADSTATIC) and
+           (m_thread_static in current_settings.modeswitches) and
+           (symtablestack.top.symtabletype<>ObjectSymtable) and
+           not (po_classmethod in pd.procoptions) then
+          exit;
+
       { Hint directive? Then exit immediately }
         if (m_hintdirective in current_settings.modeswitches) then
          begin

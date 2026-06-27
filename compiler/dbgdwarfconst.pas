@@ -214,7 +214,12 @@ type
     DW_AT_APPLE_optimized := $3fe1,
     DW_AT_APPLE_flags := $3fe2,
     DW_AT_APPLE_major_runtime_vers := $3fe5,
-    DW_AT_APPLE_runtime_class := $3fe6
+    DW_AT_APPLE_runtime_class := $3fe6,
+
+    { per-thread location expression for a windows relocate-model threadvar,
+      read by fpdebug; DW_AT_location stays a plain static address so other
+      debuggers keep working }
+    DW_AT_FPC_threadvar := $2e00
   );
 {$pop}
 
