@@ -1825,7 +1825,10 @@ implementation
               else
                 begin
                    p1:=cerrornode.create;
-                   Message(parser_e_no_procedure_to_access_property);
+                   if propsym.getpropaccesslist(palt_read,propaccesslist) then
+                     Message1(parser_e_property_is_read_only,propsym.realname)
+                   else
+                     Message(parser_e_no_procedure_to_access_property);
                 end;
            end
          else
@@ -1866,7 +1869,10 @@ implementation
                 begin
                    { error, no function to read property }
                    p1:=cerrornode.create;
-                   Message(parser_e_no_procedure_to_access_property);
+                   if propsym.getpropaccesslist(palt_write,propaccesslist) then
+                     Message1(parser_e_property_is_write_only,propsym.realname)
+                   else
+                     Message(parser_e_no_procedure_to_access_property);
                 end;
            end;
         { release paras if not used }

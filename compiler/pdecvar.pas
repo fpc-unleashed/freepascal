@@ -34,7 +34,7 @@ interface
       tvar_dec_option=(vd_record,vd_object,vd_threadvar,vd_class,vd_final,vd_canreorder,vd_check_generic,vd_one_variant);
       tvar_dec_options=set of tvar_dec_option;
 
-    function  read_property_dec(is_classproperty:boolean;astruct:tabstractrecorddef):tpropertysym;
+    function  read_property_dec(is_classproperty:boolean;astruct:tabstractrecorddef;out autopropfield:tfieldvarsym):tpropertysym;
 
     procedure read_var_decls(options:Tvar_dec_options;out had_generic:boolean);
 
@@ -88,7 +88,7 @@ implementation
        pbase,pexpr,ptype,ptconst,pdecsub,pparautl;
 
 
-    function read_property_dec(is_classproperty:boolean;astruct:tabstractrecorddef):tpropertysym;
+    function read_property_dec(is_classproperty:boolean;astruct:tabstractrecorddef;out autopropfield:tfieldvarsym):tpropertysym;
 
         { convert a node tree to symlist and return the last
           symbol }
@@ -353,6 +353,37 @@ implementation
                 end;
             end;
 
+        { synthesize a strict-private backing field prefix+Name (prefix from
+          autoproperty_field_prefix, default 'F') for an accessor-less property
+          and return it, or nil on a name collision. a class property gets a
+          class var (static) backing, an instance property an ordinary field;
+          the property is later bound to it via read/write FIELD }
+        function make_auto_property_field(p:tpropertysym):tfieldvarsym;
+          var
+            recst : tabstractrecordsymtable;
+            hstaticvs : tstaticvarsym;
+          begin
+            result:=nil;
+            recst:=tabstractrecordsymtable(astruct.symtable);
+            if assigned(recst.Find(upper(autoproperty_field_prefix)+p.name)) then
+              begin
+                Message1(parser_e_auto_property_field_exists,autoproperty_field_prefix+p.realname);
+                exit;
+              end;
+            result:=cfieldvarsym.create(autoproperty_field_prefix+p.realname,vs_value,p.propdef,[]);
+            result.visibility:=vis_strictprivate;
+            result.register_sym;
+            recst.insertsym(result);
+            if is_classproperty then
+              begin
+                hstaticvs:=make_field_static(recst,result);
+                if not parse_generic then
+                  cnodeutils.insertbssdata(hstaticvs);
+              end
+            else
+              recst.addfield(result,vis_strictprivate);
+          end;
+
       var
          sym : tsym;
          srsymtable: tsymtable;
@@ -374,8 +405,12 @@ implementation
          storedprocdef: tprocvardef;
          readprocdef,
          writeprocdef : tprocdef;
+         autofield : tfieldvarsym;
+         autoinitnode : tnode;
       begin
          result:=nil;
+         autopropfield:=nil;
+         autoinitnode:=nil;
          { Generate temp procdefs to search for matching read/write
            procedures. the readprocdef will store all definitions }
          paranr:=0;
@@ -559,6 +594,21 @@ implementation
          if not(is_dispinterface(astruct)) then
            begin
              gotreadorwrite:=false;
+             { accessor-less property initializer: `property X: T = constexpr;`
+               the value seeds the synthesized backing field at construction }
+             if (m_autoproperties in current_settings.modeswitches) and
+                (current_scanner.token=_EQ) then
+               begin
+                 consume(_EQ);
+                 autoinitnode:=comp_expr([ef_accept_equal]);
+                 inserttypeconv(autoinitnode,p.propdef);
+                 if not is_constnode(autoinitnode) then
+                   begin
+                     Message(parser_e_auto_property_init_const);
+                     autoinitnode.free;
+                     autoinitnode:=nil;
+                   end;
+               end;
              { parse accessors }
              if try_to_consume(_READ) then
                begin
@@ -613,10 +663,62 @@ implementation
              if not(ppo_overrides in p.propoptions) and
                 not is_interface(astruct) and
                 not gotreadorwrite then
-               Consume(_READ);
+               begin
+                 { accessor-less property: synthesize a backing field and bind
+                   both read and write to it; a trailing readonly/writeonly
+                   directive (handled by the caller) later drops one side }
+                 if (m_autoproperties in current_settings.modeswitches) and
+                    assigned(astruct) and
+                    (p.propdef.typ<>errordef) then
+                   begin
+                     if ppo_hasparameters in p.propoptions then
+                       Message(parser_e_auto_property_indexed)
+                     else
+                       begin
+                         autofield:=make_auto_property_field(p);
+                         if assigned(autofield) then
+                           begin
+                             p.propaccesslist[palt_read].clear;
+                             p.propaccesslist[palt_read].addsym(sl_load,autofield);
+                             addsymref(autofield);
+                             p.add_getter_or_setter_for_sym(palt_read,autofield,autofield.vardef,readprocdef);
+                             p.propaccesslist[palt_write].clear;
+                             p.propaccesslist[palt_write].addsym(sl_load,autofield);
+                             addsymref(autofield);
+                             p.add_getter_or_setter_for_sym(palt_write,autofield,autofield.vardef,writeprocdef);
+                             autopropfield:=autofield;
+                             { record the initializer so the constructor seeds
+                               the field; only classes/objects (not records)
+                               have a construction hook }
+                             if assigned(autoinitnode) and (astruct.typ=objectdef) then
+                               begin
+                                 if not assigned(tobjectdef(astruct).auto_prop_init_fields) then
+                                   begin
+                                     tobjectdef(astruct).auto_prop_init_fields:=TFPList.Create;
+                                     tobjectdef(astruct).auto_prop_init_values:=TFPObjectList.Create(true);
+                                   end;
+                                 tobjectdef(astruct).auto_prop_init_fields.Add(autofield);
+                                 tobjectdef(astruct).auto_prop_init_values.Add(autoinitnode);
+                                 autoinitnode:=nil;
+                               end;
+                           end;
+                       end;
+                   end
+                 else
+                   Consume(_READ);
+               end;
            end
          else
            parse_dispinterface(p,readprocdef,writeprocdef,paranr);
+
+         { an initializer that could not be attached (explicit accessor, indexed,
+           or a record) is a misuse }
+         if assigned(autoinitnode) then
+           begin
+             Message(parser_e_auto_property_init_context);
+             autoinitnode.free;
+             autoinitnode:=nil;
+           end;
 
          { stored is not allowed for dispinterfaces, records or class properties }
          if assigned(astruct) and not(is_dispinterface(astruct) or is_record(astruct)) and not is_classproperty then

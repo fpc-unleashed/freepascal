@@ -575,7 +575,8 @@ interface
          m_static_section,      { allow `static` declaration section in function/procedure bodies }
          m_inline_static,       { allow `static x := ...` inline declarations inside statement blocks }
          m_interpolated_strings,{ allow $'...' string interpolation syntax }
-         m_thread_static        { allow `threadstatic x := ...` per-thread static via TLS }
+         m_thread_static,       { allow `threadstatic x := ...` per-thread static via TLS }
+         m_autoproperties       { accessor-less property synthesizes a backing field and binds read/write to it directly }
        );
        tmodeswitches = set of tmodeswitch;
 
@@ -800,7 +801,8 @@ interface
          'STATICSECTION',
          'INLINESTATIC',
          'INTERPOLATEDSTRINGS',
-         'THREADSTATIC'
+         'THREADSTATIC',
+         'AUTOPROPERTIES'
          );
 
 

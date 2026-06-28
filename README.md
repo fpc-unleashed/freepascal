@@ -21,6 +21,7 @@
   - [Thread-Static Variables](#thread-static-variables)
   - [Scoped Cleanup (defer, autofree, scoped with)](#scoped-cleanup)
   - [For-Step](#for-step)
+  - [Auto-Properties](#auto-properties)
   - [Tweaks](#tweaks)
   - [Multiline Strings](#multiline-strings)
   - [String Interpolation](#string-interpolation)
@@ -61,6 +62,7 @@ The following modeswitches are enabled automatically:
 | `match`                            | Pattern matching with first-match semantics                   |
 | `multivarinit`                     | Initialize several variables of the same type with one value  |
 | `forstep`                          | `step N` clause in `for` loops to advance by N each iteration |
+| `autoproperties`                   | Accessor-less property synthesizes a backing field (`read FName write FName`) |
 | `anonymousfunctions`               | Anonymous procedures and functions                            |
 | `functionreferences`               | Function pointers that capture context                        |
 | `advancedrecords`                  | Records with methods, properties, and operators               |
@@ -709,6 +711,39 @@ for i := 0 to 12 step ComputeStep() do  // ComputeStep called exactly once
 ```
 
 Constant `step 1` folds back to a regular for-loop, so all the usual optimizations apply. `break`, `continue`, `exit` and `raise` work the same as in a regular for loop. `step` is rejected in `for-in` loops.
+
+---
+
+### Auto-Properties
+
+**Activate:** available in Unleashed mode (modeswitch `autoproperties`).
+
+A property with a type but no `read` / `write` clause makes the compiler synthesize a hidden backing field and bind the property straight to it - no getter / setter method is generated, so the result is identical to a hand-written field-backed property with zero runtime overhead.
+
+```pascal
+type
+  TPerson = class
+    property Name: String;            // -> strict private FName; read FName write FName
+    property Id: Integer; readonly;   // -> strict private FId;   read FId  (no write)
+    property Tag: String; writeonly;  // -> strict private FTag;  write FTag (no read)
+  end;
+```
+
+The backing field is named `F` + the property name (`FName`, `FId`), is `strict private`, and is a real member reachable by name from the declaring type's methods - so a constructor can write `FId := aId` directly. `readonly` / `writeonly` narrow the property to a single direction; they follow the property's terminating semicolon like a procedure directive (`function Foo: Integer; stdcall;`), and are **soft keywords** so existing code using them as identifiers keeps compiling.
+
+A `= constexpr` after the type gives the backing field a default value applied at construction, before the constructor body so a constructor can override it (`property Port: Integer = 8080;`). A class with initializers but no constructor of its own gets a synthesized one.
+
+```pascal
+type
+  TConfig = class
+    property Host: String = 'localhost';
+    property Port: Integer = 8080;
+  end;
+```
+
+A `class property` gets a `class var` backing field, advanced records get an ordinary field, and a `published` auto-property is RTTI-complete (works with `TypInfo`). The feature triggers only when a property has a type and neither `read` nor `write`; explicit accessors and the typeless `property X;` reintroduction form are untouched. Indexed bare properties, a backing-field name collision, and `readonly; writeonly;` together are compile errors. Initializers apply to classes and objects, not records or indexed properties.
+
+See [unleashed/docs/auto-properties.md](unleashed/docs/auto-properties.md) for the full reference.
 
 ---
 
