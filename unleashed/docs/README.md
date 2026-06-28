@@ -92,6 +92,12 @@ Record composition without duplicating fields, plus C-style memory overlap and p
 
 Enabled via `{$modeswitch composablerecords}`.
 
+## [Auto-Properties](auto-properties.md)
+
+A property with a type but no `read` / `write` clause synthesizes a `strict private` backing field named `F` + the property name and binds the property straight to it (`read FName write FName`) - no getter / setter method, identical code to a hand-written field-backed property. A trailing `readonly` / `writeonly` directive after the property's semicolon (`property Id: Integer; readonly;`, like a procedure directive) narrows it to a single direction; both are soft keywords. A `= constexpr` after the type seeds the backing field at construction (`property Port: Integer = 8080;`), before the constructor body so a constructor can override it. Class properties get a `class var` backing field, records get an ordinary field, and published auto-properties are RTTI-complete. The backing field is a real member reachable by name from the declaring type's methods. Collisions, indexed bare properties, and `readonly; writeonly;` together are compile errors.
+
+Enabled via `{$modeswitch autoproperties}`.
+
 ## [Tweaks](tweaks.md)
 
 Small semantic adjustments that make standard Pascal constructs behave the way most people expect them to. No dedicated modeswitch - these are unleashed-mode-only. Currently covers the preserved for-loop counter (`for i := 1 to N do ... break;` keeps the right value of `i` after the loop), with more entries to follow.

@@ -431,6 +431,18 @@ unit scandir;
       end;
 
 
+    procedure dir_autopropprefix;
+      var
+         hs : string;
+      begin
+        current_scanner.skipspace;
+        current_scanner.readstring;
+        hs:=current_scanner.orgpattern;
+        if hs<>'' then
+          autoproperty_field_prefix:=hs;
+      end;
+
+
     procedure dir_checklowaddrloads;
       begin
         do_localswitchdefault(cs_check_low_addr_load);
@@ -2222,6 +2234,7 @@ unit scandir;
         AddDirective('ASMCPU',directive_all, @dir_asmcpu);
         AddDirective('ASMMODE',directive_all, @dir_asmmode);
         AddDirective('ASSERTIONS',directive_all, @dir_assertions);
+        AddDirective('AUTOPROPPREFIX',directive_all, @dir_autopropprefix);
         AddDirective('BOOLEVAL',directive_all, @dir_booleval);
         AddDirective('BITPACKING',directive_all, @dir_bitpacking);
         AddDirective('CALLING',directive_all, @dir_calling);

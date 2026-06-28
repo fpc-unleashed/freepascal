@@ -1897,6 +1897,7 @@ implementation
     { parses a global property (fpc mode feature) }
       var
          old_block_type: tblock_type;
+         autopropfield: tfieldvarsym;
       begin
          consume(_PROPERTY);
          if not(symtablestack.top.symtabletype in [staticsymtable,globalsymtable]) then
@@ -1904,7 +1905,7 @@ implementation
          old_block_type:=block_type;
          block_type:=bt_const;
          repeat
-           read_property_dec(false, nil);
+           read_property_dec(false, nil, autopropfield);
            consume(_SEMICOLON);
          until current_scanner.token<>_ID;
          block_type:=old_block_type;

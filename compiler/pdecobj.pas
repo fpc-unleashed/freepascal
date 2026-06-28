@@ -162,11 +162,35 @@ implementation
       end;
 
 
+    function struct_has_own_constructor(structdef: tabstractrecorddef): boolean;
+      var
+        i, j : longint;
+        sym  : tsym;
+        pd   : tprocdef;
+      begin
+        result:=false;
+        for i:=0 to structdef.symtable.symlist.count-1 do
+          begin
+            sym:=tsym(structdef.symtable.symlist[i]);
+            if sym.typ<>procsym then
+              continue;
+            for j:=0 to tprocsym(sym).procdeflist.count-1 do
+              begin
+                pd:=tprocdef(tprocsym(sym).procdeflist[j]);
+                if (pd.proctypeoption=potype_constructor) and (pd.struct=structdef) then
+                  exit(true);
+              end;
+          end;
+      end;
+
+
     procedure struct_property_dec(is_classproperty:boolean;var rtti_attrs_def: trtti_attribute_list);
       var
         p : tpropertysym;
         _deprecatedmsg: pshortstring;
         _symoptions: tsymoptions;
+        autopropfield : tfieldvarsym;
+        autoprop_ro,autoprop_wo : boolean;
       begin
         { check for a class, record or helper }
         if not((is_class_or_interface_or_dispinterface(current_structdef) or is_record(current_structdef) or
@@ -174,8 +198,29 @@ implementation
                (not(m_tp7 in current_settings.modeswitches) and (is_object(current_structdef)))) then
           Message(parser_e_syntax_error);
         consume(_PROPERTY);
-        p:=read_property_dec(is_classproperty,current_structdef);
+        p:=read_property_dec(is_classproperty,current_structdef,autopropfield);
         consume(_SEMICOLON);
+        { accessor-less property direction directive: `property X: T; readonly;`
+          drops the write side, `writeonly;` the read side. only meaningful for a
+          synthesized backing field, so gated on it being present }
+        if assigned(autopropfield) and (m_autoproperties in current_settings.modeswitches) then
+          begin
+            autoprop_ro:=false;
+            autoprop_wo:=false;
+            while true do
+              if try_to_consume(_READONLY) then
+                begin autoprop_ro:=true; consume(_SEMICOLON); end
+              else if try_to_consume(_WRITEONLY) then
+                begin autoprop_wo:=true; consume(_SEMICOLON); end
+              else
+                break;
+            if autoprop_ro and autoprop_wo then
+              Message(parser_e_auto_property_readonly_writeonly)
+            else if autoprop_ro then
+              p.propaccesslist[palt_write].clear
+            else if autoprop_wo then
+              p.propaccesslist[palt_read].clear;
+          end;
         if try_to_consume(_DEFAULT) then
           begin
             if oo_has_default_property in current_structdef.objectoptions then
@@ -1755,6 +1800,12 @@ implementation
                   jvm_wrap_virtual_class_methods(tobjectdef(current_structdef));
 {$endif}
                 end;
+              { a class carrying auto-property initializers but no constructor of
+                its own needs an inherited one so the initializers get applied }
+              if is_class(current_structdef) and
+                 assigned(tobjectdef(current_structdef).auto_prop_init_fields) and
+                 not struct_has_own_constructor(current_structdef) then
+                add_missing_parent_constructors_intf(tobjectdef(current_structdef),false,vis_none);
               { need method to hold the initialization code for typed constants? }
               if (target_info.system in systems_typed_constants_node_init) and
                  not is_any_interface_kind(current_structdef) then
