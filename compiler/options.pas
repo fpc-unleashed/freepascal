@@ -1605,6 +1605,14 @@ begin
     binary_os_version_override := copy(opt, length('--osversion=')+1);
     exit;
   end;
+  if opt.StartsWith('--autopropprefix=') then begin
+    more := copy(opt, length('--autopropprefix=')+1);
+    if more='' then
+      IllegalPara(opt)
+    else
+      autoproperty_field_prefix := more;
+    exit;
+  end;
   if opt='--striprtti' then begin
     force_striprtti_cli:=true;
     exit;

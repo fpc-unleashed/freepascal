@@ -353,10 +353,11 @@ implementation
                 end;
             end;
 
-        { synthesize a strict-private backing field F<Name> for an accessor-less
-          property and return it, or nil on a name collision. a class property
-          gets a class var (static) backing, an instance property an ordinary
-          field; the property is later bound to it via read/write FIELD }
+        { synthesize a strict-private backing field prefix+Name (prefix from
+          autoproperty_field_prefix, default 'F') for an accessor-less property
+          and return it, or nil on a name collision. a class property gets a
+          class var (static) backing, an instance property an ordinary field;
+          the property is later bound to it via read/write FIELD }
         function make_auto_property_field(p:tpropertysym):tfieldvarsym;
           var
             recst : tabstractrecordsymtable;
@@ -364,12 +365,12 @@ implementation
           begin
             result:=nil;
             recst:=tabstractrecordsymtable(astruct.symtable);
-            if assigned(recst.Find('F'+p.name)) then
+            if assigned(recst.Find(upper(autoproperty_field_prefix)+p.name)) then
               begin
-                Message1(parser_e_auto_property_field_exists,'F'+p.realname);
+                Message1(parser_e_auto_property_field_exists,autoproperty_field_prefix+p.realname);
                 exit;
               end;
-            result:=cfieldvarsym.create('F'+p.realname,vs_value,p.propdef,[]);
+            result:=cfieldvarsym.create(autoproperty_field_prefix+p.realname,vs_value,p.propdef,[]);
             result.visibility:=vis_strictprivate;
             result.register_sym;
             recst.insertsym(result);
