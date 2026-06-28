@@ -406,6 +406,11 @@ Const
          Read by ncgrtti.rtti_string alongside the modeswitch check. }
        force_striprtti_cli : boolean;
 
+       { name prefix for synthesized auto-property backing fields, default 'F';
+         set globally with --autopropprefix= or per source with the
+         $autopropprefix directive }
+       autoproperty_field_prefix : ansistring = 'F';
+
        { `$entrypoint X` directive: raw identifier as written, mangled name
          resolved after parsing.  RTL startup is bypassed; the user takes
          responsibility for any init it would normally do }
