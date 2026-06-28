@@ -23,6 +23,22 @@ begin
 end;
 ```
 
+## Backing-field name prefix
+
+By default the synthesized field is the property name prefixed with `F`
+(`FName`). With camelCase property names this can read awkwardly
+(`FenabledThing`), so the prefix is configurable:
+
+- `{$autopropprefix _}` - a directive that sets the prefix for properties
+  declared after it; the field for `enabled` becomes `_enabled`.
+- `--autopropprefix=_` - a command-line option (also usable in `fpc.cfg`)
+  setting the default for the whole compilation.
+
+The prefix may be several characters (`{$autopropprefix fld_}` makes
+`fld_enabled`) and its case is kept as written. It must combine with the
+property name to form a valid identifier. The field stays `strict private`
+regardless of the prefix, so the choice never leaves the declaring unit.
+
 ## `readonly` / `writeonly`
 
 The access can be narrowed with a directive that follows the property's
