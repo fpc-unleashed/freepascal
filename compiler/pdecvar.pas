@@ -410,6 +410,7 @@ implementation
       begin
          result:=nil;
          autopropfield:=nil;
+         autoinitnode:=nil;
          { Generate temp procdefs to search for matching read/write
            procedures. the readprocdef will store all definitions }
          paranr:=0;
@@ -593,7 +594,6 @@ implementation
          if not(is_dispinterface(astruct)) then
            begin
              gotreadorwrite:=false;
-             autoinitnode:=nil;
              { accessor-less property initializer: `property X: T = constexpr;`
                the value seeds the synthesized backing field at construction }
              if (m_autoproperties in current_settings.modeswitches) and
