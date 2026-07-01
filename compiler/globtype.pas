@@ -576,7 +576,8 @@ interface
          m_inline_static,       { allow `static x := ...` inline declarations inside statement blocks }
          m_interpolated_strings,{ allow $'...' string interpolation syntax }
          m_thread_static,       { allow `threadstatic x := ...` per-thread static via TLS }
-         m_autoproperties       { accessor-less property synthesizes a backing field and binds read/write to it directly }
+         m_autoproperties,      { accessor-less property synthesizes a backing field and binds read/write to it directly }
+         m_lock                 { thread-safe locking: `lock(v) do stmt` / `trylock ... wait N do ... else ...` }
        );
        tmodeswitches = set of tmodeswitch;
 
@@ -802,7 +803,8 @@ interface
          'INLINESTATIC',
          'INTERPOLATEDSTRINGS',
          'THREADSTATIC',
-         'AUTOPROPERTIES'
+         'AUTOPROPERTIES',
+         'LOCK'
          );
 
 

@@ -44,6 +44,12 @@ Enabled via `{$modeswitch match}`.
 
 Enabled via `{$modeswitch autofree}`.
 
+## [Lock](lock.md)
+
+`lock ... do <stmt>;` wraps a statement or block with `EnterCriticalSection / try .. finally / LeaveCriticalSection` so it is serialized across threads - it blocks until acquired and cannot fail. `trylock ... do <stmt> else <stmt>;` may miss (one immediate attempt by default, a bounded wait with `wait N` - Int64 milliseconds) and then runs the mandatory `else` branch without the lock. Targets: bare form per-callsite (hidden CS unique to that source position, "only one thread executes this code"); `lock(globalVar)` per-variable (hidden CS shared across every site naming that variable, "only one thread touches this data"); `lock(MyCS)` explicit, where `MyCS: TRTLCriticalSection` and the user manages Init/Done. Multi-target form `lock(a, b, c)` sorts the lock order by name across all sites so AB-vs-BA deadlock is impossible; multi-target `trylock` is all-or-nothing with rollback. The wait machinery uses only `system`-unit primitives (no SysUtils, no clock reads). Hidden CS storage lives in the unit's localsymtable and is wired into the unit's `initialization` / `finalization` sections automatically. Critical section is recursive on every supported target so nesting on the same variable does not self-deadlock.
+
+Enabled via `{$modeswitch lock}`.
+
 ## [Multi-Variable Initialization](multi-var-init.md)
 
 Initialize several variables of the same type in one declaration, e.g. `a, b, c: integer = 42;`. Works in `var`, typed constants, and inline `var`. Each variable gets an independent copy of the value - assigning to one does not affect the others.
