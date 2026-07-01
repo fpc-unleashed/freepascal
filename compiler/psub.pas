@@ -3327,7 +3327,7 @@ implementation
                    begin
                      { class modifier is only allowed for procedures, functions, }
                      { constructors, destructors                                 }
-                     if not((current_scanner.token in [_FUNCTION,_PROCEDURE,_DESTRUCTOR,_OPERATOR]) or (current_scanner.token=_CONSTRUCTOR)) and
+                     if not((current_scanner.token in [_FUNCTION,_PROCEDURE,_OPERATOR]) or (current_scanner.token=_DESTRUCTOR) or (current_scanner.token=_CONSTRUCTOR)) and
                         not((current_scanner.token=_ID) and (current_scanner.idtoken=_OPERATOR)) then
                        Message(parser_e_procedure_or_function_expected);
 

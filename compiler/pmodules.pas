@@ -47,13 +47,14 @@ implementation
        wpoinfo,
        aasmtai,aasmdata,aasmbase,aasmcpu,
        cgbase,ngenutil,
-       nbas,nutils,ncgutil,
+       node,nbas,nutils,ncgutil,pass_1,
        link,assemble,import,export,gendef,ppu,comprsrc,dbgbase,
        cresstr,procinfo,
        objcgutl,
        pkgutil,
        wpobase,
        scanner,pbase,pexpr,psystem,psub,pgenutil,pparautl,ncgvmt,ncgrtti,
+       ncal,nld,
        cpuinfo;
 
 
@@ -1059,6 +1060,60 @@ implementation
       end;
 
 
+    { Build a chain InitCriticalSection(sym_0); ... InitCriticalSection(sym_N-1)
+      and prepend it to the unit's init body. Mirror chain in reverse for fini.
+      Forces the init/fini procinfo to exist when the module has any hidden
+      lock CSes - because their lifetime has to be tied to the unit's load /
+      unload, not to whatever happened to drive needs_init_final. }
+    procedure emit_lock_initdone(curr: tmodule; var init_pi, fini_pi: tcgprocinfo);
+      var
+        i: longint;
+        sym: tstaticvarsym;
+        init_block, fini_block: tblocknode;
+        init_stat, fini_stat: tstatementnode;
+        old_code: tnode;
+      begin
+        if (curr.lock_cs_syms=nil) or (curr.lock_cs_syms.count=0) then
+          exit;
+        if not assigned(init_pi) then
+          init_pi:=gen_implicit_initfinal(curr,mf_init,curr.localsymtable);
+        if not assigned(fini_pi) then
+          fini_pi:=gen_implicit_initfinal(curr,mf_finalize,curr.localsymtable);
+
+        init_block:=internalstatements(init_stat);
+        for i:=0 to curr.lock_cs_syms.count-1 do
+          begin
+            sym:=tstaticvarsym(curr.lock_cs_syms[i]);
+            addstatement(init_stat,
+              ccallnode.createintern('INITCRITICALSECTION',
+                ccallparanode.create(cloadnode.create(sym,sym.owner),nil)));
+          end;
+        old_code:=init_pi.code;
+        if assigned(old_code) and (old_code.nodetype<>nothingn) then
+          addstatement(init_stat,old_code)
+        else
+          old_code.free;
+        typecheckpass(tnode(init_block));
+        init_pi.code:=init_block;
+
+        fini_block:=internalstatements(fini_stat);
+        old_code:=fini_pi.code;
+        if assigned(old_code) and (old_code.nodetype<>nothingn) then
+          addstatement(fini_stat,old_code)
+        else
+          old_code.free;
+        for i:=curr.lock_cs_syms.count-1 downto 0 do
+          begin
+            sym:=tstaticvarsym(curr.lock_cs_syms[i]);
+            addstatement(fini_stat,
+              ccallnode.createintern('DONECRITICALSECTION',
+                ccallparanode.create(cloadnode.create(sym,sym.owner),nil)));
+          end;
+        typecheckpass(tnode(fini_block));
+        fini_pi.code:=fini_block;
+      end;
+
+
     procedure copy_macro(p:TObject; arg:pointer);
       begin
         TModule(arg).globalmacrosymtable.insertsym(tmacro(p).getcopy);
@@ -1636,6 +1691,9 @@ type
                end;
              finalize_procinfo:=gen_implicit_initfinal(module,mf_finalize,module.localsymtable);
            end;
+
+         { wire up Init/Done for hidden CSes generated from `lock`/`trylock` blocks }
+         emit_lock_initdone(module,init_procinfo,finalize_procinfo);
 
          { Now both init and finalize bodies are read and it is known
            which variables are used in both init and finalize we can now
@@ -2777,6 +2835,9 @@ type
               end;
             finalize_procinfo:=gen_implicit_initfinal(curr,mf_finalize,curr.localsymtable);
           end;
+
+         { wire up Init/Done for hidden CSes generated from `lock`/`trylock` blocks }
+         emit_lock_initdone(curr,init_procinfo,finalize_procinfo);
 
          { the finalization routine of libraries is generic (and all libraries need to }
          { be finalized, so they can finalize any units they use                       }
