@@ -821,7 +821,14 @@ unit optdfa;
                 begin
                   varsym:=tabstractnormalvarsym(tloadnode(n).symtableentry);
 
-                  if assigned(varsym.owner) and SymbolCandidateForWarningOrHint(varsym) then
+                  if assigned(varsym.owner) and SymbolCandidateForWarningOrHint(varsym) and
+                     { the `zeroinit` modifier injects a Default() write for every
+                       local at function entry, so reads are already initialised }
+                     not(
+                       (pio_zeroinit in current_procinfo.procdef.implprocoptions) and
+                       (varsym.typ=localvarsym) and
+                       (varsym.owner=current_procinfo.procdef.localst)
+                     ) then
                     begin
                       if (vo_is_funcret in varsym.varoptions) and not(WarnedForLocation(n.fileinfo)) then
                         begin
