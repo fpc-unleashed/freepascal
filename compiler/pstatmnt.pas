@@ -67,6 +67,7 @@ implementation
 
     function statement : tnode;forward;
     function defer_statement : tnode;forward;
+    function lock_statement(is_try: boolean) : tnode;forward;
     procedure rewrite_defers_in_block(var first: tnode; is_routine_body: boolean = false);forward;
 
     { Promote a "constructor" array type (the result of `[a, b, c]` parsed as
@@ -4193,6 +4194,10 @@ implementation
              code:=raise_statement;
            _DEFER :
              code:=defer_statement;
+           _LOCK :
+             code:=lock_statement(false);
+           _TRYLOCK :
+             code:=lock_statement(true);
            { semicolons,else until and end are ignored }
            _SEMICOLON,
            _ELSE,
@@ -4437,6 +4442,414 @@ implementation
           only when rewriting the routine's main begin..end -- otherwise
           they leak into try-body / nested-block / with-body scopes }
         is_routine_body : boolean;
+      end;
+
+
+    { Build a `proc(sym)` system-procedure call node where sym is loaded
+      verbatim (the routine expects a var/out TRTLCriticalSection). }
+    function lock_build_cs_call(const procname: string; sym: tsym): tnode;
+      begin
+        result:=ccallnode.createintern(procname,
+          ccallparanode.create(cloadnode.create(sym, sym.owner), nil));
+      end;
+
+
+    { Find an existing hidden TRTLCriticalSection global with the given name
+      in the module's local symtable, or create one and register it for
+      Init/Done emission in the unit's init/finalize sections. The leading
+      `$` in the realname stays out of the symtable's hash (it is stripped
+      by insertsym for `$`-prefixed names) - so a stable per-name lookup
+      key is the realname without the `$`. }
+    function lock_find_or_create_hidden_cs(const csname: string): tstaticvarsym;
+      var
+        srsym: tsym;
+        cs_typesym: ttypesym;
+        lookup: string;
+      begin
+        if (csname<>'') and (csname[1]='$') then
+          lookup:=copy(csname,2,length(csname))
+        else
+          lookup:=csname;
+        srsym:=tsym(current_module.localsymtable.find(lookup));
+        if assigned(srsym) and (srsym.typ=staticvarsym) then
+          exit(tstaticvarsym(srsym));
+        cs_typesym:=search_named_unit_globaltype('SYSTEM','TRTLCRITICALSECTION',true);
+        result:=cstaticvarsym.create(csname, vs_value, cs_typesym.typedef, []);
+        include(result.symoptions, sp_internal);
+        { InitCriticalSection in the unit init sets it up before any body runs;
+          mark it so per-routine DFA does not flag the Enter as reading an
+          uninitialized var (fires for bare forms in the main program body,
+          where the proc localst is the module static symtable) }
+        result.varstate:=vs_initialised;
+        result.register_sym;
+        current_module.localsymtable.insertsym(result);
+        cnodeutils.insertbssdata(result);
+        current_module.lock_cs_syms.add(result);
+      end;
+
+
+    { Insertion-sort `syms` by realname so any two `lock(...)` sites that
+      mention the same set of variables lock them in the same order; that's
+      enough to prevent the AB-vs-BA deadlock pattern. }
+    procedure lock_sort_syms(var syms: array of tsym);
+      var
+        i, j: longint;
+        tmp: tsym;
+      begin
+        for i:=1 to high(syms) do
+          begin
+            j:=i;
+            while (j>0) and (CompareStr(syms[j-1].realname, syms[j].realname) > 0) do
+              begin
+                tmp:=syms[j-1];
+                syms[j-1]:=syms[j];
+                syms[j]:=tmp;
+                dec(j);
+              end;
+          end;
+      end;
+
+
+    { TryEnterCriticalSection(sym) <> 0 }
+    function lock_build_tryenter(sym: tsym): tnode;
+      begin
+        result:=caddnode.create(unequaln,
+          ccallnode.createintern('TRYENTERCRITICALSECTION',
+            ccallparanode.create(cloadnode.create(sym, sym.owner), nil)),
+          cordconstnode.create(0, s32inttype, false));
+      end;
+
+
+    { one all-or-nothing acquisition attempt over the sorted lock list:
+      take each CS with TryEnter in order; on the first failure release
+      the ones already taken (reverse order) so a partial grab can never
+      deadlock against another multi-lock site }
+    function lock_build_tryall(const syms: array of tsym; acquired: tlocalvarsym; idx: longint): tnode;
+      var
+        rollback: tblocknode;
+        rstat: tstatementnode;
+        succ: tnode;
+        j: longint;
+      begin
+        if idx=high(syms) then
+          succ:=cassignmentnode.create(
+            cloadnode.create(acquired, acquired.owner),
+            cordconstnode.create(1, pasbool1type, false))
+        else
+          succ:=lock_build_tryall(syms, acquired, idx+1);
+        if idx=0 then
+          result:=cifnode.create(lock_build_tryenter(syms[idx]), succ, nil)
+        else
+          begin
+            rollback:=internalstatements(rstat);
+            for j:=idx-1 downto 0 do
+              addstatement(rstat, lock_build_cs_call('LEAVECRITICALSECTION', syms[j]));
+            result:=cifnode.create(lock_build_tryenter(syms[idx]), succ, rollback);
+          end;
+      end;
+
+
+    { Lower `trylock(...) [wait N] do body else elsebody`. The wait budget
+      (Int64 milliseconds) is evaluated once, before the first attempt.
+      Acquisition: one immediate try, then a few yields that catch
+      short-held locks, then - only with a positive budget - 16 ms sleep
+      slices on a throwaway RTL event until acquired or the budget is
+      gone. The slice floor matches the default Windows timer tick, so
+      summing slept slices stays an honest elapsed-time estimate without
+      reading any clock. The event is created on demand - the uncontended
+      fast path allocates nothing. }
+    function trylock_build(const syms: array of tsym; waitnode, body, elsebody: tnode; const filepos: tfileposinfo): tnode;
+      const
+        spin_yields = 3;
+        slice_ms = 16;
+      var
+        suffix: ansistring;
+
+      function newlocal(const prefix: string; def: tdef): tlocalvarsym;
+        begin
+          result:=tlocalvarsym.create('$lock_'+prefix+'_'+suffix, vs_value, def, []);
+          include(result.symoptions, sp_internal);
+          symtablestack.top.insertsym(result);
+        end;
+
+      var
+        acquired_sym, remaining_sym, slice_sym, ev_sym: tlocalvarsym;
+        ev_typesym: ttypesym;
+        block, sleep_block, loop_block, spin_block, leave_block: tblocknode;
+        stmts, sleep_stat, loop_stat, spin_stat, leave_stat: tstatementnode;
+        acquired_branch: tnode;
+        i: longint;
+        sline, scol: string[12];
+        has_wait_loop: boolean;
+      begin
+        str(filepos.line, sline);
+        str(filepos.column, scol);
+        suffix:=sline+'_'+scol;
+
+        { absent `wait` and constant `wait 0` are the same thing: attempts
+          only, no sleeping }
+        has_wait_loop:=assigned(waitnode);
+        if has_wait_loop then
+          begin
+            typecheckpass(waitnode);
+            if (waitnode.nodetype=ordconstn) and (tordconstnode(waitnode).value < 0) then
+              MessagePos(waitnode.fileinfo, parser_e_trylock_wait_negative);
+            if (waitnode.nodetype=ordconstn) and (tordconstnode(waitnode).value <= 0) then
+              begin
+                waitnode.free;
+                has_wait_loop:=false;
+              end;
+          end;
+
+        block:=internalstatements(stmts);
+        acquired_sym:=newlocal('acq', pasbool1type);
+        addstatement(stmts, cassignmentnode.create(
+          cloadnode.create(acquired_sym, acquired_sym.owner),
+          cordconstnode.create(0, pasbool1type, false)));
+        if has_wait_loop then
+          begin
+            remaining_sym:=newlocal('rem', s64inttype);
+            addstatement(stmts, cassignmentnode.create(
+              cloadnode.create(remaining_sym, remaining_sym.owner),
+              waitnode));
+          end;
+        addstatement(stmts, lock_build_tryall(syms, acquired_sym, 0));
+        for i:=1 to spin_yields do
+          begin
+            spin_block:=internalstatements(spin_stat);
+            addstatement(spin_stat, ccallnode.createintern('THREADSWITCH', nil));
+            addstatement(spin_stat, lock_build_tryall(syms, acquired_sym, 0));
+            addstatement(stmts, cifnode.create(
+              cnotnode.create(cloadnode.create(acquired_sym, acquired_sym.owner)),
+              spin_block, nil));
+          end;
+
+        if has_wait_loop then
+          begin
+            slice_sym:=newlocal('slice', s32inttype);
+            ev_typesym:=search_named_unit_globaltype('SYSTEM','PRTLEVENT',true);
+            ev_sym:=newlocal('ev', ev_typesym.typedef);
+
+            sleep_block:=internalstatements(sleep_stat);
+            addstatement(sleep_stat, cassignmentnode.create(
+              cloadnode.create(ev_sym, ev_sym.owner),
+              ccallnode.createintern('RTLEVENTCREATE', nil)));
+            loop_block:=internalstatements(loop_stat);
+            { slice := min(slice_ms, remaining) }
+            addstatement(loop_stat, cifnode.create(
+              caddnode.create(gten,
+                cloadnode.create(remaining_sym, remaining_sym.owner),
+                cordconstnode.create(slice_ms, s32inttype, false)),
+              cassignmentnode.create(
+                cloadnode.create(slice_sym, slice_sym.owner),
+                cordconstnode.create(slice_ms, s32inttype, false)),
+              cassignmentnode.create(
+                cloadnode.create(slice_sym, slice_sym.owner),
+                cloadnode.create(remaining_sym, remaining_sym.owner))));
+            { the event is never signalled - the timed wait is a portable sleep }
+            addstatement(loop_stat, ccallnode.createintern('RTLEVENTWAITFOR',
+              ccallparanode.create(cloadnode.create(slice_sym, slice_sym.owner),
+                ccallparanode.create(cloadnode.create(ev_sym, ev_sym.owner), nil))));
+            addstatement(loop_stat, cassignmentnode.create(
+              cloadnode.create(remaining_sym, remaining_sym.owner),
+              caddnode.create(subn,
+                cloadnode.create(remaining_sym, remaining_sym.owner),
+                cloadnode.create(slice_sym, slice_sym.owner))));
+            addstatement(loop_stat, lock_build_tryall(syms, acquired_sym, 0));
+            addstatement(sleep_stat, cwhilerepeatnode.create(
+              caddnode.create(andn,
+                cnotnode.create(cloadnode.create(acquired_sym, acquired_sym.owner)),
+                caddnode.create(gtn,
+                  cloadnode.create(remaining_sym, remaining_sym.owner),
+                  cordconstnode.create(0, s32inttype, false))),
+              loop_block, true, false));
+            addstatement(sleep_stat, ccallnode.createintern('RTLEVENTDESTROY',
+              ccallparanode.create(cloadnode.create(ev_sym, ev_sym.owner), nil)));
+
+            addstatement(stmts, cifnode.create(
+              caddnode.create(andn,
+                cnotnode.create(cloadnode.create(acquired_sym, acquired_sym.owner)),
+                caddnode.create(gtn,
+                  cloadnode.create(remaining_sym, remaining_sym.owner),
+                  cordconstnode.create(0, s32inttype, false))),
+              sleep_block, nil));
+          end;
+
+        { acquired -> body guarded by Leave in finally; missed -> else.
+          an empty body cannot raise, so skip the try-finally - it would
+          otherwise emit an unused exception frame (objfpc-family hint) }
+        leave_block:=internalstatements(leave_stat);
+        for i:=high(syms) downto 0 do
+          addstatement(leave_stat, lock_build_cs_call('LEAVECRITICALSECTION', syms[i]));
+        if has_no_code(body) then
+          begin
+            body.free;
+            acquired_branch:=leave_block;
+          end
+        else
+          acquired_branch:=ctryfinallynode.create(body, leave_block);
+        addstatement(stmts, cifnode.create(
+          cloadnode.create(acquired_sym, acquired_sym.owner),
+          acquired_branch,
+          elsebody));
+
+        block.fileinfo:=filepos;
+        typecheckpass(tnode(block));
+        result:=block;
+      end;
+
+
+    { `lock [(targets)] do <stmt>` - blocks until acquired, never fails.
+      `trylock [(targets)] [wait <expr>] do <stmt> else <stmt>` - may miss
+      (single attempt, or the wait budget runs out) and then runs the
+      mandatory else branch without the lock held. }
+    function lock_statement(is_try: boolean) : tnode;
+      var
+        cs_syms: array of tsym;
+        body, arg, waitnode, elsebody: tnode;
+        enter_stat, leave_stat: tstatementnode;
+        enter_block, leave_block: tblocknode;
+        i: longint;
+        filepos: tfileposinfo;
+        arg_sym: tsym;
+        cs_typesym: ttypesym;
+        is_explicit_cs: boolean;
+        sline, scol: string[12];
+        csname: ansistring;
+      begin
+        if is_try then
+          consume(_TRYLOCK)
+        else
+          consume(_LOCK);
+        filepos:=current_tokenpos;
+        setlength(cs_syms, 0);
+        waitnode:=nil;
+        cs_typesym:=search_named_unit_globaltype('SYSTEM','TRTLCRITICALSECTION',false);
+        if try_to_consume(_LKLAMMER) then
+          begin
+            repeat
+              arg:=comp_expr([ef_accept_equal]);
+              if (not assigned(arg)) or (arg.nodetype=errorn) then
+                begin
+                  arg.free;
+                  exit(cerrornode.create);
+                end;
+              arg_sym:=nil;
+              if arg.nodetype=loadn then
+                arg_sym:=tloadnode(arg).symtableentry;
+              if not assigned(arg_sym) then
+                begin
+                  MessagePos(arg.fileinfo, parser_e_lock_arg_not_variable);
+                  arg.free;
+                  exit(cerrornode.create);
+                end;
+              if arg_sym.typ=fieldvarsym then
+                begin
+                  MessagePos(arg.fileinfo, parser_e_lock_field_arg);
+                  arg.free;
+                  exit(cerrornode.create);
+                end;
+              is_explicit_cs:=assigned(cs_typesym) and
+                              equal_defs(arg.resultdef, cs_typesym.typedef);
+              if is_explicit_cs then
+                begin
+                  setlength(cs_syms, length(cs_syms)+1);
+                  cs_syms[high(cs_syms)]:=arg_sym;
+                end
+              else
+                begin
+                  if arg_sym.typ<>staticvarsym then
+                    begin
+                      MessagePos(arg.fileinfo, parser_e_lock_local_arg);
+                      arg.free;
+                      exit(cerrornode.create);
+                    end;
+                  setlength(cs_syms, length(cs_syms)+1);
+                  cs_syms[high(cs_syms)]:=lock_find_or_create_hidden_cs(
+                    '$lock_var_'+arg_sym.realname);
+                end;
+              arg.free;
+            until not try_to_consume(_COMMA);
+            consume(_RKLAMMER);
+            if length(cs_syms)>1 then
+              lock_sort_syms(cs_syms);
+          end;
+        if length(cs_syms)=0 then
+          begin
+            { per-callsite hidden CS named by source position - two bare
+              statements never share a lock, even when they touch the same
+              variable }
+            str(filepos.line, sline);
+            str(filepos.column, scol);
+            csname:='$lock_cs_'+sline+'_'+scol;
+            setlength(cs_syms, 1);
+            cs_syms[0]:=lock_find_or_create_hidden_cs(csname);
+          end;
+        { `wait <expr>` - only the trylock form can give up, so only it can
+          bound the acquisition. Nothing else is legal between the target
+          list and `do`, so a bare identifier `wait` here is always the
+          clause. }
+        if (current_scanner.token=_ID) and (current_scanner.pattern='WAIT') then
+          begin
+            if not is_try then
+              Message(parser_e_lock_no_wait);
+            consume(_ID);
+            waitnode:=comp_expr([ef_accept_equal]);
+            if (not assigned(waitnode)) or (waitnode.nodetype=errorn) or not is_try then
+              begin
+                waitnode.free;
+                exit(cerrornode.create);
+              end;
+          end;
+        consume(_DO);
+        body:=statement;
+        if (not assigned(body)) or (body.nodetype=errorn) then
+          begin
+            body.free;
+            waitnode.free;
+            exit(cerrornode.create);
+          end;
+        if is_try then
+          begin
+            { a missed acquisition skips the body - the else branch must
+              spell out what happens instead }
+            if not try_to_consume(_ELSE) then
+              begin
+                Message(parser_e_trylock_needs_else);
+                body.free;
+                waitnode.free;
+                exit(cerrornode.create);
+              end;
+            elsebody:=statement;
+            if (not assigned(elsebody)) or (elsebody.nodetype=errorn) then
+              begin
+                elsebody.free;
+                body.free;
+                waitnode.free;
+                exit(cerrornode.create);
+              end;
+            exit(trylock_build(cs_syms, waitnode, body, elsebody, filepos));
+          end;
+        enter_block:=internalstatements(enter_stat);
+        for i:=0 to high(cs_syms) do
+          addstatement(enter_stat,
+            lock_build_cs_call('ENTERCRITICALSECTION', cs_syms[i]));
+        leave_block:=internalstatements(leave_stat);
+        for i:=high(cs_syms) downto 0 do
+          addstatement(leave_stat,
+            lock_build_cs_call('LEAVECRITICALSECTION', cs_syms[i]));
+        { an empty body cannot raise - acquire then release directly, skipping
+          the try-finally that would emit an unused exception frame }
+        if has_no_code(body) then
+          begin
+            body.free;
+            addstatement(enter_stat, leave_block);
+          end
+        else
+          addstatement(enter_stat, ctryfinallynode.create(body, leave_block));
+        enter_block.fileinfo:=filepos;
+        typecheckpass(tnode(enter_block));
+        result:=enter_block;
       end;
 
 

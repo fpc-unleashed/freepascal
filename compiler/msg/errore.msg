@@ -1857,6 +1857,32 @@ parser_e_field_bitsize_not_allowed_on_enum=03410_E_"bitsize N" is not allowed on
 % Per-field `bitsize N` has the same truncation hazard on an enum
 % field as `size N`. Use `(...) of T` to pick a narrower storage
 % type for the enum itself.
+parser_e_lock_arg_not_variable=03413_E_`lock` argument must be a variable reference
+% Inside the parenthesised list of `lock(...)` / `trylock(...)`, every entry
+% must name a variable directly (an identifier or qualified identifier).
+% Expressions, function calls, literals, and other non-variable forms are
+% not accepted.
+parser_e_lock_field_arg=03414_E_`lock` cannot target an instance field - use a global, class var, or an explicit `TRTLCriticalSection`
+% Locking on an instance field would require a per-instance critical
+% section, which the v1 implementation does not provide. Promote the lock
+% target to a global, a class var, or pass an explicit `TRTLCriticalSection`
+% variable that you manage yourself.
+parser_e_lock_local_arg=03415_E_`lock` auto-locking only supports global variables and class vars - for locals pass an explicit `TRTLCriticalSection`
+% Auto-generated critical sections live in the unit's init/fini sections,
+% so the target must be reachable from there. Local variables and
+% parameters do not qualify; use an explicit `TRTLCriticalSection` you
+% manage yourself, or move the variable to a global / class var.
+parser_e_trylock_needs_else=03416_E_`trylock` requires an `else` branch
+% A `trylock` may fail to acquire (the single attempt missed, or the `wait`
+% budget ran out) and then the body is skipped; the `else` branch states
+% what happens instead. If the body is an `if` without its own `else`,
+% wrap it in `begin..end` so the `else` binds to the `trylock`.
+parser_e_trylock_wait_negative=03417_E_`wait` value must be non-negative
+% A negative wait budget has no meaning. Drop the `wait` clause (or use
+% `wait 0`) for a single non-blocking attempt.
+parser_e_lock_no_wait=03418_E_`lock` cannot take a `wait` clause - use `trylock` for bounded acquisition
+% `lock` always blocks until every listed lock is acquired. When giving up
+% after a budget is wanted, use `trylock ... wait N do ... else ...`.
 %
 parser_e_interp_fmt_unit=03411_E_String interpolation format requires function "$1" in unit "$2" - add it to uses clause
 % The format mask after \var{:} in a string interpolation depends on a runtime

@@ -286,6 +286,11 @@ interface
           functions generated }
         used_rtti_attrs: tfpobjectlist;
 
+        { hidden TRTLCriticalSection vars generated for `lock`/`trylock` blocks in this
+          module; iterated at module finish to emit Init/Done calls in the unit's
+          init/final sections (entries are tstaticvarsym, not owned) }
+        lock_cs_syms: tfplist;
+
         { this contains a list of units (tmodule) that needs to be waited for until the
           unit can be finished (code generated, etc.); this is needed to handle
           specializations in circular unit usages correctly }
@@ -759,6 +764,7 @@ implementation
         waitingforunit:=tfpobjectlist.create(false);
         waitingunits:=tfpobjectlist.create(false);
         used_rtti_attrs:=tfpobjectlist.create(false);
+        lock_cs_syms:=tfplist.create;
         globalsymtable:=nil;
         localsymtable:=nil;
         globalmacrosymtable:=nil;
@@ -884,6 +890,8 @@ implementation
         waitingunits := nil;
         used_rtti_attrs.free;
         used_rtti_attrs := nil;
+        lock_cs_syms.free;
+        lock_cs_syms := nil;
         stringdispose(asmprefix);
         stringdispose(deprecatedmsg);
         stringdispose(namespace);
