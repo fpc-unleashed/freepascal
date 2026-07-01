@@ -20,6 +20,7 @@
   - [Static Variables](#static-variables)
   - [Thread-Static Variables](#thread-static-variables)
   - [Scoped Cleanup (defer, autofree, scoped with)](#scoped-cleanup)
+  - [Lock (lock, trylock)](#lock)
   - [For-Step](#for-step)
   - [Auto-Properties](#auto-properties)
   - [Tweaks](#tweaks)
@@ -74,6 +75,7 @@ The following modeswitches are enabled automatically:
 | `interpolatedstrings`              | `$'Hello {name}, age {age:%2d}'` placeholders                 |
 | `stringordcast`                    | Cast a string literal to an ordinal type (`dword('RIFF')`)    |
 | `autofree`                         | `defer STATEMENT`, `autofree EXPR`, scoped `with var x := ...` |
+| `lock`                             | `lock(v) do ...` / `trylock ... wait N do ... else ...` thread-safe blocks |
 | `flexiblearrays`                   | C99-style flexible array member as last record field (`array[] of T`) |
 | `typehelpers` + `multihelpers`     | Multiple type helpers per type, including primitive types     |
 
@@ -681,6 +683,36 @@ with var a := autofree TFoo.Create,
 The classic `with X do BODY` (no inline-var, no autofree) is unchanged.
 
 See [unleashed/docs/autofree.md](unleashed/docs/autofree.md) for the full grammar, lowering details, error catalogue, and edge cases.
+
+---
+
+### Lock
+
+**Activate:** available in Unleashed mode (modeswitch `lock`).
+
+Two statements that serialize access across threads on top of `TRTLCriticalSection`, with automatic Init/Done and guaranteed release via a hidden `try..finally`.
+
+`lock` blocks until acquired and cannot fail:
+
+```pascal
+lock do Inc(GUseCount);              // hidden per-callsite lock
+lock(counter) do Inc(counter);       // hidden per-variable lock, shared by
+                                     // every lock(counter) site in the program
+lock(a, b) do Transfer;              // multi-lock, deadlock-free ordering
+lock(MyCS) do Cache.Add(k, v);       // explicit TRTLCriticalSection, user-managed
+```
+
+`trylock` may miss - a single attempt by default, a bounded wait with `wait N` (milliseconds, Int64 expression) - and then runs the mandatory `else` branch without the lock:
+
+```pascal
+trylock(counter) do Inc(counter) else HandleBusy;
+trylock(a, b) wait 100 do Transfer else GiveUp;
+trylock(LogCS) do Flush(LogFile) else ;   // explicit "skip if busy"
+```
+
+Hidden critical sections are created per callsite (bare form) or per variable (`lock(v)` - the identifier is the lock name, shared program-wide) and wired into the unit's `initialization` / `finalization` automatically. Multi-lock sites sort the lock list by name, so `lock(a, b)` and `lock(b, a)` cannot deadlock each other; `trylock` on multiple locks is all-or-nothing with rollback. The wait machinery uses only `system`-unit primitives - no SysUtils dependency, no clock reads.
+
+See [unleashed/docs/lock.md](unleashed/docs/lock.md) for grammar, lowering, timing contract, and the error catalogue.
 
 ---
 
