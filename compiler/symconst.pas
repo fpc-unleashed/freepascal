@@ -479,7 +479,9 @@ type
     { compiled with fastmath enabled }
     pio_fastmath,
     { inline is forbidden (calls get_frame) }
-    pio_inline_forbidden
+    pio_inline_forbidden,
+    { auto zero-init every local variable at function entry }
+    pio_zeroinit
   );
   timplprocoptions = set of timplprocoption;
 

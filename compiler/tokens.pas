@@ -264,6 +264,7 @@ type
     _SAFECALL,
     _SUBTRACT,
     _SYSVBASE,
+    _ZEROINIT,
     _ASSEMBLER,
     _BASEFIRST,
     _BITPACKED,
@@ -623,6 +624,7 @@ var
       (str:'SAFECALL'      ;special:false;keyword:[m_none];op:NOTOKEN),
       (str:'SUBTRACT'      ;special:false;keyword:[m_none];op:NOTOKEN), { delphi operator name }
       (str:'SYSVBASE'      ;special:false;keyword:[m_none];op:NOTOKEN),   { Syscall variation on MorphOS }
+      (str:'ZEROINIT'      ;special:false;keyword:[m_none];op:NOTOKEN),
       (str:'ASSEMBLER'     ;special:false;keyword:[m_none];op:NOTOKEN),
       (str:'BASEFIRST'     ;special:false;keyword:[m_none];op:NOTOKEN),   { Syscall variation on Amiga-likes }
       (str:'BITPACKED'     ;special:false;keyword:alllanguagemodes-[m_iso,m_extpas];op:NOTOKEN),

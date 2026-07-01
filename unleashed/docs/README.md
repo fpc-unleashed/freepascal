@@ -74,6 +74,12 @@ Word-based modify-and-assign operators that the standard set is missing: `div=`,
 
 Always available in every mode; no modeswitch and independent of `{$coperators on}`.
 
+## [zeroinit Procedure Modifier](zeroinit.md)
+
+`procedure foo; zeroinit;` injects an implicit `Default(typeof(local))` assignment for every local variable at function entry, scaling automatically as locals are added or removed. Scales over stand-alone routines, methods, constructors, and destructors. The function `Result` is included. Anonymous compound types (inline `array[..] of T` / `record ... end` without a named alias) are silently skipped, since the underlying `Default()` machinery looks up a hidden zero-const through the type's symbol name and an anonymous type has none. Mutually exclusive with `external`, `interrupt`, and `assembler`. Reads of locals inside the routine no longer raise the uninitialised-variable warning.
+
+Unleashed-mode only; no separate modeswitch.
+
 ## [SwapValues Intrinsic](swapvalues.md)
 
 Builtin `SwapValues(a, b)` that swaps two same-typed assignable variables with a bitwise move, callable with no `uses` beyond the implicit `System` unit. For managed types (string, dynamic array, interface, Variant) it swaps the reference words with zero `incr_ref` / `decr_ref` churn; ordinals and pointer-sized operands lower to a register swap, larger types to a raw byte exchange. The point is to swap without dragging in SysUtils (`Swap<T>` / `Exchange<T>`) and its exception and handler setup. `SwapValues` is a fresh name with no RTL clash, and a user-declared `SwapValues` symbol shadows the builtin, so it never breaks existing code.
