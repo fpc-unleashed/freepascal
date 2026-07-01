@@ -1178,7 +1178,7 @@ implementation
           consume(_CLASS);
           { class modifier is only allowed for procedures, functions, }
           { constructors, destructors, fields and properties          }
-          if not((current_scanner.token in [_FUNCTION,_PROCEDURE,_PROPERTY,_VAR,_DESTRUCTOR,_THREADVAR]) or (current_scanner.token=_CONSTRUCTOR)) then
+          if not((current_scanner.token in [_FUNCTION,_PROCEDURE,_PROPERTY,_VAR,_THREADVAR]) or (current_scanner.token=_DESTRUCTOR) or (current_scanner.token=_CONSTRUCTOR)) then
             Message(parser_e_procedure_or_function_expected);
 
           { class properties currently can't have attributes }
