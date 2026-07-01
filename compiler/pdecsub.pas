@@ -2079,6 +2079,12 @@ begin
     Message(parser_e_dont_nest_interrupt);
 end;
 
+procedure pd_zeroinit(pd:tabstractprocdef);
+begin
+  if pd.typ=procdef then
+    include(tprocdef(pd).implprocoptions,pio_zeroinit);
+end;
+
 procedure pd_abstract(pd:tabstractprocdef);
 begin
   if pd.typ<>procdef then
@@ -2673,7 +2679,7 @@ type
    end;
 const
   {Should contain the number of procedure directives we support.}
-  num_proc_directives=55;
+  num_proc_directives=56;
 var
   proc_direcdata:array[1..num_proc_directives] of proc_dir_rec=
    (
@@ -3190,6 +3196,15 @@ var
       mutexclpocall : [];
       mutexclpotype : [potype_constructor,potype_destructor,potype_class_constructor,potype_class_destructor];
       mutexclpo     : [po_interrupt]
+    ),(
+      idtok:_ZEROINIT;
+      pd_flags : [pd_interface,pd_implemen,pd_body,pd_notobjintf];
+      handler  : @pd_zeroinit;
+      pocall   : pocall_none;
+      pooption : [];
+      mutexclpocall : [];
+      mutexclpotype : [];
+      mutexclpo     : [po_external,po_interrupt,po_assembler]
     )
    );
 

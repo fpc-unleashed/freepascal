@@ -1562,7 +1562,15 @@ implementation
                             not(vo_is_external in hsym.varoptions) and
                             (hsym.owner.symtabletype in [parasymtable,localsymtable,staticsymtable]) and
                             ((hsym.owner=current_procinfo.procdef.localst) or
-                             (hsym.owner=current_procinfo.procdef.parast)) then
+                             (hsym.owner=current_procinfo.procdef.parast)) and
+                            { the `zeroinit` modifier injects a Default() write
+                              for every local at function entry, so reads here
+                              are already initialised }
+                            not(
+                              (pio_zeroinit in current_procinfo.procdef.implprocoptions) and
+                              (hsym.owner=current_procinfo.procdef.localst) and
+                              (hsym.typ=localvarsym)
+                            ) then
                            begin
                              if vsf_use_hints in varstateflags then
                                include(tloadnode(p).loadnodeflags,loadnf_only_uninitialized_hint);

@@ -137,7 +137,7 @@ implementation
        paramgr,
        fmodule,
        { pass 1 }
-       ngenutil,nld,ncal,ncon,nflw,nadd,ncnv,nmem,
+       ngenutil,nld,ncal,ncon,nflw,nadd,ncnv,nmem,ninl,compinnr,
        pass_1,
     {$ifdef state_tracking}
        nstate,
@@ -2546,6 +2546,55 @@ implementation
       end;
 
 
+    { prepend `localvar := Default(typeof(localvar))` for every tlocalvarsym
+      in pd.localst. Anonymous compound types (arraydef/recorddef without
+      typesym) are skipped because handle_default mangles a hidden zero-const
+      off the typesym name, and inline declarations like
+      `var arr: array[0..3] of Integer` would otherwise crash compilation. }
+    procedure inject_zeroinit_locals(pd:tprocdef;var code:tnode);
+      var
+        i : longint;
+        sym : tsym;
+        lvs : tlocalvarsym;
+        blk : tblocknode;
+        laststmt : tstatementnode;
+        had_any : boolean;
+        zeronode : tnode;
+      begin
+        had_any:=false;
+        blk:=nil;
+        laststmt:=nil;
+        for i:=0 to pd.localst.symlist.count-1 do
+          begin
+            sym:=tsym(pd.localst.symlist[i]);
+            if sym.typ<>localvarsym then
+              continue;
+            lvs:=tlocalvarsym(sym);
+            if (lvs.vardef.typ in [arraydef,recorddef,variantdef,objectdef,procvardef]) and
+               not assigned(lvs.vardef.typesym) then
+              continue;
+            if not had_any then
+              begin
+                blk:=internalstatements(laststmt);
+                had_any:=true;
+              end;
+            zeronode:=cinlinenode.create(in_default_x,false,
+              ctypenode.create(lvs.vardef));
+            addstatement(laststmt,
+              cassignmentnode.create(
+                cloadnode.create(lvs,lvs.owner),
+                zeronode));
+          end;
+        if had_any and assigned(code) then
+          begin
+            addstatement(laststmt,code);
+            code:=blk;
+          end
+        else if had_any then
+          code:=blk;
+      end;
+
+
     { For each hidden '$dtup_*' param, prepends assignments from the
       param's fields to the corresponding local vars. }
     procedure inject_tuple_destructure_assigns(pd:tprocdef;var code:tnode);
@@ -2706,6 +2755,10 @@ implementation
 
          { inject destructured tuple param assignments at start of body }
          inject_tuple_destructure_assigns(procdef,code);
+
+         { inject zero-assignments at start of body for `zeroinit` routines }
+         if pio_zeroinit in procdef.implprocoptions then
+           inject_zeroinit_locals(procdef,code);
 
          postprocess_capturer(self);
 
