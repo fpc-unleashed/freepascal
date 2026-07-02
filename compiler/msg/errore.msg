@@ -1908,6 +1908,11 @@ parser_e_async_no_var_param=03430_E_`async` cannot pass a `var` or `out` argumen
 % silently never update the caller's variable. Use the block form
 % `async begin ... end`, which captures locals by reference, or return the
 % value through the future instead.
+parser_e_async_no_nested=03431_E_`async` cannot run a nested routine - it needs the enclosing frame, which may be gone before the worker runs
+% A nested routine reaches its parent's locals through the enclosing stack
+% frame, but the worker thread runs independently of that frame's lifetime.
+% Move the work to a top-level routine (or a method) and pass what it needs
+% as arguments.
 %
 parser_e_interp_fmt_unit=03411_E_String interpolation format requires function "$1" in unit "$2" - add it to uses clause
 % The format mask after \var{:} in a string interpolation depends on a runtime
@@ -1947,7 +1952,7 @@ parser_e_auto_property_init_context=03425_E_Property initializer requires an acc
 %
 # Type Checking
 #
-# 03430 is the last used parser one
+# 03431 is the last used parser one
 #
 # 04136 is the last used one
 #
