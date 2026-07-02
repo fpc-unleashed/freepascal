@@ -137,7 +137,7 @@ implementation
        paramgr,
        fmodule,
        { pass 1 }
-       ngenutil,nld,ncal,ncon,nflw,nadd,ncnv,nmem,ninl,compinnr,
+       ngenutil,nld,ncal,ncon,nflw,nadd,ncnv,nmem,ninl,compinnr,htypechk,
        pass_1,
     {$ifdef state_tracking}
        nstate,
@@ -2547,10 +2547,9 @@ implementation
 
 
     { prepend `localvar := Default(typeof(localvar))` for every tlocalvarsym
-      in pd.localst. Anonymous compound types (arraydef/recorddef without
-      typesym) are skipped because handle_default mangles a hidden zero-const
-      off the typesym name, and inline declarations like
-      `var arr: array[0..3] of Integer` would otherwise crash compilation. }
+      in pd.localst. File types (and compounds containing them) are skipped:
+      Default() rejects them and the RTL entry code already initialises file
+      variables to their proper non-zero closed state. }
     procedure inject_zeroinit_locals(pd:tprocdef;var code:tnode);
       var
         i : longint;
@@ -2570,8 +2569,9 @@ implementation
             if sym.typ<>localvarsym then
               continue;
             lvs:=tlocalvarsym(sym);
-            if (lvs.vardef.typ in [arraydef,recorddef,variantdef,objectdef,procvardef]) and
-               not assigned(lvs.vardef.typesym) then
+            if (lvs.vardef.typ=filedef) or
+               ((lvs.vardef.typ in [arraydef,recorddef,objectdef]) and
+                not is_valid_for_default(lvs.vardef)) then
               continue;
             if not had_any then
               begin

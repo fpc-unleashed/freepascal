@@ -504,7 +504,12 @@ implementation
             routines -- that's also why we prefix with '$_', so it will still
             work if make_mangledname() would somehow return a name that already
             starts with '$' }
-          defaultname:='$_'+make_mangledname('zero',def.owner,def.typesym.Name);
+          { anonymous compound types have no typesym, so key the hidden
+            zero-const off the def's unique id, like rtti_mangledname does }
+          if assigned(def.typesym) then
+            defaultname:='$_'+make_mangledname('zero',def.owner,def.typesym.Name)
+          else
+            defaultname:='$_'+make_mangledname('zero',findunitsymtable(def.owner),'def'+tstoreddef(def).unique_id_str);
           { can't hardcode the position of the '$', e.g. on darwin an underscore
             is added }
           hashedid.id:=copy(defaultname,2,255);
