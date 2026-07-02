@@ -76,7 +76,7 @@ Always available in every mode; no modeswitch and independent of `{$coperators o
 
 ## [zeroinit Procedure Modifier](zeroinit.md)
 
-`procedure foo; zeroinit;` injects an implicit `Default(typeof(local))` assignment for every local variable at function entry, scaling automatically as locals are added or removed. Scales over stand-alone routines, methods, constructors, and destructors. The function `Result` is included. Anonymous compound types (inline `array[..] of T` / `record ... end` without a named alias) are silently skipped, since the underlying `Default()` machinery looks up a hidden zero-const through the type's symbol name and an anonymous type has none. Mutually exclusive with `external`, `interrupt`, and `assembler`. Reads of locals inside the routine no longer raise the uninitialised-variable warning.
+`procedure foo; zeroinit;` injects an implicit `Default(typeof(local))` assignment for every local variable at function entry, scaling automatically as locals are added or removed. Scales over stand-alone routines, methods, constructors, and destructors. The function `Result` is included, and anonymous compound types (inline `array[..] of T` / `record ... end` without a named alias) are covered like any other local. File-type locals keep their RTL init (their proper closed state is not all-zeros). Mutually exclusive with `external`, `interrupt`, and `assembler`. Reads of locals inside the routine no longer raise the uninitialised-variable warning.
 
 Unleashed-mode only; no separate modeswitch.
 
