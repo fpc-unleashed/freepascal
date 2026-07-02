@@ -318,16 +318,18 @@ implementation
       origprocsym : tprocsym;
       origst : tsymtable;
       elemdef,
-      selfdef : tdef;
+      selfdef,
+      pvdef : tdef;
       isvoid,
       ismethod,
+      isprocvar,
       isinline : boolean;
       inlinework : tnode;
       argnodes,
       argdefs,
       argfields,
       spawnargsyms : tfplist;
-      fEvent,fExc,fKeep,fRes,fSelf : tfieldvarsym;
+      fEvent,fExc,fKeep,fRes,fSelf,fPv : tfieldvarsym;
       thunkpd,spawnpd,awaitpd : tprocdef;
       implsym : tlocalvarsym;
       pparam : tparavarsym;
@@ -439,6 +441,8 @@ implementation
       spawnargsyms:=tfplist.create;
       { a statement-shaped intrinsic (writeln etc.) is moved to the worker as-is
         and yields a bare future; a routine call snapshots its arguments }
+      isprocvar:=false;
+      pvdef:=nil;
       isinline:=an.left.nodetype<>calln;
       if isinline then
         begin
@@ -456,6 +460,11 @@ implementation
           origprocsym:=origcall.symtableprocentry;
           origst:=origcall.symtableproc;
           ismethod:=assigned(origcall.methodpointer);
+          { a call through a procedural variable carries the procvar expression
+            in `right`; snapshot it like any other argument }
+          isprocvar:=assigned(origcall.right);
+          if isprocvar then
+            pvdef:=origcall.right.resultdef;
           { collect the call arguments (detaching them so they move to the
             factory call), recording each type for the snapshot field/parameter }
           cpn:=tcallparanode(origcall.left);
@@ -496,6 +505,9 @@ implementation
           selfdef:=origcall.methodpointer.resultdef;
           fSelf:=add_field('__self',selfdef);
         end;
+      fPv:=nil;
+      if isprocvar then
+        fPv:=add_field('__pv',pvdef);
       for i:=0 to argdefs.count-1 do
         argfields.add(add_field('__a'+tostr(i),tdef(argdefs[i])));
 
@@ -520,7 +532,9 @@ implementation
           newparams:=nil;
           for i:=0 to argfields.count-1 do
             newparams:=ccallparanode.create(impl_field(tfieldvarsym(argfields[i])),newparams);
-          if ismethod then
+          if isprocvar then
+            workcall:=ccallnode.create_procvar(newparams,impl_field(fPv))
+          else if ismethod then
             workcall:=ccallnode.create(newparams,origprocsym,origst,impl_field(fSelf),[],nil)
           else
             workcall:=ccallnode.create(newparams,origprocsym,origst,nil,[],nil);
@@ -577,6 +591,11 @@ implementation
         begin
           spawnselfpara:=cparavarsym.create('aself',5,vs_value,selfdef,[]);
           spawnpd.parast.insertsym(spawnselfpara);
+        end
+      else if isprocvar then
+        begin
+          spawnselfpara:=cparavarsym.create('apv',5,vs_value,pvdef,[]);
+          spawnpd.parast.insertsym(spawnselfpara);
         end;
       for i:=0 to argdefs.count-1 do
         begin
@@ -593,6 +612,9 @@ implementation
           cloadvmtaddrnode.create(ctypenode.create(clsdef)),[],nil)));
       if ismethod then
         addstatement(stmt,cassignmentnode.create(impl_field(fSelf),
+          cloadnode.create(spawnselfpara,spawnselfpara.owner)))
+      else if isprocvar then
+        addstatement(stmt,cassignmentnode.create(impl_field(fPv),
           cloadnode.create(spawnselfpara,spawnselfpara.owner)));
       for i:=0 to argdefs.count-1 do
         begin
@@ -622,6 +644,11 @@ implementation
         begin
           callparams:=ccallparanode.create(origcall.methodpointer,nil);
           origcall.methodpointer:=nil;
+        end
+      else if isprocvar then
+        begin
+          callparams:=ccallparanode.create(origcall.right,nil);
+          origcall.right:=nil;
         end;
       for i:=0 to argnodes.count-1 do
         callparams:=ccallparanode.create(tnode(argnodes[i]),callparams);
