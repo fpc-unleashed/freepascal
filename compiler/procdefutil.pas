@@ -175,6 +175,7 @@ implementation
   function resolve_async_future(left:tnode;isblock:boolean):tdef;
     var
       refslocal : boolean;
+      cpn : tcallparanode;
     begin
       if isblock then
         begin
@@ -204,6 +205,24 @@ implementation
               MessagePos(left.fileinfo,parser_e_async_stmt_captures_local);
               result:=generrordef;
               exit;
+            end;
+        end;
+      { a var/out argument cannot survive the by-value snapshot: the worker
+        would write to the copy and the caller's variable would never change }
+      if left.nodetype=calln then
+        begin
+          cpn:=tcallparanode(tcallnode(left).left);
+          while assigned(cpn) do
+            begin
+              if assigned(cpn.parasym) and
+                 not (vo_is_hidden_para in cpn.parasym.varoptions) and
+                 (cpn.parasym.varspez in [vs_var,vs_out]) then
+                begin
+                  MessagePos(cpn.fileinfo,parser_e_async_no_var_param);
+                  result:=generrordef;
+                  exit;
+                end;
+              cpn:=tcallparanode(cpn.right);
             end;
         end;
       if not assigned(left.resultdef) or is_void(left.resultdef) then
