@@ -2,8 +2,6 @@ program zeroinit_array_05;
 
 {$mode unleashed}
 
-// anonymous compound types skip auto-zeroing because Default() needs
-// a typesym to look up the hidden zero-const, so use a named array type
 type
   TArr4 = array[0..3] of Integer;
 

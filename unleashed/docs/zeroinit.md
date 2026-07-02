@@ -58,33 +58,24 @@ procedure DoNothing; external 'foo.dll'; zeroinit;  // rejected
 
 The function `Result` variable is treated as a regular local: it is also zeroed. For a function with a managed return type FPC already zeroes the result anyway, so this only changes behaviour for unmanaged types - which is usually what you want, since the result you read before assigning was previously indeterminate.
 
-## Anonymous compound types: silently skipped
+## Anonymous compound types
 
-A local declared with an inline anonymous compound type (no named alias) is **not** zeroed:
+Locals declared with an inline anonymous compound type are covered like any other local:
 
 ```pas
 procedure Foo; zeroinit;
 var
-  arr: array[0..3] of Integer;  // anonymous - skipped
-  i: Integer;                   // covered
+  arr: array[0..3] of Integer;       // zeroed
+  rec: record a, b: Integer; end;    // zeroed
+  i: Integer;                        // zeroed
 begin
-  // i = 0, arr is still whatever the stack carried
+  // everything above is zero here
 end;
 ```
 
-The reason is internal: `Default(T)` looks up a hidden zero-value typed constant via `T`'s symbol name, and an inline anonymous type has no symbol to mangle. The implementation skips those locals to avoid crashing the compiler. Workaround: name the type.
+## File types: kept on RTL init
 
-```pas
-type
-  TArr4 = array[0..3] of Integer;
-
-procedure Foo; zeroinit;
-var
-  arr: TArr4;  // named alias - covered
-begin
-  // arr[0..3] all zero
-end;
-```
+A local of a file type (`Text`, `file`, `file of T`) - or a compound containing one - is not touched. The RTL entry code already initialises file variables, and their proper initial state (closed) is deliberately not all-zeros, so zero-filling would corrupt them. All other locals in the same routine are still zeroed.
 
 ## Codegen
 
