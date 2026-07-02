@@ -207,6 +207,16 @@ implementation
               exit;
             end;
         end;
+      { a nested routine reads its parent's frame, which the worker outlives;
+        this also catches procvars with the nested calling convention }
+      if (left.nodetype=calln) and
+         assigned(tcallnode(left).procdefinition) and
+         is_nested_pd(tcallnode(left).procdefinition) then
+        begin
+          MessagePos(left.fileinfo,parser_e_async_no_nested);
+          result:=generrordef;
+          exit;
+        end;
       { a var/out argument cannot survive the by-value snapshot: the worker
         would write to the copy and the caller's variable would never change }
       if left.nodetype=calln then
