@@ -293,6 +293,78 @@ implementation
     end;
 
 
+  { synthesize `destructor Destroy; override;` on a future-impl class: releases
+    the RTL event, a swallowed worker exception (never awaited), and the thread
+    handle. no `inherited` call - TObject.Destroy is an empty stub and the
+    managed fields are finalized by FreeInstance after the destructor chain }
+  procedure async_add_destructor(clsdef:tobjectdef;fEvent,fExc,fTid:tfieldvarsym);
+    var
+      pd : tprocdef;
+      oldstack : tsymtablestack;
+      selfsym,sym : tsym;
+      body : tnode;
+      stmt : tstatementnode;
+      i : longint;
+
+    function fld(f:tfieldvarsym):tnode;
+      begin
+        result:=csubscriptnode.create(f,cloadnode.create(selfsym,selfsym.owner));
+      end;
+
+    begin
+      oldstack:=symtablestack;
+      symtablestack:=nil;
+      pd:=cprocdef.create(normal_function_level,false);
+      pd.struct:=clsdef;
+      pd.proctypeoption:=potype_destructor;
+      pd.returndef:=voidtype;
+      pd.proccalloption:=pocall_default;
+      include(pd.procoptions,po_hascallingconvention);
+      include(pd.procoptions,po_virtualmethod);
+      include(pd.procoptions,po_overridingmethod);
+      exclude(pd.procoptions,po_delphi_nested_cc);
+      pd.forwarddef:=false;
+      pd.procsym:=cprocsym.create('Destroy');
+      pd.visibility:=vis_public;
+      clsdef.symtable.insertsym(pd.procsym);
+      clsdef.symtable.insertdef(pd);
+      handle_calling_convention(pd,hcc_default_actions_impl);
+      proc_add_definition(pd);
+      insert_funcret_local(pd);
+      pd.calcparas;
+      symtablestack:=oldstack;
+      { the hidden `$vmt` parameter got a fresh classrefdef while the symtable
+        stack was nil, leaving it unowned - codegen walks a def's owner chain,
+        so adopt it into the module }
+      for i:=0 to pd.parast.symlist.count-1 do
+        begin
+          sym:=tsym(pd.parast.symlist[i]);
+          if (sym.typ=paravarsym) and (vo_is_vmt in tparavarsym(sym).varoptions) and
+             not assigned(tparavarsym(sym).vardef.owner) then
+            current_module.localsymtable.insertdef(tparavarsym(sym).vardef);
+        end;
+      selfsym:=async_find_self(pd);
+      body:=internalstatements(stmt);
+      addstatement(stmt,cifnode.create(
+        caddnode.create(unequaln,fld(fEvent),cnilnode.create),
+        ccallnode.createintern('RTLEVENTDESTROY',ccallparanode.create(fld(fEvent),nil)),
+        nil));
+      addstatement(stmt,cifnode.create(
+        caddnode.create(unequaln,fld(fExc),cnilnode.create),
+        ccallnode.create(nil,tprocsym(class_tobject.symtable.find('FREE')),class_tobject.symtable,fld(fExc),[],nil),
+        nil));
+      { TThreadID is ordinal on some targets and pointer-like on others, so
+        compare against a zero constant cast to it (folds at typecheck) }
+      addstatement(stmt,cifnode.create(
+        caddnode.create(unequaln,
+          fld(fTid),
+          ctypeconvnode.create_internal(cordconstnode.create(0,ptruinttype,false),fTid.vardef)),
+        ccallnode.createintern('CLOSETHREAD',ccallparanode.create(fld(fTid),nil)),
+        nil));
+      async_defer_method(pd,body);
+    end;
+
+
   { `await f` -> f.__Await (a plain interface method call) }
   function build_one_await(an:tawaitnode):tnode;
     var
@@ -336,7 +408,7 @@ implementation
       argdefs,
       argfields,
       spawnargsyms : tfplist;
-      fEvent,fExc,fKeep,fRes,fSelf,fPv : tfieldvarsym;
+      fEvent,fExc,fKeep,fRes,fSelf,fPv,fTid : tfieldvarsym;
       thunkpd,spawnpd,awaitpd : tprocdef;
       implsym : tlocalvarsym;
       pparam : tparavarsym;
@@ -503,6 +575,7 @@ implementation
       fEvent:=add_field('__event',search_system_type('PRTLEVENT').typedef);
       fExc:=add_field('__exc',class_tobject);
       fKeep:=add_field('__keepalive',interface_iunknown);
+      fTid:=add_field('__tid',search_system_type('TTHREADID').typedef);
       fRes:=nil;
       if not isvoid then
         fRes:=add_field('__res',elemdef);
@@ -631,15 +704,17 @@ implementation
         end;
       addstatement(stmt,cassignmentnode.create(impl_field(fEvent),rtl('RTLEVENTCREATE',nil)));
       addstatement(stmt,cassignmentnode.create(impl_field(fKeep),cloadnode.create(implsym,implsym.owner)));
-      addstatement(stmt,rtl('BEGINTHREAD',
+      addstatement(stmt,cassignmentnode.create(impl_field(fTid),rtl('BEGINTHREAD',
         ccallparanode.create(
           ctypeconvnode.create_internal(cloadnode.create(implsym,implsym.owner),voidpointertype),
           ccallparanode.create(
             ctypeconvnode.create_proc_to_procvar(cloadnode.create_procvar(thunkpd.procsym,thunkpd,thunkpd.procsym.owner)),
-            nil))));
+            nil)))));
       addstatement(stmt,cassignmentnode.create(
         cloadnode.create(spawnpd.funcretsym,spawnpd.funcretsym.owner),cloadnode.create(implsym,implsym.owner)));
       async_defer_method(spawnpd,body);
+
+      async_add_destructor(clsdef,fEvent,fExc,fTid);
 
       build_vmt(clsdef);
 
@@ -681,7 +756,7 @@ implementation
       futureintf : tobjectdef;
       procnode : tnode;
       procreftype : tdef;
-      fEvent,fExc,fKeep,fProc : tfieldvarsym;
+      fEvent,fExc,fKeep,fProc,fTid : tfieldvarsym;
       thunkpd,spawnpd,awaitpd : tprocdef;
       implsym : tlocalvarsym;
       pparam,procparam : tparavarsym;
@@ -787,6 +862,7 @@ implementation
       fExc:=add_field('__exc',class_tobject);
       fKeep:=add_field('__keepalive',interface_iunknown);
       fProc:=add_field('__proc',procreftype);
+      fTid:=add_field('__tid',search_system_type('TTHREADID').typedef);
 
       { ---- __Thunk: invoke the captured reference on the worker thread ---- }
       thunkpd:=new_method('__Thunk',ptrsinttype,true);
@@ -843,15 +919,17 @@ implementation
         cloadnode.create(procparam,procparam.owner)));
       addstatement(stmt,cassignmentnode.create(impl_field(fEvent),rtl('RTLEVENTCREATE',nil)));
       addstatement(stmt,cassignmentnode.create(impl_field(fKeep),cloadnode.create(implsym,implsym.owner)));
-      addstatement(stmt,rtl('BEGINTHREAD',
+      addstatement(stmt,cassignmentnode.create(impl_field(fTid),rtl('BEGINTHREAD',
         ccallparanode.create(
           ctypeconvnode.create_internal(cloadnode.create(implsym,implsym.owner),voidpointertype),
           ccallparanode.create(
             ctypeconvnode.create_proc_to_procvar(cloadnode.create_procvar(thunkpd.procsym,thunkpd,thunkpd.procsym.owner)),
-            nil))));
+            nil)))));
       addstatement(stmt,cassignmentnode.create(
         cloadnode.create(spawnpd.funcretsym,spawnpd.funcretsym.owner),cloadnode.create(implsym,implsym.owner)));
       async_defer_method(spawnpd,body);
+
+      async_add_destructor(clsdef,fEvent,fExc,fTid);
 
       build_vmt(clsdef);
 

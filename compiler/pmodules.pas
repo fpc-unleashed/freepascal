@@ -1019,9 +1019,11 @@ implementation
         i : longint;
         tpi : tcgprocinfo;
         tpd : tprocdef;
+        old_current_structdef : tabstractrecorddef;
       begin
         if not assigned(curr.async_thunks) then
           exit;
+        old_current_structdef:=current_structdef;
         for i:=0 to curr.async_thunks.count-1 do
           begin
             tpi:=tcgprocinfo(curr.async_thunks[i]);
@@ -1030,6 +1032,9 @@ implementation
             include(tpi.flags,pi_do_call);
             curr.procinfo:=tpi;
             current_procinfo:=tpi;
+            { the entry/exit code of a method (esp. a destructor's implicit
+              fpc_help_destructor call) reads the owning class from here }
+            current_structdef:=tabstractrecorddef(tpd.struct);
             tpi.entrypos:=tpd.fileinfo;
             tpi.entryswitches:=current_settings.localswitches;
             tpi.exitpos:=tpd.fileinfo;
@@ -1043,6 +1048,7 @@ implementation
             symtablestack.pop(tpd.parast);
             tpi.generate_code_tree;
             tpi.resetprocdef;
+            current_structdef:=old_current_structdef;
             current_procinfo:=nil;
             curr.procinfo:=nil;
           end;
