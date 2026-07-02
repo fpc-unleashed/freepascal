@@ -1902,6 +1902,12 @@ parser_e_future_needs_await=03428_E_future value used without `await` - call `aw
 % read the computed value (and block until the worker finishes), apply `await`.
 % A future has no other readable representation, so it cannot be printed,
 % concatenated, or converted directly.
+parser_e_async_no_var_param=03430_E_`async` cannot pass a `var` or `out` argument - the snapshot would drop the worker's writes
+% The call form of `async` copies every argument by value at the spawn point
+% and the worker writes only to those copies, so a `var`/`out` parameter would
+% silently never update the caller's variable. Use the block form
+% `async begin ... end`, which captures locals by reference, or return the
+% value through the future instead.
 %
 parser_e_interp_fmt_unit=03411_E_String interpolation format requires function "$1" in unit "$2" - add it to uses clause
 % The format mask after \var{:} in a string interpolation depends on a runtime
@@ -1941,7 +1947,7 @@ parser_e_auto_property_init_context=03425_E_Property initializer requires an acc
 %
 # Type Checking
 #
-# 03429 is the last used parser one
+# 03430 is the last used parser one
 #
 # 04136 is the last used one
 #
