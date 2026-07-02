@@ -1910,12 +1910,25 @@ implementation
            objectdef :
              begin
                { object pascal objects }
+               { two independently synthesized `future of T` interfaces are the
+                 same type when their element types match: each module interns
+                 its own def instance, but the layout is identical (a single
+                 `__Await` method on IUnknown), so compare structurally }
+               if is_future_intf(def_to) and
+                  is_future_intf(def_from) and
+                  assigned(get_future_element_def(def_from)) and
+                  assigned(get_future_element_def(def_to)) and
+                  equal_defs(get_future_element_def(def_from),get_future_element_def(def_to)) then
+                begin
+                  doconv:=tc_equal;
+                  eq:=te_equal;
+                end
                { don't call def_is_related if we came here from equal_defs, because
                    1) this can never result in an "equal result", and
                    2) def_is_related itself calls equal_defs again for each class in
                       the hierarchy, which will call compare_defs_ext, which will again
                       call def_is_related -> quadratic complexity explosion }
-               if not(cdo_equal_check in cdoptions) and
+               else if not(cdo_equal_check in cdoptions) and
                   (def_from.typ=objectdef) and
                   (def_is_related(tobjectdef(def_from),tobjectdef(def_to))) then
                 begin
