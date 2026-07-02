@@ -538,6 +538,16 @@ implementation
           isvoid:=(elemdef=nil) or is_void(elemdef);
           origprocsym:=origcall.symtableprocentry;
           origst:=origcall.symtableproc;
+          { for a specialized generic, re-resolving through the generic's
+            procsym would land on the unspecialized def (T still open); bind
+            the rebuilt call to the specialization's own symbol instead }
+          if assigned(origcall.procdefinition) and
+             (origcall.procdefinition.typ=procdef) and
+             (df_specialization in origcall.procdefinition.defoptions) then
+            begin
+              origprocsym:=tprocsym(tprocdef(origcall.procdefinition).procsym);
+              origst:=origprocsym.owner;
+            end;
           ismethod:=assigned(origcall.methodpointer);
           { a call through a procedural variable carries the procvar expression
             in `right`; snapshot it like any other argument }
