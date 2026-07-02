@@ -115,20 +115,23 @@ implementation
       sym : tsym;
       symowner : tsymtable;
     begin
-      { intern in a table that lives for the whole module and is present in both
-        the interface and the implementation: a unit's globalsymtable (also
-        visible to importers), or a program's localsymtable }
-      if assigned(current_module.globalsymtable) then
-        symowner:=current_module.globalsymtable
-      else
-        symowner:=current_module.localsymtable;
       if assigned(elemdef) then
         name:='$FUTURE$'+tostr(elemdef.defid)
       else
         name:='$FUTURE$VOID';
-      { symtable stores `$`-prefixed names without the leading `$` (marks them
+      { intern in a table that lives for the whole module: a unit's
+        globalsymtable while its interface is being parsed (visible to
+        importers), the localsymtable afterwards - inserting into the
+        globalsymtable once the interface is closed would add a def behind the
+        already-built PPU registration and break the deref pass. lookup checks
+        both, so an interface-interned future is found from the implementation.
+        symtable stores `$`-prefixed names without the leading `$` (marks them
         inaccessible to users), so search under the stripped key }
-      sym:=tsym(symowner.find(copy(name,2,length(name))));
+      sym:=nil;
+      if assigned(current_module.globalsymtable) then
+        sym:=tsym(current_module.globalsymtable.find(copy(name,2,length(name))));
+      if not assigned(sym) and assigned(current_module.localsymtable) then
+        sym:=tsym(current_module.localsymtable.find(copy(name,2,length(name))));
       if assigned(sym) then
         begin
           if (sym.typ<>typesym) or not is_future_intf(ttypesym(sym).typedef) then
@@ -136,6 +139,10 @@ implementation
           result:=tobjectdef(ttypesym(sym).typedef);
           exit;
         end;
+      if current_module.in_interface then
+        symowner:=current_module.globalsymtable
+      else
+        symowner:=current_module.localsymtable;
 
       result:=cobjectdef.create(odt_interfacecom,name,interface_iunknown,false);
       include(result.objectoptions,oo_has_virtual);
