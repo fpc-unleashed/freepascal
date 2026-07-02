@@ -4520,7 +4520,11 @@ implementation
                        p1:=casyncnode.create(p1,true);
                      end
                    else
-                     p1:=casyncnode.create(factor(false,[]),false);
+                     { parse a full expression, not a factor: a generic
+                       specialization (`async Foo<Bar>(x)`) is disambiguated at
+                       the operator level. anything that is not a call is
+                       rejected during typecheck anyway }
+                     p1:=casyncnode.create(comp_expr([]),false);
                    again:=false;
                    exit;
                  end;
