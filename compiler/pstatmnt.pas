@@ -959,6 +959,14 @@ implementation
           cnodeutils.insertbssdata(tstaticvarsym(result));
       end;
 
+    { load a read-only worker-local for an internal write; the flag lets the
+      assignment pass the const check that blocks user code }
+    function parfor_load_ignoreconst(sym: tabstractnormalvarsym): tnode;
+      begin
+        result:=cloadnode.create(sym,sym.owner);
+        include(tloadnode(result).loadnodeflags,loadnf_isinternal_ignoreconst);
+      end;
+
     function for_statement : tnode;
 
         procedure check_range(hp:tnode; fordef: tdef);
@@ -1587,13 +1595,13 @@ implementation
               thunkpvs : tparavarsym;
               wst : tsymtable;
               oldsymstack : tsymtablestack;
-              isym,idxsym,basesym,lastsym,parlo,parstep,parcount,parcounter,parwp,
-              parnthreads,parkvar,partids,parexc,parexctaken,parcancel,parchunk : tabstractnormalvarsym;
+              isym,idxsym,basesym,lastsym,widsym,wcntsym,parlo,parstep,parcount,parcounter,parwp,
+              parnthreads,parkvar,partids,parexc,parexctaken,parcancel,parchunk,parslot : tabstractnormalvarsym;
               tidtype,tidarrtype : tdef;
               excstat : tstatementnode;
               workerbody : tnode;
               old_procinfo : tprocinfo;
-              dispstat,innerstat,parstat : tstatementnode;
+              dispstat,innerstat,setupstat,parstat : tstatementnode;
             begin
               result:=nil;
               threadcount:=nil;
@@ -1800,6 +1808,8 @@ implementation
               parcancel:=parfor_make_local(old_procinfo.procdef,'$parcncl'+workerpd.unique_id_str,s32inttype);
               include(parcancel.varoptions,vo_volatile);
               parchunk:=parfor_make_local(old_procinfo.procdef,'$parchk'+workerpd.unique_id_str,dispdef);
+              parslot:=parfor_make_local(old_procinfo.procdef,'$parslot'+workerpd.unique_id_str,s32inttype);
+              parnthreads:=parfor_make_local(old_procinfo.procdef,'$parnth'+workerpd.unique_id_str,s32inttype);
 
               { parse the body in the worker context }
               current_procinfo:=workerpi;
@@ -1813,6 +1823,15 @@ implementation
               idxsym:=parfor_make_local(workerpd,'$idx',dispdef);
               basesym:=parfor_make_local(workerpd,'$base',dispdef);
               lastsym:=parfor_make_local(workerpd,'$last',dispdef);
+              { visible in the body: which worker this is (0..WorkerCount-1,
+                claimed from an atomic slot at worker entry) and the pool size }
+              widsym:=parfor_make_local(workerpd,'WorkerIndex',s32inttype);
+              wcntsym:=parfor_make_local(workerpd,'WorkerCount',s32inttype);
+              widsym.varstate:=vs_initialised;
+              wcntsym.varstate:=vs_initialised;
+              { read-only in the body; only the worker entry writes them }
+              widsym.varspez:=vs_const;
+              wcntsym.varspez:=vs_const;
               { the dispatch assigns the loop variable before every body run }
               isym.varstate:=vs_initialised;
               include(isym.varoptions,vo_is_loop_counter);
@@ -1877,6 +1896,17 @@ implementation
                 cassignmentnode.create(cloadnode.create(lastsym,lastsym.owner),cloadnode.create(parcount,parcount.owner)),nil));
               addstatement(dispstat,innerloop);
               workerloop:=cwhilerepeatnode.create(cordconstnode.create(0,pasbool1type,false),workerloop,false,true);
+              { worker entry: claim a worker slot, publish the pool size }
+              iexpr:=workerloop;
+              workerloop:=internalstatements(setupstat);
+              addstatement(setupstat,cassignmentnode.create(parfor_load_ignoreconst(widsym),
+                caddnode.create(subn,
+                  ccallnode.createintern('INTERLOCKEDINCREMENT',
+                    ccallparanode.create(cloadnode.create(parslot,parslot.owner),nil)),
+                  cordconstnode.create(1,s32inttype,false))));
+              addstatement(setupstat,cassignmentnode.create(parfor_load_ignoreconst(wcntsym),
+                cloadnode.create(parnthreads,parnthreads.owner)));
+              addstatement(setupstat,iexpr);
               { wrap the dispatch in try/except: the first worker to fault claims
                 the exception with an atomic flag and hands it to the caller, the
                 rest drop theirs.
@@ -1955,7 +1985,6 @@ implementation
               tidarrtype:=carraydef.create(0,255,s32inttype);
               tarraydef(tidarrtype).elementdef:=tidtype;
               partids:=parfor_make_local(old_procinfo.procdef,'$partids'+workerpd.unique_id_str,tidarrtype);
-              parnthreads:=parfor_make_local(old_procinfo.procdef,'$parnth'+workerpd.unique_id_str,s32inttype);
               parkvar:=parfor_make_local(old_procinfo.procdef,'$park'+workerpd.unique_id_str,s32inttype);
 
               { caller side: set up the shared state, size the pool, spawn the
@@ -1984,6 +2013,7 @@ implementation
               addstatement(parstat,cassignmentnode.create(cloadnode.create(parexctaken,parexctaken.owner),cordconstnode.create(0,s32inttype,false)));
               addstatement(parstat,cassignmentnode.create(cloadnode.create(parexc,parexc.owner),cnilnode.create));
               addstatement(parstat,cassignmentnode.create(cloadnode.create(parcancel,parcancel.owner),cordconstnode.create(0,s32inttype,false)));
+              addstatement(parstat,cassignmentnode.create(cloadnode.create(parslot,parslot.owner),cordconstnode.create(0,s32inttype,false)));
               { wp := @worker, then store the real caller frame into its parentfp
                 field (the conversion above left it nil): cast @wp to the nested
                 proc pointer record and assign the parent frame. }
