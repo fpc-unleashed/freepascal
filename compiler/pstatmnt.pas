@@ -1575,16 +1575,21 @@ implementation
           function parallel_for_statement : tnode;
             var
               threadcount,hfrom,hto,hstep,hbody,iloadnode,
-              iexpr,workerloop,parblock : tnode;
+              iexpr,workerloop,parblock,wpval : tnode;
               backward : boolean;
               oldbt : tblock_type;
               loopdef,dispdef : tdef;
               incname : string;
               iname : string;
-              workerpd : tprocdef;
-              workerps : tprocsym;
+              workerpd,thunkpd : tprocdef;
+              workerps,thunkps : tprocsym;
               workerpi : tprocinfo;
-              isym,idxsym,parlo,parstep,parcount,parcounter,parcancel : tabstractnormalvarsym;
+              thunkpvs : tparavarsym;
+              wst : tsymtable;
+              oldsymstack : tsymtablestack;
+              isym,idxsym,parlo,parstep,parcount,parcounter,parcancel,parwp,
+              parnthreads,parkvar,partids : tabstractnormalvarsym;
+              tidtype,tidarrtype : tdef;
               old_procinfo : tprocinfo;
               dispstat,parstat : tstatementnode;
             begin
@@ -1725,9 +1730,39 @@ implementation
               { hoist the body into a nested worker. The loop variable and the
                 dispatch index are private to each worker thread. }
               old_procinfo:=current_procinfo;
-              workerpi:=old_procinfo.create_for_outlining('$parfor$',old_procinfo.procdef.struct,potype_procedure,voidtype,hfrom);
-              workerpd:=workerpi.procdef;
-              workerps:=tprocsym(workerpd.procsym);
+              { Build the worker like create_for_outlining: a classic nested
+                proc. The constructor sets the Delphi nested cc under
+                m_nested_procvars; dropping it keeps the worker procvar a
+                code+frame pair, which is what the thunk reinterprets a pointer
+                to wp as. With the Delphi cc the procvar would be address-only
+                (frame passed as a hidden param) and the caller frame would be
+                lost crossing into the worker thread. }
+              wst:=old_procinfo.procdef.localst;
+              oldsymstack:=symtablestack;
+              symtablestack:=nil;
+              workerpd:=cprocdef.create(max(normal_function_level,wst.symtablelevel)+1,true);
+              workerpd.returndef:=voidtype;
+              symtablestack:=oldsymstack;
+              wst.insertdef(workerpd);
+              workerpd.struct:=old_procinfo.procdef.struct;
+              exclude(workerpd.procoptions,po_delphi_nested_cc);
+              workerpd.proctypeoption:=potype_procedure;
+              workerpd.proccalloption:=pocall_default;
+              include(workerpd.procoptions,po_hascallingconvention);
+              handle_calling_convention(workerpd,hcc_default_actions_impl);
+              workerps:=cprocsym.create('$parfor$'+workerpd.unique_id_str);
+              wst.insertsym(workerps);
+              workerpd.procsym:=workerps;
+              proc_add_definition(workerpd);
+              workerpd.forwarddef:=false;
+              workerpd.aliasnames.insert(workerpd.mangledname);
+              workerpi:=cprocinfo.create(old_procinfo);
+              workerpi.force_nested;
+              workerpi.procdef:=workerpd;
+              workerpi.entrypos:=hfrom.fileinfo;
+              workerpi.entryswitches:=current_settings.localswitches;
+              workerpi.exitpos:=current_tokenpos;
+              workerpi.exitswitches:=current_settings.localswitches;
 
               { shared state, kept on the caller frame and read by the workers
                 through their implicit $parentfp (or directly, when the caller is
@@ -1804,10 +1839,61 @@ implementation
               current_procinfo:=old_procinfo;
               current_module.procinfo:=old_procinfo;
 
-              { caller side: set up the shared state, then run the worker on the
-                calling thread (thread spawning lands next):
+              { Per-module generic thread-entry thunk, declared forward here and
+                implemented + generated at module finish (where current_procinfo
+                is nil). Building its body and procinfo mid-parse crashes, but a
+                bare forward declaration is fine. }
+              if not assigned(current_module.parfor_thunk_pd) then
+                begin
+                  oldsymstack:=symtablestack;
+                  symtablestack:=nil;
+                  thunkpd:=cprocdef.create(normal_function_level,true);
+                  thunkpd.returndef:=ptrsinttype;
+                  symtablestack:=oldsymstack;
+                  current_module.localsymtable.insertdef(thunkpd);
+                  include(thunkpd.procoptions,po_global);
+                  exclude(thunkpd.procoptions,po_delphi_nested_cc);
+                  thunkpd.proctypeoption:=potype_function;
+                  thunkpd.proccalloption:=pocall_default;
+                  include(thunkpd.procoptions,po_hascallingconvention);
+                  thunkpvs:=cparavarsym.create('p',10,vs_value,voidpointertype,[]);
+                  thunkpd.parast.insertsym(thunkpvs);
+                  handle_calling_convention(thunkpd,hcc_default_actions_impl);
+                  thunkps:=cprocsym.create('$parthreadentry'+thunkpd.unique_id_str);
+                  current_module.localsymtable.insertsym(thunkps);
+                  thunkpd.procsym:=thunkps;
+                  proc_add_definition(thunkpd);
+                  thunkpd.forwarddef:=true;
+                  current_module.parfor_thunk_pd:=thunkpd;
+                end
+              else
+                thunkpd:=tprocdef(current_module.parfor_thunk_pd);
+              thunkps:=tprocsym(thunkpd.procsym);
+
+              { wp holds @worker as a code+frame pair. Force the pc_normal procaddr
+                the thunk reinterprets it as (the default proc-to-procvar picks an
+                address-only code pointer). It still stores a nil frame, because a
+                procdef is address-only and the conversion only captures a frame
+                for anonymous functions; the caller block below patches in the real
+                caller frame so the worker threads can reach the caller locals. }
+              if not assigned(current_module.parfor_nested_pvd) then
+                current_module.parfor_nested_pvd:=cprocvardef.getreusableprocaddr(workerpd,pc_normal);
+              wpval:=ctypeconvnode.create_proc_to_procvar(cloadnode.create_procvar(workerps,workerpd,workerps.owner));
+              ttypeconvnode(wpval).totypedef:=tdef(current_module.parfor_nested_pvd);
+              typecheckpass(wpval);
+              parwp:=parfor_make_local(old_procinfo.procdef,'$parwp'+workerpd.unique_id_str,tdef(current_module.parfor_nested_pvd));
+              tidtype:=search_named_unit_globaltype('SYSTEM','TTHREADID',true).typedef;
+              { fixed handle array - the pool is capped at 256; the atomic counter
+                still drains every iteration when there are more than that }
+              tidarrtype:=carraydef.create(0,255,s32inttype);
+              tarraydef(tidarrtype).elementdef:=tidtype;
+              partids:=parfor_make_local(old_procinfo.procdef,'$partids'+workerpd.unique_id_str,tidarrtype);
+              parnthreads:=parfor_make_local(old_procinfo.procdef,'$parnth'+workerpd.unique_id_str,s32inttype);
+              parkvar:=parfor_make_local(old_procinfo.procdef,'$park'+workerpd.unique_id_str,s32inttype);
+
+              { caller side: set up the shared state, size the pool, spawn the
+                helpers, run the worker on the calling thread too, then join:
                   lo := from; step := s; count := (to-from) div step + 1; counter := 0 }
-              threadcount.free;
               parblock:=internalstatements(parstat);
               addstatement(parstat,cassignmentnode.create(cloadnode.create(parlo,parlo.owner),
                 ctypeconvnode.create_internal(hfrom,dispdef)));
@@ -1829,7 +1915,81 @@ implementation
                     cloadnode.create(parstep,parstep.owner)),cordconstnode.create(1,s32inttype,false))));
               addstatement(parstat,cassignmentnode.create(cloadnode.create(parcounter,parcounter.owner),cordconstnode.create(0,s32inttype,false)));
               addstatement(parstat,cassignmentnode.create(cloadnode.create(parcancel,parcancel.owner),cordconstnode.create(0,s32inttype,false)));
+              { wp := @worker, then store the real caller frame into its parentfp
+                field (the conversion above left it nil): cast @wp to the nested
+                proc pointer record and assign the parent frame. }
+              addstatement(parstat,cassignmentnode.create(cloadnode.create(parwp,parwp.owner),wpval));
+              addstatement(parstat,cassignmentnode.create(
+                csubscriptnode.create(tfieldvarsym(search_struct_member(trecorddef(nestedprocpointertype),'parentfp')),
+                  cderefnode.create(ctypeconvnode.create_internal(
+                    caddrnode.create_internal(cloadnode.create(parwp,parwp.owner)),
+                    cpointerdef.getreusable(nestedprocpointertype)))),
+                ctypeconvnode.create_internal(
+                  cloadparentfpnode.create(old_procinfo.procdef,lpf_forpara),
+                  parentfpvoidpointertype)));
+              { nthreads := N (if given) else CPUCount, clamped to [1, min(count,256)] }
+              if assigned(threadcount) then
+                addstatement(parstat,cassignmentnode.create(cloadnode.create(parnthreads,parnthreads.owner),threadcount))
+              else
+                addstatement(parstat,cassignmentnode.create(cloadnode.create(parnthreads,parnthreads.owner),
+                  ccallnode.createintern('GETCPUCOUNT',nil)));
+              addstatement(parstat,cifnode.create(
+                caddnode.create(gtn,cloadnode.create(parnthreads,parnthreads.owner),cloadnode.create(parcount,parcount.owner)),
+                cassignmentnode.create(cloadnode.create(parnthreads,parnthreads.owner),cloadnode.create(parcount,parcount.owner)),nil));
+              addstatement(parstat,cifnode.create(
+                caddnode.create(gtn,cloadnode.create(parnthreads,parnthreads.owner),cordconstnode.create(256,s32inttype,false)),
+                cassignmentnode.create(cloadnode.create(parnthreads,parnthreads.owner),cordconstnode.create(256,s32inttype,false)),nil));
+              addstatement(parstat,cifnode.create(
+                caddnode.create(ltn,cloadnode.create(parnthreads,parnthreads.owner),cordconstnode.create(1,s32inttype,false)),
+                cassignmentnode.create(cloadnode.create(parnthreads,parnthreads.owner),cordconstnode.create(1,s32inttype,false)),nil));
+              { a parallel loop whose caller is itself a worker, and that did not
+                ask for a pool size, runs its body on the calling thread alone.
+                each loop spawns its own pool, so a default-sized inner loop would
+                give CPUCount*CPUCount threads and oversubscribe the cores. an
+                explicit (N) is taken as an opt-in to nested parallelism and kept. }
+              if assigned(old_procinfo.procdef.procsym) and
+                 (copy(old_procinfo.procdef.procsym.name,1,7)='parfor$') and
+                 not assigned(threadcount) then
+                addstatement(parstat,cassignmentnode.create(cloadnode.create(parnthreads,parnthreads.owner),cordconstnode.create(1,s32inttype,false)));
+              { for k := 0 to nthreads-2 do tids[k] := BeginThread(@thunk, @wp) }
+              addstatement(parstat,cfornode.create(cloadnode.create(parkvar,parkvar.owner),
+                cordconstnode.create(0,s32inttype,false),
+                caddnode.create(subn,cloadnode.create(parnthreads,parnthreads.owner),cordconstnode.create(2,s32inttype,false)),
+                cassignmentnode.create(
+                  cvecnode.create(cloadnode.create(partids,partids.owner),cloadnode.create(parkvar,parkvar.owner)),
+                  ccallnode.createintern('BEGINTHREAD',
+                    ccallparanode.create(
+                      ctypeconvnode.create_internal(caddrnode.create_internal(cloadnode.create(parwp,parwp.owner)),voidpointertype),
+                      ccallparanode.create(
+                        ctypeconvnode.create_proc_to_procvar(cloadnode.create_procvar(thunkps,thunkpd,thunkps.owner)),
+                        nil)))),false));
+              { the caller runs the worker too }
               addstatement(parstat,ccallnode.create(nil,workerps,workerps.owner,nil,[],nil));
+              { barrier: for k := 0 to nthreads-2 do
+                           if tids[k] <> 0 then WaitForThreadTerminate(tids[k], -1)
+                A zero handle is a spawn that failed - there is no thread to
+                join and the atomic counter drains its share through the
+                workers that did start (worst case the caller alone). }
+              addstatement(parstat,cfornode.create(cloadnode.create(parkvar,parkvar.owner),
+                cordconstnode.create(0,s32inttype,false),
+                caddnode.create(subn,cloadnode.create(parnthreads,parnthreads.owner),cordconstnode.create(2,s32inttype,false)),
+                cifnode.create(
+                  caddnode.create(unequaln,
+                    ctypeconvnode.create_internal(
+                      cvecnode.create(cloadnode.create(partids,partids.owner),cloadnode.create(parkvar,parkvar.owner)),
+                      ptruinttype),
+                    cordconstnode.create(0,ptruinttype,false)),
+                  { WaitForThreadTerminate(tids[k], -1): the last call argument is
+                    the outermost paranode. -1 is the timeout (an infinite wait):
+                    the Windows backend hands it straight to WaitForSingleObject,
+                    where 0 returns at once and leaves the workers running past the
+                    barrier. }
+                  ccallnode.createintern('WAITFORTHREADTERMINATE',
+                    ccallparanode.create(
+                      cordconstnode.create(-1,s32inttype,false),
+                      ccallparanode.create(
+                        cvecnode.create(cloadnode.create(partids,partids.owner),cloadnode.create(parkvar,parkvar.owner)),nil))),
+                  nil),false));
               result:=parblock;
               do_typecheckpass(result);
             end;
