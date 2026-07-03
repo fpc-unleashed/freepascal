@@ -56,9 +56,9 @@ implementation
        nutils,ngenutil,nbas,nadd,ncal,nmem,nset,ncnv,ncon,nld,nflw,ninl,nmat,
        { parser }
        scanner,
-       pbase,ptype,pexpr,ptconst,
+       pbase,ptype,pexpr,ptconst,pparautl,
        { codegen }
-       procinfo,cgbase,
+       procinfo,cgbase,ncgutil,
        { assembler reader }
        rabase,
        { scanner }
@@ -899,7 +899,38 @@ implementation
           MessagePos(n.fileinfo,parser_e_parallel_for_no_goto);
       end;
 
-    procedure parfor_validate_body(body: tnode);
+    { a `break` bound to the parallel loop cancels it cooperatively: it raises
+      the shared flag (so no worker claims another iteration) and leaves this
+      worker's dispatch loop; iterations already running elsewhere finish }
+    function parfor_rewrite_break(var n: tnode; arg: pointer): foreachnoderesult;
+      var
+        cancelsym: tabstractnormalvarsym;
+        stat: tstatementnode;
+        fi: tfileposinfo;
+      begin
+        case n.nodetype of
+          // a break inside a nested loop targets that loop, not the parallel one
+          forn,whilerepeatn:
+            result:=fen_norecurse_true;
+          breakn:
+            begin
+              cancelsym:=tabstractnormalvarsym(arg);
+              fi:=n.fileinfo;
+              n.free;
+              n:=internalstatements(stat);
+              n.fileinfo:=fi;
+              addstatement(stat,cassignmentnode.create(cloadnode.create(cancelsym,cancelsym.owner),
+                cordconstnode.create(1,s32inttype,false)));
+              addstatement(stat,cbreaknode.create);
+              // do not descend into the replacement - its break is the rewrite
+              result:=fen_norecurse_true;
+            end;
+          else
+            result:=fen_true;
+        end;
+      end;
+
+    procedure parfor_validate_body(body: tnode; cancelsym: tabstractnormalvarsym);
       var
         lbls: tfplist;
       begin
@@ -908,7 +939,24 @@ implementation
         lbls:=tfplist.create;
         foreachnodestatic(body,@parfor_collect_labels,lbls);
         foreachnodestatic(body,@parfor_check_exit_goto,lbls);
+        { postprocess visits a loop node before its children, so returning
+          fen_norecurse on an inner loop skips the breaks that belong to it }
+        foreachnodestatic(pm_postprocess,body,@parfor_rewrite_break,cancelsym);
         lbls.free;
+      end;
+
+    { create a value variable in pd's localst - a static var for the main/unit
+      symtable, an ordinary local otherwise - used for the parallel-for state }
+    function parfor_make_local(pd: tprocdef; const n: string; d: tdef): tabstractnormalvarsym;
+      begin
+        if pd.localst.symtabletype=staticsymtable then
+          result:=cstaticvarsym.create(n,vs_value,d,[])
+        else
+          result:=clocalvarsym.create(n,vs_value,d,[]);
+        result.register_sym;
+        pd.localst.insertsym(result);
+        if result.typ=staticvarsym then
+          cnodeutils.insertbssdata(tstaticvarsym(result));
       end;
 
     function for_statement : tnode;
@@ -1526,19 +1574,26 @@ implementation
             the body are rejected. }
           function parallel_for_statement : tnode;
             var
-              threadcount,
-              hloopvar,hfrom,hto,hstep,hbody : tnode;
-              loopvs : tabstractnormalvarsym;
+              threadcount,hfrom,hto,hstep,hbody,iloadnode,
+              iexpr,workerloop,parblock : tnode;
               backward : boolean;
-              parforblockst : tblocksymtable;
               oldbt : tblock_type;
-              hpdef : tdef;
+              loopdef,dispdef : tdef;
+              incname : string;
+              iname : string;
+              workerpd : tprocdef;
+              workerps : tprocsym;
+              workerpi : tprocinfo;
+              isym,idxsym,parlo,parstep,parcount,parcounter,parcancel : tabstractnormalvarsym;
+              old_procinfo : tprocinfo;
+              dispstat,parstat : tstatementnode;
             begin
               result:=nil;
               threadcount:=nil;
               hstep:=nil;
+              loopdef:=nil;
 
-              { optional (N) thread count - evaluated by the lowering, ignored here }
+              { optional (N) thread count - applied by the dispatch below }
               if try_to_consume(_LKLAMMER) then
                 begin
                   threadcount:=comp_expr([ef_accept_equal]);
@@ -1563,33 +1618,16 @@ implementation
                   result:=cerrornode.create;
                   exit;
                 end;
-
-              { block scope for the loop variable }
-              parforblockst:=nil;
-              if assigned(current_procinfo) then
-                begin
-                  parforblockst:=tblocksymtable.create(symtablestack.top);
-                  symtablestack.push(parforblockst);
-                end;
-
-              if symtablestack.top.symtabletype in [localsymtable,blocksymtable] then
-                loopvs:=clocalvarsym.create(current_scanner.orgpattern,vs_value,generrordef,[])
-              else
-                loopvs:=cstaticvarsym.create(current_scanner.orgpattern,vs_value,generrordef,[]);
-              loopvs.register_sym;
-              symtablestack.top.insertsym(loopvs);
+              iname:=current_scanner.orgpattern;
               consume(_ID);
 
-              { explicit type, or inferred from the start value below }
+              { explicit loop variable type, or inferred from the start value }
               if try_to_consume(_COLON) then
                 begin
                   oldbt:=block_type;
                   block_type:=bt_var_type;
-                  read_anon_type(hpdef,false,nil);
+                  read_anon_type(loopdef,false,nil);
                   block_type:=oldbt;
-                  loopvs.vardef:=hpdef;
-                  if loopvs.typ=staticvarsym then
-                    cnodeutils.insertbssdata(tstaticvarsym(loopvs));
                 end;
 
               { for-in is inherently sequential and not allowed. `in` lexes to
@@ -1607,11 +1645,6 @@ implementation
                     end;
                   threadcount.free;
                   result:=cerrornode.create;
-                  if assigned(parforblockst) then
-                    begin
-                      symtablestack.pop(parforblockst);
-                      parforblockst.free;
-                    end;
                   exit;
                 end;
 
@@ -1619,36 +1652,44 @@ implementation
               hfrom:=comp_expr([ef_accept_equal]);
               typecheckpass(hfrom);
 
-              if loopvs.vardef=generrordef then
+              if not assigned(loopdef) then
                 begin
                   if assigned(hfrom.resultdef) and (hfrom.resultdef<>generrordef) then
                     begin
                       if not(nf_explicit in hfrom.flags) and is_integer(hfrom.resultdef) and
                          (torddef(hfrom.resultdef).ordtype in [s8bit,u8bit,s16bit,u16bit]) then
-                        loopvs.vardef:=s32inttype
+                        loopdef:=s32inttype
                       else
-                        loopvs.vardef:=hfrom.resultdef;
-                      if loopvs.typ=staticvarsym then
-                        cnodeutils.insertbssdata(tstaticvarsym(loopvs));
-                    end;
+                        loopdef:=hfrom.resultdef;
+                    end
+                  else
+                    loopdef:=generrordef;
                 end;
 
-              hloopvar:=cloadnode.create(loopvs,loopvs.owner);
-              typecheckpass(hloopvar);
-
-              if (
-                  not(is_ordinal(hloopvar.resultdef))
-        {$if not defined(cpu64bitaddr) and not defined(cpu64bitalu)}
-                  or is_64bitint(hloopvar.resultdef)
-        {$endif not cpu64bitaddr and not cpu64bitalu}
-                ) and
-                (hloopvar.resultdef.typ<>undefineddef) then
+              if (not is_ordinal(loopdef)) and (loopdef.typ<>undefineddef) then
                 begin
-                  MessagePos(hloopvar.fileinfo,type_e_ordinal_expr_expected);
-                  hloopvar.resultdef:=generrordef;
+                  MessagePos(hfrom.fileinfo,type_e_ordinal_expr_expected);
+                  loopdef:=generrordef;
                 end;
 
-              include(loopvs.varoptions,vo_is_loop_counter);
+              { the hidden dispatch state follows the loop variable width: a
+                64-bit variable gets a 64-bit counter so huge ranges do not
+                wrap, everything smaller stays on the 32-bit interlocked ops }
+{$ifdef cpu64bitalu}
+              if loopdef.size>4 then
+                begin
+                  dispdef:=s64inttype;
+                  incname:='INTERLOCKEDINCREMENT64';
+                end
+              else
+{$else}
+              if loopdef.size>4 then
+                Message(parser_e_parallel_for_no_int64_dispatch);
+{$endif}
+                begin
+                  dispdef:=s32inttype;
+                  incname:='INTERLOCKEDINCREMENT';
+                end;
 
               if try_to_consume(_DOWNTO) then
                 backward:=true
@@ -1658,6 +1699,7 @@ implementation
                   backward:=false;
                 end;
               hto:=comp_expr([ef_accept_equal]);
+              typecheckpass(hto);
 
               if (m_for_step in current_settings.modeswitches) and (current_scanner.token=_ID) and (current_scanner.pattern='STEP') then
                 begin
@@ -1675,38 +1717,121 @@ implementation
                 end;
               consume(_DO);
 
-              check_range(hfrom,hloopvar.resultdef);
-              check_range(hto,hloopvar.resultdef);
+              check_range(hfrom,loopdef);
+              check_range(hto,loopdef);
               set_varstate(hfrom,vs_read,[vsf_must_be_valid]);
-              typecheckpass(hto);
               set_varstate(hto,vs_read,[vsf_must_be_valid]);
-              set_varstate(hloopvar,vs_written,[]);
-              set_varstate(hloopvar,vs_read,[vsf_must_be_valid]);
+
+              { hoist the body into a nested worker. The loop variable and the
+                dispatch index are private to each worker thread. }
+              old_procinfo:=current_procinfo;
+              workerpi:=old_procinfo.create_for_outlining('$parfor$',old_procinfo.procdef.struct,potype_procedure,voidtype,hfrom);
+              workerpd:=workerpi.procdef;
+              workerps:=tprocsym(workerpd.procsym);
+
+              { shared state, kept on the caller frame and read by the workers
+                through their implicit $parentfp (or directly, when the caller is
+                the main/unit body). The worker id keeps the names unique when a
+                routine has several parallel loops. }
+              parlo:=parfor_make_local(old_procinfo.procdef,'$parlo'+workerpd.unique_id_str,dispdef);
+              parstep:=parfor_make_local(old_procinfo.procdef,'$parstep'+workerpd.unique_id_str,dispdef);
+              parcount:=parfor_make_local(old_procinfo.procdef,'$parcnt'+workerpd.unique_id_str,dispdef);
+              parcounter:=parfor_make_local(old_procinfo.procdef,'$parctr'+workerpd.unique_id_str,dispdef);
+              { the cancel flag is written by whichever worker breaks and read
+                by all the others - volatile keeps every check a memory read }
+              parcancel:=parfor_make_local(old_procinfo.procdef,'$parcncl'+workerpd.unique_id_str,s32inttype);
+              include(parcancel.varoptions,vo_volatile);
+
+              { parse the body in the worker context }
+              current_procinfo:=workerpi;
+              current_module.procinfo:=workerpi;
+              oldbt:=block_type;
+              block_type:=bt_body;
+              symtablestack.push(workerpd.parast);
+              symtablestack.push(workerpd.localst);
+
+              isym:=parfor_make_local(workerpd,iname,loopdef);
+              idxsym:=parfor_make_local(workerpd,'$idx',dispdef);
+              { the dispatch assigns the loop variable before every body run }
+              isym.varstate:=vs_initialised;
+              include(isym.varoptions,vo_is_loop_counter);
+              iloadnode:=cloadnode.create(isym,isym.owner);
+              typecheckpass(iloadnode);
 
               hbody:=statement;
+              exclude(isym.varoptions,vo_is_loop_counter);
+              parfor_validate_body(hbody,parcancel);
 
-              exclude(loopvs.varoptions,vo_is_loop_counter);
+              { worker dispatch loop, drained by a shared atomic counter:
+                  repeat
+                    if cancelled <> 0 then break;
+                    idx := InterlockedIncrement(counter) - 1;
+                    if idx >= count then break;
+                    i := lo +/- idx*step;
+                    <body>
+                  until false }
+              { the ordinal math runs on the dispatch type; the result converts
+                back to the declared variable type (which may be an enum/char) }
+              if backward then
+                iexpr:=caddnode.create(subn,cloadnode.create(parlo,parlo.owner),
+                         caddnode.create(muln,cloadnode.create(idxsym,idxsym.owner),cloadnode.create(parstep,parstep.owner)))
+              else
+                iexpr:=caddnode.create(addn,cloadnode.create(parlo,parlo.owner),
+                         caddnode.create(muln,cloadnode.create(idxsym,idxsym.owner),cloadnode.create(parstep,parstep.owner)));
+              iexpr:=ctypeconvnode.create_internal(iexpr,loopdef);
+              workerloop:=internalstatements(dispstat);
+              addstatement(dispstat,cifnode.create(
+                caddnode.create(unequaln,cloadnode.create(parcancel,parcancel.owner),cordconstnode.create(0,s32inttype,false)),
+                cbreaknode.create,nil));
+              addstatement(dispstat,cassignmentnode.create(cloadnode.create(idxsym,idxsym.owner),
+                caddnode.create(subn,
+                  ccallnode.createintern(incname,
+                    ccallparanode.create(cloadnode.create(parcounter,parcounter.owner),nil)),
+                  cordconstnode.create(1,s32inttype,false))));
+              addstatement(dispstat,cifnode.create(
+                caddnode.create(gten,cloadnode.create(idxsym,idxsym.owner),cloadnode.create(parcount,parcount.owner)),
+                cbreaknode.create,nil));
+              addstatement(dispstat,cassignmentnode.create(cloadnode.create(isym,isym.owner),iexpr));
+              if assigned(hbody) then
+                addstatement(dispstat,hbody);
+              workerloop:=cwhilerepeatnode.create(cordconstnode.create(0,pasbool1type,false),workerloop,false,true);
+              do_typecheckpass(workerloop);
+              workerpi.set_code(workerloop);
 
-              { exit/goto cannot cross worker threads }
-              parfor_validate_body(hbody);
+              symtablestack.pop(workerpd.localst);
+              symtablestack.pop(workerpd.parast);
+              block_type:=oldbt;
+              current_procinfo:=old_procinfo;
+              current_module.procinfo:=old_procinfo;
 
-              { the body runs sequentially for now; the thread count is parsed
-                but not yet applied by a worker dispatch }
+              { caller side: set up the shared state, then run the worker on the
+                calling thread (thread spawning lands next):
+                  lo := from; step := s; count := (to-from) div step + 1; counter := 0 }
               threadcount.free;
-              result:=cfornode.create(hloopvar,hfrom,hto,hbody,backward);
-              tfornode(result).loopstep:=hstep;
-
-              if assigned(parforblockst) then
-                begin
-                  symtablestack.pop(parforblockst);
-                  if not assigned(current_procinfo.procdef.blocklocalsymtables) then
-                    current_procinfo.procdef.blocklocalsymtables:=tfpobjectlist.create(true);
-                  current_procinfo.procdef.blocklocalsymtables.add(parforblockst);
-                  hloopvar:=cblocknode.create(cstatementnode.create(result,nil));
-                  hloopvar.fileinfo:=result.fileinfo;
-                  tblocknode(hloopvar).blocksymtable:=parforblockst;
-                  result:=hloopvar;
-                end;
+              parblock:=internalstatements(parstat);
+              addstatement(parstat,cassignmentnode.create(cloadnode.create(parlo,parlo.owner),
+                ctypeconvnode.create_internal(hfrom,dispdef)));
+              if assigned(hstep) then
+                addstatement(parstat,cassignmentnode.create(cloadnode.create(parstep,parstep.owner),
+                  ctypeconvnode.create_internal(hstep,dispdef)))
+              else
+                addstatement(parstat,cassignmentnode.create(cloadnode.create(parstep,parstep.owner),cordconstnode.create(1,s32inttype,false)));
+              hto:=ctypeconvnode.create_internal(hto,dispdef);
+              if backward then
+                addstatement(parstat,cassignmentnode.create(cloadnode.create(parcount,parcount.owner),
+                  caddnode.create(addn,cmoddivnode.create(divn,
+                    caddnode.create(subn,cloadnode.create(parlo,parlo.owner),hto),
+                    cloadnode.create(parstep,parstep.owner)),cordconstnode.create(1,s32inttype,false))))
+              else
+                addstatement(parstat,cassignmentnode.create(cloadnode.create(parcount,parcount.owner),
+                  caddnode.create(addn,cmoddivnode.create(divn,
+                    caddnode.create(subn,hto,cloadnode.create(parlo,parlo.owner)),
+                    cloadnode.create(parstep,parstep.owner)),cordconstnode.create(1,s32inttype,false))));
+              addstatement(parstat,cassignmentnode.create(cloadnode.create(parcounter,parcounter.owner),cordconstnode.create(0,s32inttype,false)));
+              addstatement(parstat,cassignmentnode.create(cloadnode.create(parcancel,parcancel.owner),cordconstnode.create(0,s32inttype,false)));
+              addstatement(parstat,ccallnode.create(nil,workerps,workerps.owner,nil,[],nil));
+              result:=parblock;
+              do_typecheckpass(result);
             end;
 
 

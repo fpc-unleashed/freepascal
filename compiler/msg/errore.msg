@@ -1928,6 +1928,10 @@ parser_e_parallel_for_no_goto=03435_E_`goto` leaving a `for parallel` body is no
 % different routine, so the jump cannot be taken. Jumps that stay inside the
 % body are fine.
 %
+parser_e_parallel_for_no_int64_dispatch=03436_E_a 64-bit `for parallel` loop variable is not supported on this target
+% The pool hands out iterations through 64-bit interlocked operations, which
+% this target does not provide. Use a 32-bit loop variable instead.
+%
 parser_e_interp_fmt_unit=03411_E_String interpolation format requires function "$1" in unit "$2" - add it to uses clause
 % The format mask after \var{:} in a string interpolation depends on a runtime
 % function (such as \var{FormatDateTime} or \var{Format}) that is not visible in

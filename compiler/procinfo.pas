@@ -201,6 +201,10 @@ unit procinfo;
           { Add to parent's list of nested procedures even if parent is a 'main' procedure }
           procedure force_nested;
 
+          { assign the body node tree (overridden in tcgprocinfo, which owns the
+            code field) - lets earlier parser units fill an outlined procedure }
+          procedure set_code(p: tnode); virtual;
+
           { Get the required alignment for the current stack frame }
           property stackalignment: longint read fstackalignment;
           { Update the required alignment for the current stack frame based
@@ -411,6 +415,11 @@ implementation
         result.entryswitches:=entrynodeinfo.localswitches;
         result.exitpos:=current_filepos; // filepos of last node?
         result.exitswitches:=current_settings.localswitches; // localswitches of last node?
+      end;
+
+    procedure tprocinfo.set_code(p: tnode);
+      begin
+        internalerror(2026061201);
       end;
 
     procedure tprocinfo.allocate_push_parasize(size:longint);

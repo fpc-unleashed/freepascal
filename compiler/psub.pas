@@ -80,6 +80,7 @@ interface
         procedure add_to_symtablestack;
         procedure remove_from_symtablestack;
         procedure parse_body;
+        procedure set_code(p: tnode); override;
 
         procedure store_tempflags;
         procedure apply_tempflags;
@@ -2439,6 +2440,12 @@ implementation
         current_filepos:=oldfilepos;
         current_structdef:=old_current_structdef;
         current_procinfo:=old_current_procinfo;
+      end;
+
+
+    procedure tcgprocinfo.set_code(p: tnode);
+      begin
+        code:=p;
       end;
 
 
