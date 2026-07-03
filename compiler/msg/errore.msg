@@ -1932,6 +1932,14 @@ parser_e_parallel_for_no_int64_dispatch=03436_E_a 64-bit `for parallel` loop var
 % The pool hands out iterations through 64-bit interlocked operations, which
 % this target does not provide. Use a 32-bit loop variable instead.
 %
+parser_e_parallel_chunk_not_ordinal=03437_E_`chunk` size must be an ordinal value
+% The \var{chunk} clause of a parallel loop sets how many iterations a worker
+% claims per grab, so it has to be an integer-like value.
+%
+parser_e_parallel_chunk_must_be_positive=03438_E_`chunk` size must be positive
+% A zero or negative \var{chunk} would make a worker claim nothing and spin.
+% Runtime values below 1 are clamped to 1 instead.
+%
 parser_e_interp_fmt_unit=03411_E_String interpolation format requires function "$1" in unit "$2" - add it to uses clause
 % The format mask after \var{:} in a string interpolation depends on a runtime
 % function (such as \var{FormatDateTime} or \var{Format}) that is not visible in

@@ -1574,8 +1574,8 @@ implementation
             the body are rejected. }
           function parallel_for_statement : tnode;
             var
-              threadcount,hfrom,hto,hstep,hbody,iloadnode,
-              iexpr,workerloop,parblock,wpval : tnode;
+              threadcount,hfrom,hto,hstep,hchunk,hbody,iloadnode,
+              iexpr,workerloop,innerloop,parblock,wpval : tnode;
               backward : boolean;
               oldbt : tblock_type;
               loopdef,dispdef : tdef;
@@ -1587,17 +1587,18 @@ implementation
               thunkpvs : tparavarsym;
               wst : tsymtable;
               oldsymstack : tsymtablestack;
-              isym,idxsym,parlo,parstep,parcount,parcounter,parwp,
-              parnthreads,parkvar,partids,parexc,parexctaken,parcancel : tabstractnormalvarsym;
+              isym,idxsym,basesym,lastsym,parlo,parstep,parcount,parcounter,parwp,
+              parnthreads,parkvar,partids,parexc,parexctaken,parcancel,parchunk : tabstractnormalvarsym;
               tidtype,tidarrtype : tdef;
               excstat : tstatementnode;
               workerbody : tnode;
               old_procinfo : tprocinfo;
-              dispstat,parstat : tstatementnode;
+              dispstat,innerstat,parstat : tstatementnode;
             begin
               result:=nil;
               threadcount:=nil;
               hstep:=nil;
+              hchunk:=nil;
               loopdef:=nil;
 
               { optional (N) thread count - applied by the dispatch below }
@@ -1686,7 +1687,7 @@ implementation
               if loopdef.size>4 then
                 begin
                   dispdef:=s64inttype;
-                  incname:='INTERLOCKEDINCREMENT64';
+                  incname:='INTERLOCKEDEXCHANGEADD64';
                 end
               else
 {$else}
@@ -1695,7 +1696,7 @@ implementation
 {$endif}
                 begin
                   dispdef:=s32inttype;
-                  incname:='INTERLOCKEDINCREMENT';
+                  incname:='INTERLOCKEDEXCHANGEADD';
                 end;
 
               if try_to_consume(_DOWNTO) then
@@ -1721,6 +1722,22 @@ implementation
                     end
                   else if (hstep.nodetype=ordconstn) and (tordconstnode(hstep).value<=0) then
                     Message(parser_e_for_step_must_be_positive);
+                end;
+              { optional `chunk N` - iterations claimed per counter grab; the
+                same soft-keyword spot as `step` }
+              if (current_scanner.token=_ID) and (current_scanner.pattern='CHUNK') then
+                begin
+                  consume(_ID);
+                  hchunk:=comp_expr([ef_accept_equal]);
+                  typecheckpass(hchunk);
+                  if not is_ordinal(hchunk.resultdef) then
+                    begin
+                      Message(parser_e_parallel_chunk_not_ordinal);
+                      hchunk.free;
+                      hchunk:=nil;
+                    end
+                  else if (hchunk.nodetype=ordconstn) and (tordconstnode(hchunk).value<=0) then
+                    Message(parser_e_parallel_chunk_must_be_positive);
                 end;
               consume(_DO);
 
@@ -1782,6 +1799,7 @@ implementation
                 by all the others - volatile keeps every check a memory read }
               parcancel:=parfor_make_local(old_procinfo.procdef,'$parcncl'+workerpd.unique_id_str,s32inttype);
               include(parcancel.varoptions,vo_volatile);
+              parchunk:=parfor_make_local(old_procinfo.procdef,'$parchk'+workerpd.unique_id_str,dispdef);
 
               { parse the body in the worker context }
               current_procinfo:=workerpi;
@@ -1793,6 +1811,8 @@ implementation
 
               isym:=parfor_make_local(workerpd,iname,loopdef);
               idxsym:=parfor_make_local(workerpd,'$idx',dispdef);
+              basesym:=parfor_make_local(workerpd,'$base',dispdef);
+              lastsym:=parfor_make_local(workerpd,'$last',dispdef);
               { the dispatch assigns the loop variable before every body run }
               isym.varstate:=vs_initialised;
               include(isym.varoptions,vo_is_loop_counter);
@@ -1803,14 +1823,22 @@ implementation
               exclude(isym.varoptions,vo_is_loop_counter);
               parfor_validate_body(hbody,parcancel);
 
-              { worker dispatch loop, drained by a shared atomic counter:
+              { worker dispatch loop - each counter grab claims a chunk of
+                iterations, walked without further atomics:
                   repeat
                     if cancelled <> 0 then break;
-                    idx := InterlockedIncrement(counter) - 1;
-                    if idx >= count then break;
-                    i := lo +/- idx*step;
-                    <body>
-                  until false }
+                    base := InterlockedExchangeAdd(counter, chunk);
+                    if base >= count then break;
+                    last := base + chunk;
+                    if last > count then last := count;
+                    for idx := base to last-1 do begin
+                      if cancelled <> 0 then break;
+                      i := lo +/- idx*step;
+                      <body>
+                    end;
+                  until false
+                the chunk walk is a real for-loop so a `continue` in the body
+                advances the index like in any for }
               { the ordinal math runs on the dispatch type; the result converts
                 back to the declared variable type (which may be an enum/char) }
               if backward then
@@ -1820,21 +1848,34 @@ implementation
                 iexpr:=caddnode.create(addn,cloadnode.create(parlo,parlo.owner),
                          caddnode.create(muln,cloadnode.create(idxsym,idxsym.owner),cloadnode.create(parstep,parstep.owner)));
               iexpr:=ctypeconvnode.create_internal(iexpr,loopdef);
+              innerloop:=internalstatements(innerstat);
+              addstatement(innerstat,cifnode.create(
+                caddnode.create(unequaln,cloadnode.create(parcancel,parcancel.owner),cordconstnode.create(0,s32inttype,false)),
+                cbreaknode.create,nil));
+              addstatement(innerstat,cassignmentnode.create(cloadnode.create(isym,isym.owner),iexpr));
+              if assigned(hbody) then
+                addstatement(innerstat,hbody);
+              innerloop:=cfornode.create(cloadnode.create(idxsym,idxsym.owner),
+                cloadnode.create(basesym,basesym.owner),
+                caddnode.create(subn,cloadnode.create(lastsym,lastsym.owner),cordconstnode.create(1,s32inttype,false)),
+                innerloop,false);
               workerloop:=internalstatements(dispstat);
               addstatement(dispstat,cifnode.create(
                 caddnode.create(unequaln,cloadnode.create(parcancel,parcancel.owner),cordconstnode.create(0,s32inttype,false)),
                 cbreaknode.create,nil));
-              addstatement(dispstat,cassignmentnode.create(cloadnode.create(idxsym,idxsym.owner),
-                caddnode.create(subn,
-                  ccallnode.createintern(incname,
-                    ccallparanode.create(cloadnode.create(parcounter,parcounter.owner),nil)),
-                  cordconstnode.create(1,s32inttype,false))));
+              addstatement(dispstat,cassignmentnode.create(cloadnode.create(basesym,basesym.owner),
+                ccallnode.createintern(incname,
+                  ccallparanode.create(cloadnode.create(parchunk,parchunk.owner),
+                    ccallparanode.create(cloadnode.create(parcounter,parcounter.owner),nil)))));
               addstatement(dispstat,cifnode.create(
-                caddnode.create(gten,cloadnode.create(idxsym,idxsym.owner),cloadnode.create(parcount,parcount.owner)),
+                caddnode.create(gten,cloadnode.create(basesym,basesym.owner),cloadnode.create(parcount,parcount.owner)),
                 cbreaknode.create,nil));
-              addstatement(dispstat,cassignmentnode.create(cloadnode.create(isym,isym.owner),iexpr));
-              if assigned(hbody) then
-                addstatement(dispstat,hbody);
+              addstatement(dispstat,cassignmentnode.create(cloadnode.create(lastsym,lastsym.owner),
+                caddnode.create(addn,cloadnode.create(basesym,basesym.owner),cloadnode.create(parchunk,parchunk.owner))));
+              addstatement(dispstat,cifnode.create(
+                caddnode.create(gtn,cloadnode.create(lastsym,lastsym.owner),cloadnode.create(parcount,parcount.owner)),
+                cassignmentnode.create(cloadnode.create(lastsym,lastsym.owner),cloadnode.create(parcount,parcount.owner)),nil));
+              addstatement(dispstat,innerloop);
               workerloop:=cwhilerepeatnode.create(cordconstnode.create(0,pasbool1type,false),workerloop,false,true);
               { wrap the dispatch in try/except: the first worker to fault claims
                 the exception with an atomic flag and hands it to the caller, the
@@ -1979,6 +2020,20 @@ implementation
                  (copy(old_procinfo.procdef.procsym.name,1,7)='parfor$') and
                  not assigned(threadcount) then
                 addstatement(parstat,cassignmentnode.create(cloadnode.create(parnthreads,parnthreads.owner),cordconstnode.create(1,s32inttype,false)));
+              { chunk := N (if given) else count div (nthreads*4), floored at 1.
+                The auto default keeps about four grabs per worker: enough
+                spare chunks that a slow one gets rebalanced, few enough that
+                the counter is hit rarely }
+              if assigned(hchunk) then
+                addstatement(parstat,cassignmentnode.create(cloadnode.create(parchunk,parchunk.owner),
+                  ctypeconvnode.create_internal(hchunk,dispdef)))
+              else
+                addstatement(parstat,cassignmentnode.create(cloadnode.create(parchunk,parchunk.owner),
+                  cmoddivnode.create(divn,cloadnode.create(parcount,parcount.owner),
+                    caddnode.create(muln,cloadnode.create(parnthreads,parnthreads.owner),cordconstnode.create(4,s32inttype,false)))));
+              addstatement(parstat,cifnode.create(
+                caddnode.create(ltn,cloadnode.create(parchunk,parchunk.owner),cordconstnode.create(1,s32inttype,false)),
+                cassignmentnode.create(cloadnode.create(parchunk,parchunk.owner),cordconstnode.create(1,s32inttype,false)),nil));
               { for k := 0 to nthreads-2 do tids[k] := BeginThread(@thunk, @wp) }
               addstatement(parstat,cfornode.create(cloadnode.create(parkvar,parkvar.owner),
                 cordconstnode.create(0,s32inttype,false),
