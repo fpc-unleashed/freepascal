@@ -51,6 +51,8 @@ var
   GTestfilesDir: String;
   GBaseTempDir: String;
   GCompilerPath: String;
+  GTargetOS: String;
+  GTargetCPU: String;
   GForceNoRun: Boolean;
   GFilter: String;
   GExclude: String;
@@ -249,6 +251,17 @@ begin
     Move(ms.Memory^, Output[1], ms.Size);
 end;
 
+// ask the compiler for one -i info item (e.g. -iTO / -iTP)
+function QueryCompilerInfo(const InfoArg: String; out Value: String): Boolean;
+var
+  code: Integer;
+  timedOut: Boolean;
+begin
+  RunCmd(GCompilerPath, [InfoArg], GBaseDir, 10, code, Value, timedOut);
+  Value := Trim(Value);
+  Result := (code = 0) and not timedOut and (Value <> '');
+end;
+
 // case-insensitive prefix check on a line, after stripping leading whitespace
 function LineStartsWithDirective(const Line, Prefix: String): Boolean;
 begin
@@ -354,8 +367,8 @@ begin
   // intermediate + exe output go to .tmp/
   Result := Result + ['-FE' + GTempDir];
   Result := Result + ['-FU' + GTempDir];
-  Result := Result + ['-Twin64'];
-  Result := Result + ['-Px86_64'];
+  Result := Result + ['-T' + GTargetOS];
+  Result := Result + ['-P' + GTargetCPU];
   // -g- cancels any -g from fpc.cfg so test binaries never carry debug info;
   // -CX/-XX/-Xs do smart link + strip so the produced exe is minimal release
   // shape (smaller, faster I/O, less noise for %CHECKBIN_* searches)
@@ -909,6 +922,15 @@ begin
   if GCompilerPath = '' then
     GCompilerPath := CompilerDefault;
 
+  // compile for whatever target the compiler reports via -iTO/-iTP, so cross
+  // compilers (e.g. ppcross386) get a matching -T/-P pair
+  if not QueryCompilerInfo('-iTO', GTargetOS) or
+     not QueryCompilerInfo('-iTP', GTargetCPU) then
+  begin
+    WriteLn(AnsiRed, 'error: cannot query target OS/CPU from compiler: ', GCompilerPath, AnsiReset);
+    Halt(2);
+  end;
+
   if not DirectoryExists(GTestfilesDir) then
   begin
     WriteLn(AnsiRed, 'error: testfiles directory not found: ', GTestfilesDir, AnsiReset);
@@ -927,6 +949,7 @@ begin
   end;
 
   WriteLn('compiler: ', GCompilerPath);
+  WriteLn('target: ', GTargetCPU, '-', GTargetOS);
   WriteLn('tests dir: ', GTestfilesDir);
   WriteLn('discovered ', files.Count, ' test file(s)');
   if GFilter <> '' then
