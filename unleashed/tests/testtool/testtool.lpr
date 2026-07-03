@@ -32,6 +32,7 @@ type
     CheckBinHas: TStringArray;
     CheckBinLacks: TStringArray;
     Cpu: TStringArray;
+    Precompile: String;
   end;
 
   TVerdict = (vPass, vFail, vSkip);
@@ -191,6 +192,7 @@ begin
       'CHECKBIN_HAS':   Flags.CheckBinHas := value.Split([','], TStringSplitOptions.ExcludeEmpty);
       'CHECKBIN_LACKS': Flags.CheckBinLacks := value.Split([','], TStringSplitOptions.ExcludeEmpty);
       'CPU':        Flags.Cpu := value.Split([','], TStringSplitOptions.ExcludeEmpty);
+      'PRECOMPILE': Flags.Precompile := value;
       _:            ; // unknown flag, ignore
     end;
   end;
@@ -414,6 +416,24 @@ begin
             ChangeFileExt(ExtractFileName(base), '.exe');
 end;
 
+// %PRECOMPILE units are compiled next to their source, so the test dir must
+// be brought back to .pp-only state afterwards; a .tmp copy can appear too
+// when the main compile decides to recompile the unit (-FU points there)
+procedure CleanupUnitArtifacts(const UnitSrc: String);
+begin
+  if UnitSrc = '' then Exit;
+  var exts: array of String := ['.ppu', '.o'];
+  var tmpStem := IncludeTrailingPathDelimiter(GTempDir) +
+                 ChangeFileExt(ExtractFileName(UnitSrc), '');
+  for var e in exts do
+  begin
+    if FileExists(ChangeFileExt(UnitSrc, e)) then
+      DeleteFile(ChangeFileExt(UnitSrc, e));
+    if FileExists(tmpStem + e) then
+      DeleteFile(tmpStem + e);
+  end;
+end;
+
 procedure CleanupTempArtifacts(const SrcPath, PatchedSrc: String; Failed: Boolean);
 begin
   if GKeepTemp and Failed then Exit;
@@ -503,6 +523,35 @@ begin
   defer CleanupTempArtifacts(SrcPath, patched, R.Verdict = vFail);
 
   var timeoutSec := if R.Flags.Timeout > 0 then R.Flags.Timeout else GTimeoutSec;
+
+  // %PRECOMPILE=unit.pas: compile a helper unit in its own compiler
+  // invocation, so the main compile loads it back from the ppu (exercising
+  // the ppu roundtrip) instead of reusing in-memory defs
+  var preUnitSrc := if R.Flags.Precompile <> '' then
+    ExtractFilePath(SrcPath) + R.Flags.Precompile else '';
+  defer CleanupUnitArtifacts(preUnitSrc);
+  if preUnitSrc <> '' then
+  begin
+    var preDir := ExcludeTrailingPathDelimiter(ExtractFilePath(SrcPath));
+    var preExit: Integer;
+    var preOut: String;
+    var preTimedOut: Boolean;
+    // codegen flags must match BuildCompileArgs, otherwise the main compile
+    // recompiles the unit in-process and the ppu is never loaded back
+    RunCmd(GCompilerPath, ['-FE' + preDir, '-FU' + preDir, '-Twin64', '-Px86_64',
+           '-g-', '-CX', '-XX', '-Xs', preUnitSrc],
+           GBaseDir, timeoutSec, preExit, preOut, preTimedOut);
+    if preTimedOut or (preExit <> 0) then
+    begin
+      R.Verdict := vFail;
+      R.Phase := 'precompile';
+      R.ExitCode := preExit;
+      R.Notes := if preTimedOut then
+        Format('precompile exceeded %d seconds', [timeoutSec]) else preOut;
+      Exit;
+    end;
+  end;
+
   var args := BuildCompileArgs(SrcPath, R.Flags, patched, needsCmdLineMode);
   var compileExit: Integer;
   var compilerOut: String;
@@ -597,6 +646,37 @@ begin
   end;
 end;
 
+// a unit source without any %-flag comment is a %PRECOMPILE helper for some
+// test, not a runnable test; a unit carrying flags (e.g. %NORUN compile-only
+// regression) stays a test
+function IsUnitSource(const Path: String): Boolean;
+begin
+  Result := false;
+  var head := LowerCase(ReadFileHead(Path, 2048));
+  var i := 1;
+  while i <= Length(head) do
+    if head[i] in [' ', #9, #10, #13] then
+      Inc(i)
+    else if head[i] = '{' then
+    begin
+      while (i <= Length(head)) and (head[i] <> '}') do
+      begin
+        if head[i] = '%' then Exit;
+        Inc(i);
+      end;
+      Inc(i);
+    end
+    else if (head[i] = '/') and (i < Length(head)) and (head[i + 1] = '/') then
+    begin
+      while (i <= Length(head)) and not (head[i] in [#10, #13]) do
+        Inc(i);
+    end
+    else
+      break;
+  Result := (Copy(head, i, 4) = 'unit') and (i + 4 <= Length(head)) and
+            (head[i + 4] in [' ', #9, #10, #13]);
+end;
+
 procedure DiscoverTests(const Dir: String; List: TStringList);
 var
   sr: TSearchRec;
@@ -613,6 +693,7 @@ begin
       begin
         if (GFilter <> '') and not ContainsText(full, GFilter) then continue;
         if (GExclude <> '') and ContainsText(full, GExclude) then continue;
+        if IsUnitSource(full) then continue;
         List.Add(full);
       end;
     until FindNext(sr) <> 0;
@@ -742,6 +823,7 @@ begin
     if r.Flags.Fail then head += ' (%FAIL)';
     if r.Flags.NoRun then head += ' (%NORUN)';
     if r.Flags.Opt <> '' then head += ' (%OPT=' + r.Flags.Opt + ')';
+    if r.Flags.Precompile <> '' then head += ' (%PRECOMPILE=' + r.Flags.Precompile + ')';
     if r.Flags.Timeout > 0 then head += ' (%TIMEOUT=' + IntToStr(r.Flags.Timeout) + ')';
     if Length(r.Flags.CheckBinHas) > 0 then
       head += ' (%CHECKBIN_HAS=' + String.Join(',', r.Flags.CheckBinHas) + ')';
