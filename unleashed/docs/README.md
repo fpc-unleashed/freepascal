@@ -56,6 +56,12 @@ Enabled via `{$modeswitch lock}`.
 
 Enabled via `{$modeswitch asyncawait}`.
 
+## [Parallel For](parallelfor.md)
+
+`for parallel [(N)] var i := lo to|downto hi [step s] [chunk c] do STMT` runs the loop body across a `BeginThread` worker pool. Iterations are claimed in chunks from a shared atomic counter (each runs exactly once, order undefined; `chunk c` sets the grab size, default about four grabs per worker), the calling thread joins in as a worker, and the loop is a barrier - it returns only after every iteration has finished. Optional pool size `(N)` clamps to `[1, min(count, 256)]`; the default is `min(GetCPUCount, count)`; `parallel(1)` is plain sequential. The body is hoisted into a hidden nested routine so it can reach the enclosing routine's locals (concurrently, so shared writes need atomics or a lock), and sees `WorkerIndex` / `WorkerCount` for per-worker private state. The dispatch follows the loop variable's width, so int64 ranges past 2^31 work, as do enum and char counters. `downto` and `step` compose; the loop variable must be inline (`var`); `continue` works, `break` cancels cooperatively (no new iterations start, running ones finish), `exit` / `goto`-out and `for ... in` are rejected. The first exception raised on any worker is re-raised on the caller after the barrier; a failed thread spawn just means fewer workers. A parallel loop nested inside another runs its inner body sequentially by default (an explicit `(N)` opts back in) so the thread count stays bounded.
+
+Enabled via `{$modeswitch parallelfor}`.
+
 ## [Multi-Variable Initialization](multi-var-init.md)
 
 Initialize several variables of the same type in one declaration, e.g. `a, b, c: integer = 42;`. Works in `var`, typed constants, and inline `var`. Each variable gets an independent copy of the value - assigning to one does not affect the others.
