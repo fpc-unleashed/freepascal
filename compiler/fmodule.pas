@@ -297,6 +297,15 @@ interface
           owned - generated and freed there) }
         async_thunks: tfplist;
 
+        { the per-module generic thread-entry thunk (tprocdef) synthesized for
+          `for parallel` loops; created forward on first use, implemented and
+          generated at module finish (current_procinfo nil, like init/final) }
+        parfor_thunk_pd: TObject;
+
+        { the nested procedure-variable def (tprocvardef) all `for parallel`
+          workers share; the thunk dereferences a pointer to it to call them }
+        parfor_nested_pvd: TObject;
+
         { this contains a list of units (tmodule) that needs to be waited for until the
           unit can be finished (code generated, etc.); this is needed to handle
           specializations in circular unit usages correctly }
@@ -772,6 +781,8 @@ implementation
         used_rtti_attrs:=tfpobjectlist.create(false);
         lock_cs_syms:=tfplist.create;
         async_thunks:=nil;
+        parfor_thunk_pd:=nil;
+        parfor_nested_pvd:=nil;
         globalsymtable:=nil;
         localsymtable:=nil;
         globalmacrosymtable:=nil;
