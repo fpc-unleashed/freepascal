@@ -1587,9 +1587,11 @@ implementation
               thunkpvs : tparavarsym;
               wst : tsymtable;
               oldsymstack : tsymtablestack;
-              isym,idxsym,parlo,parstep,parcount,parcounter,parcancel,parwp,
-              parnthreads,parkvar,partids : tabstractnormalvarsym;
+              isym,idxsym,parlo,parstep,parcount,parcounter,parwp,
+              parnthreads,parkvar,partids,parexc,parexctaken,parcancel : tabstractnormalvarsym;
               tidtype,tidarrtype : tdef;
+              excstat : tstatementnode;
+              workerbody : tnode;
               old_procinfo : tprocinfo;
               dispstat,parstat : tstatementnode;
             begin
@@ -1772,6 +1774,10 @@ implementation
               parstep:=parfor_make_local(old_procinfo.procdef,'$parstep'+workerpd.unique_id_str,dispdef);
               parcount:=parfor_make_local(old_procinfo.procdef,'$parcnt'+workerpd.unique_id_str,dispdef);
               parcounter:=parfor_make_local(old_procinfo.procdef,'$parctr'+workerpd.unique_id_str,dispdef);
+              { the first worker to fault stores its exception here (claimed via
+                an atomic flag); the caller re-raises it after the barrier }
+              parexc:=parfor_make_local(old_procinfo.procdef,'$parexc'+workerpd.unique_id_str,class_tobject);
+              parexctaken:=parfor_make_local(old_procinfo.procdef,'$parexct'+workerpd.unique_id_str,s32inttype);
               { the cancel flag is written by whichever worker breaks and read
                 by all the others - volatile keeps every check a memory read }
               parcancel:=parfor_make_local(old_procinfo.procdef,'$parcncl'+workerpd.unique_id_str,s32inttype);
@@ -1830,8 +1836,28 @@ implementation
               if assigned(hbody) then
                 addstatement(dispstat,hbody);
               workerloop:=cwhilerepeatnode.create(cordconstnode.create(0,pasbool1type,false),workerloop,false,true);
-              do_typecheckpass(workerloop);
-              workerpi.set_code(workerloop);
+              { wrap the dispatch in try/except: the first worker to fault claims
+                the exception with an atomic flag and hands it to the caller, the
+                rest drop theirs.
+                  try <loop>
+                  except
+                    if InterlockedCompareExchange(exctaken, 1, 0) = 0 then
+                      exc := AcquireExceptionObject
+                  end }
+              workerbody:=internalstatements(excstat);
+              addstatement(excstat,cifnode.create(
+                caddnode.create(equaln,
+                  ccallnode.createintern('INTERLOCKEDCOMPAREEXCHANGE',
+                    ccallparanode.create(cordconstnode.create(0,s32inttype,false),
+                      ccallparanode.create(cordconstnode.create(1,s32inttype,false),
+                        ccallparanode.create(cloadnode.create(parexctaken,parexctaken.owner),nil)))),
+                  cordconstnode.create(0,s32inttype,false)),
+                cassignmentnode.create(cloadnode.create(parexc,parexc.owner),
+                  ctypeconvnode.create_internal(ccallnode.createintern('ACQUIREEXCEPTIONOBJECT',nil),class_tobject)),
+                nil));
+              workerbody:=ctryexceptnode.create(workerloop,nil,workerbody);
+              do_typecheckpass(workerbody);
+              workerpi.set_code(workerbody);
 
               symtablestack.pop(workerpd.localst);
               symtablestack.pop(workerpd.parast);
@@ -1914,6 +1940,8 @@ implementation
                     caddnode.create(subn,hto,cloadnode.create(parlo,parlo.owner)),
                     cloadnode.create(parstep,parstep.owner)),cordconstnode.create(1,s32inttype,false))));
               addstatement(parstat,cassignmentnode.create(cloadnode.create(parcounter,parcounter.owner),cordconstnode.create(0,s32inttype,false)));
+              addstatement(parstat,cassignmentnode.create(cloadnode.create(parexctaken,parexctaken.owner),cordconstnode.create(0,s32inttype,false)));
+              addstatement(parstat,cassignmentnode.create(cloadnode.create(parexc,parexc.owner),cnilnode.create));
               addstatement(parstat,cassignmentnode.create(cloadnode.create(parcancel,parcancel.owner),cordconstnode.create(0,s32inttype,false)));
               { wp := @worker, then store the real caller frame into its parentfp
                 field (the conversion above left it nil): cast @wp to the nested
@@ -1990,6 +2018,10 @@ implementation
                       ccallparanode.create(
                         cvecnode.create(cloadnode.create(partids,partids.owner),cloadnode.create(parkvar,parkvar.owner)),nil))),
                   nil),false));
+              { re-raise the first captured worker exception, now on the caller }
+              addstatement(parstat,cifnode.create(
+                caddnode.create(unequaln,cloadnode.create(parexc,parexc.owner),cnilnode.create),
+                craisenode.create(cloadnode.create(parexc,parexc.owner),nil,nil),nil));
               result:=parblock;
               do_typecheckpass(result);
             end;
