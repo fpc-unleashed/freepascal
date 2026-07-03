@@ -1942,6 +1942,11 @@ implementation
                 bare forward declaration is fine. }
               if not assigned(current_module.parfor_thunk_pd) then
                 begin
+                  { thread creation on unix-like targets needs the cthreads
+                    driver; remind once per module }
+                  if target_info.system in systems_linux+systems_bsd+systems_darwin+
+                                           systems_solaris+systems_aix+systems_android then
+                    Message(parser_h_parallel_for_needs_cthreads);
                   oldsymstack:=symtablestack;
                   symtablestack:=nil;
                   thunkpd:=cprocdef.create(normal_function_level,true);
