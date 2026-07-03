@@ -1,4 +1,4 @@
-program match_dispatching_calls_01;
+program match_proc_calls_01;
 
 {$mode unleashed}
 
