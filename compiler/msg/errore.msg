@@ -1940,6 +1940,10 @@ parser_e_parallel_chunk_must_be_positive=03438_E_`chunk` size must be positive
 % A zero or negative \var{chunk} would make a worker claim nothing and spin.
 % Runtime values below 1 are clamped to 1 instead.
 %
+parser_h_parallel_for_needs_cthreads=03439_H_`for parallel` needs a threading driver on this target - put `cthreads` first in the program uses clause
+% On Unix-like targets thread creation is provided by the \var{cthreads} unit;
+% without it the first spawned worker fails at run time. Windows needs nothing.
+%
 parser_e_interp_fmt_unit=03411_E_String interpolation format requires function "$1" in unit "$2" - add it to uses clause
 % The format mask after \var{:} in a string interpolation depends on a runtime
 % function (such as \var{FormatDateTime} or \var{Format}) that is not visible in
