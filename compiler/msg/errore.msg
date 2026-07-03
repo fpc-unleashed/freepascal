@@ -1913,6 +1913,20 @@ parser_e_async_no_nested=03431_E_`async` cannot run a nested routine - it needs 
 % frame, but the worker thread runs independently of that frame's lifetime.
 % Move the work to a top-level routine (or a method) and pass what it needs
 % as arguments.
+parser_e_parallel_for_requires_var=03432_E_`for parallel` requires an inline loop variable - write `for parallel var i := ...`
+% Each parallel iteration needs its own private loop counter, so the variable
+% must be declared inline with `var`. An existing outer variable would be
+% shared across worker threads, which carries no meaningful value.
+parser_e_parallel_for_no_for_in=03433_E_`for parallel` cannot be combined with a for-in loop
+% Parallel scheduling only covers ordinal `to`/`downto` ranges. Enumerators
+% are inherently sequential, so `for parallel var x in collection` is rejected.
+parser_e_parallel_for_no_exit=03434_E_`exit` is not allowed inside a `for parallel` body
+% The body runs in a hidden worker routine, so `exit` would only leave that
+% iteration, not the enclosing routine. Use `continue` to end the current iteration.
+parser_e_parallel_for_no_goto=03435_E_`goto` leaving a `for parallel` body is not allowed
+% Once the body is lowered to a worker routine, a label outside it lives in a
+% different routine, so the jump cannot be taken. Jumps that stay inside the
+% body are fine.
 %
 parser_e_interp_fmt_unit=03411_E_String interpolation format requires function "$1" in unit "$2" - add it to uses clause
 % The format mask after \var{:} in a string interpolation depends on a runtime

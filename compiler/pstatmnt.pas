@@ -878,6 +878,39 @@ implementation
         result:=p;
       end;
 
+    { parallel-for body checks: break targeting the loop, exit, and goto
+      leaving the body have no meaning once the body runs on worker threads.
+      continue is fine - it ends the current iteration. }
+
+    function parfor_collect_labels(var n: tnode; arg: pointer): foreachnoderesult;
+      begin
+        if n.nodetype=labeln then
+          tfplist(arg).add(tlabelnode(n).labsym);
+        result:=fen_true;
+      end;
+
+    function parfor_check_exit_goto(var n: tnode; arg: pointer): foreachnoderesult;
+      begin
+        result:=fen_true;
+        if n.nodetype=exitn then
+          MessagePos(n.fileinfo,parser_e_parallel_for_no_exit)
+        else if (n.nodetype=goton) and
+                (tfplist(arg).indexof(tgotonode(n).labelsym)<0) then
+          MessagePos(n.fileinfo,parser_e_parallel_for_no_goto);
+      end;
+
+    procedure parfor_validate_body(body: tnode);
+      var
+        lbls: tfplist;
+      begin
+        if not assigned(body) then
+          exit;
+        lbls:=tfplist.create;
+        foreachnodestatic(body,@parfor_collect_labels,lbls);
+        foreachnodestatic(body,@parfor_check_exit_goto,lbls);
+        lbls.free;
+      end;
+
     function for_statement : tnode;
 
         procedure check_range(hp:tnode; fordef: tdef);
@@ -1487,15 +1520,250 @@ implementation
             end;
 
 
+          { Parse `for parallel [(N)] var i [: T] := lo to|downto hi [step s] do
+            body`. `parallel` has already been consumed; the current token is
+            `(` or `var`. for-in, a missing inline var, and break/exit/goto in
+            the body are rejected. }
+          function parallel_for_statement : tnode;
+            var
+              threadcount,
+              hloopvar,hfrom,hto,hstep,hbody : tnode;
+              loopvs : tabstractnormalvarsym;
+              backward : boolean;
+              parforblockst : tblocksymtable;
+              oldbt : tblock_type;
+              hpdef : tdef;
+            begin
+              result:=nil;
+              threadcount:=nil;
+              hstep:=nil;
+
+              { optional (N) thread count - evaluated by the lowering, ignored here }
+              if try_to_consume(_LKLAMMER) then
+                begin
+                  threadcount:=comp_expr([ef_accept_equal]);
+                  consume(_RKLAMMER);
+                end;
+
+              { an inline loop variable is mandatory - a shared outer counter
+                would be meaningless across threads }
+              if current_scanner.token<>_VAR then
+                begin
+                  Message(parser_e_parallel_for_requires_var);
+                  threadcount.free;
+                  result:=cerrornode.create;
+                  exit;
+                end;
+              consume(_VAR);
+
+              if current_scanner.token<>_ID then
+                begin
+                  consume(_ID);
+                  threadcount.free;
+                  result:=cerrornode.create;
+                  exit;
+                end;
+
+              { block scope for the loop variable }
+              parforblockst:=nil;
+              if assigned(current_procinfo) then
+                begin
+                  parforblockst:=tblocksymtable.create(symtablestack.top);
+                  symtablestack.push(parforblockst);
+                end;
+
+              if symtablestack.top.symtabletype in [localsymtable,blocksymtable] then
+                loopvs:=clocalvarsym.create(current_scanner.orgpattern,vs_value,generrordef,[])
+              else
+                loopvs:=cstaticvarsym.create(current_scanner.orgpattern,vs_value,generrordef,[]);
+              loopvs.register_sym;
+              symtablestack.top.insertsym(loopvs);
+              consume(_ID);
+
+              { explicit type, or inferred from the start value below }
+              if try_to_consume(_COLON) then
+                begin
+                  oldbt:=block_type;
+                  block_type:=bt_var_type;
+                  read_anon_type(hpdef,false,nil);
+                  block_type:=oldbt;
+                  loopvs.vardef:=hpdef;
+                  if loopvs.typ=staticvarsym then
+                    cnodeutils.insertbssdata(tstaticvarsym(loopvs));
+                end;
+
+              { for-in is inherently sequential and not allowed. `in` lexes to
+                the operator token, so test idtoken like consume does }
+              if current_scanner.idtoken=_IN then
+                begin
+                  Message(parser_e_parallel_for_no_for_in);
+                  consume(_IN);
+                  hfrom:=comp_expr([ef_accept_equal]);
+                  hfrom.free;
+                  if try_to_consume(_DO) then
+                    begin
+                      hbody:=statement;
+                      hbody.free;
+                    end;
+                  threadcount.free;
+                  result:=cerrornode.create;
+                  if assigned(parforblockst) then
+                    begin
+                      symtablestack.pop(parforblockst);
+                      parforblockst.free;
+                    end;
+                  exit;
+                end;
+
+              consume(_ASSIGNMENT);
+              hfrom:=comp_expr([ef_accept_equal]);
+              typecheckpass(hfrom);
+
+              if loopvs.vardef=generrordef then
+                begin
+                  if assigned(hfrom.resultdef) and (hfrom.resultdef<>generrordef) then
+                    begin
+                      if not(nf_explicit in hfrom.flags) and is_integer(hfrom.resultdef) and
+                         (torddef(hfrom.resultdef).ordtype in [s8bit,u8bit,s16bit,u16bit]) then
+                        loopvs.vardef:=s32inttype
+                      else
+                        loopvs.vardef:=hfrom.resultdef;
+                      if loopvs.typ=staticvarsym then
+                        cnodeutils.insertbssdata(tstaticvarsym(loopvs));
+                    end;
+                end;
+
+              hloopvar:=cloadnode.create(loopvs,loopvs.owner);
+              typecheckpass(hloopvar);
+
+              if (
+                  not(is_ordinal(hloopvar.resultdef))
+        {$if not defined(cpu64bitaddr) and not defined(cpu64bitalu)}
+                  or is_64bitint(hloopvar.resultdef)
+        {$endif not cpu64bitaddr and not cpu64bitalu}
+                ) and
+                (hloopvar.resultdef.typ<>undefineddef) then
+                begin
+                  MessagePos(hloopvar.fileinfo,type_e_ordinal_expr_expected);
+                  hloopvar.resultdef:=generrordef;
+                end;
+
+              include(loopvs.varoptions,vo_is_loop_counter);
+
+              if try_to_consume(_DOWNTO) then
+                backward:=true
+              else
+                begin
+                  consume(_TO);
+                  backward:=false;
+                end;
+              hto:=comp_expr([ef_accept_equal]);
+
+              if (m_for_step in current_settings.modeswitches) and (current_scanner.token=_ID) and (current_scanner.pattern='STEP') then
+                begin
+                  consume(_ID);
+                  hstep:=comp_expr([ef_accept_equal]);
+                  typecheckpass(hstep);
+                  if not is_ordinal(hstep.resultdef) then
+                    begin
+                      Message(parser_e_for_step_not_ordinal);
+                      hstep.free;
+                      hstep:=nil;
+                    end
+                  else if (hstep.nodetype=ordconstn) and (tordconstnode(hstep).value<=0) then
+                    Message(parser_e_for_step_must_be_positive);
+                end;
+              consume(_DO);
+
+              check_range(hfrom,hloopvar.resultdef);
+              check_range(hto,hloopvar.resultdef);
+              set_varstate(hfrom,vs_read,[vsf_must_be_valid]);
+              typecheckpass(hto);
+              set_varstate(hto,vs_read,[vsf_must_be_valid]);
+              set_varstate(hloopvar,vs_written,[]);
+              set_varstate(hloopvar,vs_read,[vsf_must_be_valid]);
+
+              hbody:=statement;
+
+              exclude(loopvs.varoptions,vo_is_loop_counter);
+
+              { exit/goto cannot cross worker threads }
+              parfor_validate_body(hbody);
+
+              { the body runs sequentially for now; the thread count is parsed
+                but not yet applied by a worker dispatch }
+              threadcount.free;
+              result:=cfornode.create(hloopvar,hfrom,hto,hbody,backward);
+              tfornode(result).loopstep:=hstep;
+
+              if assigned(parforblockst) then
+                begin
+                  symtablestack.pop(parforblockst);
+                  if not assigned(current_procinfo.procdef.blocklocalsymtables) then
+                    current_procinfo.procdef.blocklocalsymtables:=tfpobjectlist.create(true);
+                  current_procinfo.procdef.blocklocalsymtables.add(parforblockst);
+                  hloopvar:=cblocknode.create(cstatementnode.create(result,nil));
+                  hloopvar.fileinfo:=result.fileinfo;
+                  tblocknode(hloopvar).blocksymtable:=parforblockst;
+                  result:=hloopvar;
+                end;
+            end;
+
+
       var
          hloopvar: tnode;
          vs : tabstractnormalvarsym;
          hdef : tdef;
          old_block_type : tblock_type;
          forblockst : tblocksymtable;
+         parname,parupname : string;
+         parsym : tsym;
+         parsymtable : tsymtable;
       begin
          { parse loop header }
          consume(_FOR);
+
+         { `for parallel [(N)] var ...` runs the body on worker threads.
+           `parallel` is a soft keyword: it only starts a parallel loop when
+           the next token is `var` or `(`. After an ordinary variable named
+           parallel comes `:=` or `in`, and the loop is parsed as usual. }
+         if (m_parallelfor in current_settings.modeswitches) and
+            (current_scanner.token=_ID) and (current_scanner.pattern='PARALLEL') then
+           begin
+             parname:=current_scanner.orgpattern;
+             parupname:=current_scanner.pattern;
+             consume(_ID);
+             { only `:=` or `in` next means parallel is an ordinary loop
+               variable; anything else starts a parallel loop (a malformed
+               header is diagnosed inside parallel_for_statement). `in` lexes
+               to the operator token, so test idtoken for it }
+             if (current_scanner.token<>_ASSIGNMENT) and (current_scanner.idtoken<>_IN) then
+               begin
+                 result:=parallel_for_statement;
+                 exit;
+               end;
+             { ordinary variable named parallel - rebuild the loop variable }
+             if searchsym(parupname,parsym,parsymtable) then
+               begin
+                 addsymref(parsym);
+                 hloopvar:=cloadnode.create(parsym,parsymtable);
+               end
+             else
+               begin
+                 Message1(sym_e_id_not_found,parname);
+                 hloopvar:=cerrornode.create;
+               end;
+             typecheckpass(hloopvar);
+             valid_for_loopvar(hloopvar,true);
+             if try_to_consume(_ASSIGNMENT) then
+               result:=for_loop_create(hloopvar)
+             else
+               begin
+                 consume(_IN);
+                 result:=for_in_loop_create(hloopvar)
+               end;
+             exit;
+           end;
 
          { Check for inline variable declaration: for var I ... }
          if (current_scanner.token = _VAR) and (m_inline_var in current_settings.modeswitches) then
