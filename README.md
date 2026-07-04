@@ -24,6 +24,7 @@
   - [Async / Await (thread futures)](#async--await)
   - [For-Step](#for-step)
   - [Auto-Properties](#auto-properties)
+  - [Parallel For](#parallel-for)
   - [Tweaks](#tweaks)
   - [Multiline Strings](#multiline-strings)
   - [String Interpolation](#string-interpolation)
@@ -65,6 +66,7 @@ The following modeswitches are enabled automatically:
 | `multivarinit`                     | Initialize several variables of the same type with one value  |
 | `forstep`                          | `step N` clause in `for` loops to advance by N each iteration |
 | `autoproperties`                   | Accessor-less property synthesizes a backing field (`read FName write FName`) |
+| `parallelfor`                      | `for parallel` runs the loop body across a BeginThread worker pool |
 | `anonymousfunctions`               | Anonymous procedures and functions                            |
 | `functionreferences`               | Function pointers that capture context                        |
 | `advancedrecords`                  | Records with methods, properties, and operators               |
@@ -811,6 +813,48 @@ type
 A `class property` gets a `class var` backing field, advanced records get an ordinary field, and a `published` auto-property is RTTI-complete (works with `TypInfo`). The feature triggers only when a property has a type and neither `read` nor `write`; explicit accessors and the typeless `property X;` reintroduction form are untouched. Indexed bare properties, a backing-field name collision, and `readonly; writeonly;` together are compile errors. Initializers apply to classes and objects, not records or indexed properties.
 
 See [unleashed/docs/auto-properties.md](unleashed/docs/auto-properties.md) for the full reference.
+
+---
+
+### Parallel For
+
+**Activate:** available in Unleashed mode (modeswitch `parallelfor`).
+
+Run the loop body across a thread pool instead of one iteration after another. `parallel` goes between `for` and the loop header; the counter must be declared inline so each worker owns its own copy.
+
+```pascal
+uses SysUtils;
+
+var total: Integer;
+begin
+  total := 0;
+  for parallel var i := 1 to 1000000 do
+    InterlockedExchangeAdd(total, i);     // each i runs once, on some worker
+end;
+```
+
+The pool is built on `BeginThread`. Workers claim iterations in chunks from a shared atomic counter, so the work is balanced automatically but the order, and which thread runs a given `i`, are undefined. Several bodies run at once, so anything they share has to be touched atomically or under a `lock`. The loop is a barrier: it returns only once every iteration has finished. The dispatch follows the loop variable's width, so an `Int64` counter covers ranges past 2^31, and enum / char counters work too.
+
+An optional pool size goes in parentheses; the default is `min(GetCPUCount, iteration_count)`, and the value is clamped to `[1, min(count, 256)]`. The calling thread joins in as a worker, so `parallel(1)` spawns nothing and is a plain sequential loop.
+
+```pascal
+for parallel(4) var i := 1 to N do ...    // at most 4 workers
+for parallel var i := 100 downto 1 step 2 do ...   // downto and step compose
+for parallel var i := 1 to N chunk 4096 do ...     // 4096 indices per counter grab
+```
+
+`chunk` sits after `step` and sets how many indices one counter grab claims - large for tiny uniform bodies (kills the atomic overhead), small for expensive uneven ones (better balancing). Without it the size lands at about four grabs per worker. Inside the body `WorkerIndex` (0..`WorkerCount`-1, stable per worker) and `WorkerCount` give each worker a private slot for scratch state or partial sums, no atomics needed:
+
+```pascal
+var acc: array[0..3] of Int64;
+...
+for parallel(4) var i := 1 to N do
+  acc[WorkerIndex] := acc[WorkerIndex] + Weight(i);   // private per worker
+```
+
+The body is hoisted into a hidden nested routine, so it can read and write the enclosing routine's locals across the threads (concurrently - same atomic/lock caveat). The first exception raised on any worker is caught and re-raised on the calling thread after the barrier, so a fault surfaces as an ordinary exception at the loop rather than a crash on a helper thread.
+
+`continue` works as usual. `break` cancels the loop cooperatively: no new iteration starts, the ones already running finish, then the barrier joins - with one worker it is exact, like a sequential loop. `exit` and `goto` out of the body are rejected (a pool that must join its threads cannot leave a routine mid-flight), as is `for ... in`. A parallel loop nested inside another runs its inner body sequentially by default - each loop has its own pool, so a default inner pool would oversubscribe the cores; an explicit `(N)` on the inner loop opts back into nested parallelism. On Unix the program needs a threading driver (`cthreads` first in `uses`), like any threaded FPC program.
 
 ---
 

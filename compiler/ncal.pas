@@ -3968,11 +3968,11 @@ implementation
                                 current_procinfo.set_needs_parentfp(tprocdef(procdefinition.owner.defowner).parast.symtablelevel);
                            end;
                         end
-                      { exceptfilters called from main level are not owned }
-                      else if procdefinition.proctypeoption=potype_exceptfilter then
-                        hiddentree:=cloadparentfpnode.create(current_procinfo.procdef,lpf_forpara)
+                      { exceptfilters and other routines outlined at main/unit
+                        level have no owning procdef; their parentfp is the
+                        calling routine's own frame }
                       else
-                        internalerror(200309287);
+                        hiddentree:=cloadparentfpnode.create(current_procinfo.procdef,lpf_forpara);
                     end
                   else if not(po_is_block in procdefinition.procoptions) then
                     hiddentree:=gen_procvar_context_tree_parentfp

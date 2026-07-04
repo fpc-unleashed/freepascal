@@ -578,7 +578,8 @@ interface
          m_thread_static,       { allow `threadstatic x := ...` per-thread static via TLS }
          m_autoproperties,      { accessor-less property synthesizes a backing field and binds read/write to it directly }
          m_lock,                { thread-safe locking: `lock(v) do stmt` / `trylock ... wait N do ... else ...` }
-         m_asyncawait           { `async expr` runs on a worker thread yielding `future of T`; `await f` joins and reads the result }
+         m_asyncawait,          { `async expr` runs on a worker thread yielding `future of T`; `await f` joins and reads the result }
+         m_parallelfor          { run `for parallel [(N)] var i := lo to hi do` body across worker threads }
        );
        tmodeswitches = set of tmodeswitch;
 
@@ -806,7 +807,8 @@ interface
          'THREADSTATIC',
          'AUTOPROPERTIES',
          'LOCK',
-         'ASYNCAWAIT'
+         'ASYNCAWAIT',
+         'PARALLELFOR'
          );
 
 

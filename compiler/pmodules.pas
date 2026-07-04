@@ -54,7 +54,7 @@ implementation
        pkgutil,
        wpobase,
        scanner,pbase,pexpr,psystem,psub,pgenutil,pparautl,ncgvmt,ncgrtti,
-       ncal,nld,
+       ncal,nld,nflw,ncon,nmem,ncnv,
        cpuinfo;
 
 
@@ -1159,6 +1159,64 @@ implementation
       end;
 
 
+    { Implement and generate the per-module `for parallel` thread-entry thunk.
+      Run at module finish where current_procinfo is nil, mirroring the way the
+      unit init/final routines are generated. The body just forwards to the
+      nested worker captured in the procvar pointed to by the thread parameter. }
+    procedure implement_parfor_thunk(curr: tmodule);
+      var
+        thunkpd : tprocdef;
+        thunkpi : tcgprocinfo;
+        body : tnode;
+        stat : tstatementnode;
+        psym : tparavarsym;
+        i : longint;
+      begin
+        if not assigned(curr.parfor_thunk_pd) then
+          exit;
+        thunkpd:=tprocdef(curr.parfor_thunk_pd);
+        thunkpd.forwarddef:=false;
+        thunkpi:=tcgprocinfo(cprocinfo.create(nil));
+        thunkpi.procdef:=thunkpd;
+        include(thunkpi.flags,pi_do_call);
+        curr.procinfo:=thunkpi;
+        current_procinfo:=thunkpi;
+        thunkpi.entrypos:=thunkpd.fileinfo;
+        thunkpi.entryswitches:=current_settings.localswitches;
+        thunkpi.exitpos:=thunkpd.fileinfo;
+        thunkpi.exitswitches:=current_settings.localswitches;
+        thunkpd.aliasnames.insert(thunkpd.mangledname);
+        insert_funcret_local(thunkpd);
+        alloc_proc_symbol(thunkpd);
+        symtablestack.push(thunkpd.parast);
+        symtablestack.push(thunkpd.localst);
+        { find the visible thread parameter `p` }
+        psym:=nil;
+        for i:=0 to thunkpd.parast.SymList.Count-1 do
+          if (tsym(thunkpd.parast.SymList[i]).typ=paravarsym) and
+             ([vo_is_hidden_para,vo_is_funcret]*tparavarsym(thunkpd.parast.SymList[i]).varoptions=[]) then
+            begin
+              psym:=tparavarsym(thunkpd.parast.SymList[i]);
+              break;
+            end;
+        body:=internalstatements(stat);
+        { call the nested worker procvar that `p` points to:
+            PNestedProcvar(p)^() }
+        addstatement(stat,ccallnode.create_procvar(nil,
+          cderefnode.create(ctypeconvnode.create_internal(
+            cloadnode.create(psym,psym.owner),
+            cpointerdef.getreusable(tprocvardef(curr.parfor_nested_pvd))))));
+        typecheckpass(body);
+        thunkpi.code:=body;
+        symtablestack.pop(thunkpd.localst);
+        symtablestack.pop(thunkpd.parast);
+        thunkpi.generate_code_tree;
+        thunkpi.resetprocdef;
+        current_procinfo:=nil;
+        curr.procinfo:=nil;
+      end;
+
+
     procedure copy_macro(p:TObject; arg:pointer);
       begin
         TModule(arg).globalmacrosymtable.insertsym(tmacro(p).getcopy);
@@ -1775,6 +1833,7 @@ type
            end;
 
          implement_async_thunks(module);
+         implement_parfor_thunk(module);
 
          symtablestack.pop(module.localsymtable);
          symtablestack.pop(module.globalsymtable);
@@ -2902,6 +2961,7 @@ type
         main_procinfo.resetprocdef;
         release_main_proc(curr,main_procinfo);
         implement_async_thunks(curr);
+        implement_parfor_thunk(curr);
         if assigned(init_procinfo) then
           begin
             { initialization can be implicit only }
