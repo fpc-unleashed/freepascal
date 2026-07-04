@@ -291,6 +291,12 @@ interface
           init/final sections (entries are tstaticvarsym, not owned) }
         lock_cs_syms: tfplist;
 
+        { module-level thread-entry thunks synthesized for `async` call sites;
+          their bodies reference a routine-local impl class, so they are created
+          forward and code-generated at module finish (entries are tcgprocinfo,
+          owned - generated and freed there) }
+        async_thunks: tfplist;
+
         { this contains a list of units (tmodule) that needs to be waited for until the
           unit can be finished (code generated, etc.); this is needed to handle
           specializations in circular unit usages correctly }
@@ -765,6 +771,7 @@ implementation
         waitingunits:=tfpobjectlist.create(false);
         used_rtti_attrs:=tfpobjectlist.create(false);
         lock_cs_syms:=tfplist.create;
+        async_thunks:=nil;
         globalsymtable:=nil;
         localsymtable:=nil;
         globalmacrosymtable:=nil;
@@ -892,6 +899,8 @@ implementation
         used_rtti_attrs := nil;
         lock_cs_syms.free;
         lock_cs_syms := nil;
+        async_thunks.free;
+        async_thunks := nil;
         stringdispose(asmprefix);
         stringdispose(deprecatedmsg);
         stringdispose(namespace);

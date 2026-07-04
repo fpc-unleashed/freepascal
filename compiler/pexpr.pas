@@ -95,7 +95,7 @@ implementation
        nmat,nadd,nmem,nset,ncnv,ninl,ncon,nld,nflw,nbas,nutils,
        { parser }
        scanner,
-       pbase,pstatmnt,pinline,ptype,pgenutil,psub,procinfo,cpuinfo
+       pbase,pstatmnt,pinline,ptype,pgenutil,psub,procdefutil,procinfo,cpuinfo
        ;
 
     function sub_expr(pred_level:Toperator_precedence;flags:texprflags;factornode:tnode):tnode;forward;
@@ -4404,6 +4404,7 @@ implementation
            srsymtable: TSymtable;
            labsym: tlabelsym;
            hdef: tdef;
+           pd: tprocdef;
            orgstoredpattern,
            storedpattern: string;
            t : ttoken;
@@ -4474,6 +4475,59 @@ implementation
                p1:=parse_alignof_like_intrinsic(true);
                again:=false;
                exit;
+             end;
+
+           { `await <future>` is a prefix operator joining a worker thread. it
+             binds at factor level, so `await x + 1` is `(await x) + 1`. only
+             intercept when no `await` symbol is in scope, so a user-declared
+             `await` keeps resolving normally. }
+           if (current_scanner.token=_ID) and
+              (m_asyncawait in current_settings.modeswitches) and
+              (current_scanner.pattern='AWAIT') then
+             begin
+               searchsym(current_scanner.pattern,srsym,srsymtable);
+               if not assigned(srsym) then
+                 begin
+                   consume(_ID);
+                   p1:=cawaitnode.create(factor(false,[]));
+                   again:=false;
+                   exit;
+                 end;
+             end;
+
+           { `async <call>` spawns the call on a worker thread (snapshotting its
+             arguments); `async begin..end` runs the block, capturing referenced
+             locals by reference through the anonymous-function machinery. both
+             yield a future. same soft-keyword guard as `await`. }
+           if (current_scanner.token=_ID) and
+              (m_asyncawait in current_settings.modeswitches) and
+              (current_scanner.pattern='ASYNC') then
+             begin
+               searchsym(current_scanner.pattern,srsym,srsymtable);
+               if not assigned(srsym) then
+                 begin
+                   consume(_ID);
+                   if current_scanner.token=_BEGIN then
+                     begin
+                       pd:=read_async_block;
+                       do_proc_call(pd.procsym,pd.owner,nil,
+                         not (current_scanner.token in [_POINT,_CARET,_LECKKLAMMER]),
+                         again,p1,[],nil);
+                       { convert the anonymous procedure to a function reference
+                         so the capturer holds the referenced locals by reference }
+                       if (p1.nodetype<>errorn) and assigned(pd) then
+                         p1:=ctypeconvnode.create(p1,async_block_funcref(pd));
+                       p1:=casyncnode.create(p1,true);
+                     end
+                   else
+                     { parse a full expression, not a factor: a generic
+                       specialization (`async Foo<Bar>(x)`) is disambiguated at
+                       the operator level. anything that is not a call is
+                       rejected during typecheck anyway }
+                     p1:=casyncnode.create(comp_expr([]),false);
+                   again:=false;
+                   exit;
+                 end;
              end;
 
            { the two-argument SwapValues(a,b) is a bitwise swap builtin that needs no

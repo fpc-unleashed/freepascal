@@ -1883,6 +1883,36 @@ parser_e_trylock_wait_negative=03417_E_`wait` value must be non-negative
 parser_e_lock_no_wait=03418_E_`lock` cannot take a `wait` clause - use `trylock` for bounded acquisition
 % `lock` always blocks until every listed lock is acquired. When giving up
 % after a budget is wanted, use `trylock ... wait N do ... else ...`.
+parser_e_async_needs_call=03426_E_`async` requires a routine call or a `begin..end` block
+% `async` spawns a worker thread for a unit of work. That work must be a
+% routine call (`async fetch(x)`) whose arguments are snapshotted now, or a
+% `begin..end` block (`async begin ... end`) whose captured locals are shared.
+% A bare expression has nothing to run on the thread - wrap it in a function.
+parser_e_await_needs_future=03427_E_`await` requires a future expression
+% `await` joins the worker thread behind a future and yields its result. The
+% operand must be a `future of T` (or a bare `future`) produced by `async` or
+% returned from a routine. It cannot be applied to an ordinary value.
+parser_e_async_stmt_captures_local=03429_E_`async` on a statement that reads local variables; wrap it in `async begin ... end` to capture them
+% A bare statement intrinsic such as `async writeln(x)` runs on the worker
+% thread with its operands evaluated there; it cannot reach a local variable of
+% the spawning routine. Use the block form `async begin ... end`, which captures
+% referenced locals by reference, or pass the value through a routine call.
+parser_e_future_needs_await=03428_E_future value used without `await` - call `await` to read its result
+% A `future of T` is an opaque handle to a pending thread result, not a T. To
+% read the computed value (and block until the worker finishes), apply `await`.
+% A future has no other readable representation, so it cannot be printed,
+% concatenated, or converted directly.
+parser_e_async_no_var_param=03430_E_`async` cannot pass a `var` or `out` argument - the snapshot would drop the worker's writes
+% The call form of `async` copies every argument by value at the spawn point
+% and the worker writes only to those copies, so a `var`/`out` parameter would
+% silently never update the caller's variable. Use the block form
+% `async begin ... end`, which captures locals by reference, or return the
+% value through the future instead.
+parser_e_async_no_nested=03431_E_`async` cannot run a nested routine - it needs the enclosing frame, which may be gone before the worker runs
+% A nested routine reaches its parent's locals through the enclosing stack
+% frame, but the worker thread runs independently of that frame's lifetime.
+% Move the work to a top-level routine (or a method) and pass what it needs
+% as arguments.
 %
 parser_e_interp_fmt_unit=03411_E_String interpolation format requires function "$1" in unit "$2" - add it to uses clause
 % The format mask after \var{:} in a string interpolation depends on a runtime
@@ -1922,7 +1952,7 @@ parser_e_auto_property_init_context=03425_E_Property initializer requires an acc
 %
 # Type Checking
 #
-# 03425 is the last used parser one
+# 03431 is the last used parser one
 #
 # 04136 is the last used one
 #

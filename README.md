@@ -21,6 +21,7 @@
   - [Thread-Static Variables](#thread-static-variables)
   - [Scoped Cleanup (defer, autofree, scoped with)](#scoped-cleanup)
   - [Lock (lock, trylock)](#lock)
+  - [Async / Await (thread futures)](#async--await)
   - [For-Step](#for-step)
   - [Auto-Properties](#auto-properties)
   - [Tweaks](#tweaks)
@@ -76,6 +77,7 @@ The following modeswitches are enabled automatically:
 | `stringordcast`                    | Cast a string literal to an ordinal type (`dword('RIFF')`)    |
 | `autofree`                         | `defer STATEMENT`, `autofree EXPR`, scoped `with var x := ...` |
 | `lock`                             | `lock(v) do ...` / `trylock ... wait N do ... else ...` thread-safe blocks |
+| `asyncawait`                       | `async <call>` / `async begin..end` spawn a worker thread returning a `future of T`; `await f` joins it |
 | `flexiblearrays`                   | C99-style flexible array member as last record field (`array[] of T`) |
 | `typehelpers` + `multihelpers`     | Multiple type helpers per type, including primitive types     |
 
@@ -713,6 +715,39 @@ trylock(LogCS) do Flush(LogFile) else ;   // explicit "skip if busy"
 Hidden critical sections are created per callsite (bare form) or per variable (`lock(v)` - the identifier is the lock name, shared program-wide) and wired into the unit's `initialization` / `finalization` automatically. Multi-lock sites sort the lock list by name, so `lock(a, b)` and `lock(b, a)` cannot deadlock each other; `trylock` on multiple locks is all-or-nothing with rollback. The wait machinery uses only `system`-unit primitives - no SysUtils dependency, no clock reads.
 
 See [unleashed/docs/lock.md](unleashed/docs/lock.md) for grammar, lowering, timing contract, and the error catalogue.
+
+---
+
+### Async / Await
+
+**Activate:** available in Unleashed mode (modeswitch `asyncawait`).
+
+Thread futures in the `std::async` style: `async` runs work on a fresh worker thread and returns a handle, `await` joins that thread and reads the result. No function coloring, no event loop - one `async` is one thread, one `await` is one join.
+
+```pascal
+var z := async fetchName;        // future of string, worker started
+var a := 2;
+var sum := async add(a, 3);      // arguments snapshotted now, by value
+a := 100;                        // does not change sum
+writeln(await z);                // 'fpc unleashed' (blocks until done)
+writeln(await sum);              // 5
+writeln(await sum + 1);          // 6 - second await is cached, does not wait
+```
+
+The call form snapshots the call's arguments by value at the spawn point. The block form `async begin..end` captures referenced locals **by reference** (heap-allocated, reference-counted), so the future may outlive the routine that spawned it:
+
+```pascal
+counter := 0;
+var w := async begin counter := counter + 41; end;
+await w;                         // statement: just joins
+writeln(counter + 1);            // 42
+```
+
+Discard the future for fire-and-forget (the worker holds the only reference and the future frees itself when done). A worker exception is re-raised on the caller at the first `await`; a fire-and-forget future swallows it. Reading a future without `await`, awaiting a non-future, or `async` on a bare expression are compile errors.
+
+Built on `system`-unit thread primitives with no RTL changes. On Unix add `cthreads` as the program's first unit.
+
+See [unleashed/docs/async-await.md](unleashed/docs/async-await.md) for the full semantics, exception handling, and the data-race caveats.
 
 ---
 
