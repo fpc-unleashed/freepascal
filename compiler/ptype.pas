@@ -532,6 +532,23 @@ implementation
 
                _ID:
                  begin
+                   { `future of T` / bare `future` - contextual: only when the
+                     modeswitch is on and `future` leads a type. lowers to the
+                     synthesized future interface (voidtype payload for bare
+                     `future`) }
+                   if (m_asyncawait in current_settings.modeswitches) and
+                      (current_scanner.pattern='FUTURE') then
+                     begin
+                       consume(_ID);
+                       if try_to_consume(_OF) then
+                         begin
+                           single_type(t2,[stoAllowTypeDef]);
+                           def:=get_future_intf_def(t2);
+                         end
+                       else
+                         def:=get_future_intf_def(nil);
+                     end
+                   else
                    if not (m_implicit_generics in current_settings.modeswitches) and try_to_consume(_SPECIALIZE) then
                      begin
                        if ([stoAllowSpecialization,stoAllowTypeDef] * options = []) then
@@ -2417,6 +2434,25 @@ implementation
              ) and
              (current_scanner.token<>_STRING) and (current_scanner.token<>_FILE) then
            consume(_ID);
+         { `future of T` / bare `future` in a named/var/type position; the
+           element type (and result types) reach the analogous check in
+           single_type }
+         if (m_asyncawait in current_settings.modeswitches) and
+            (current_scanner.token=_ID) and
+            (current_scanner.pattern='FUTURE') then
+           begin
+             consume(_ID);
+             if try_to_consume(_OF) then
+               begin
+                 single_type(tt2,[stoAllowTypeDef]);
+                 def:=get_future_intf_def(tt2);
+               end
+             else
+               def:=get_future_intf_def(nil);
+             if def=nil then
+               def:=generrordef;
+             exit;
+           end;
          case current_scanner.token of
             _STRING,_FILE:
               begin

@@ -2517,7 +2517,8 @@ const
          'm_interpolated_strings',{ allow $'...' string interpolation syntax }
          'm_thread_static',       { allow `threadstatic x := ...` per-thread static via TLS }
          'm_autoproperties',      { accessor-less property synthesizes a backing field and binds read/write to it directly }
-         'm_lock'                 { thread-safe locking: `lock(v) do stmt` / `trylock ... wait N do ... else ...` }
+         'm_lock',                { thread-safe locking: `lock(v) do stmt` / `trylock ... wait N do ... else ...` }
+         'm_asyncawait'           { `async expr` runs on a worker thread yielding `future of T`; `await f` joins }
        );
        { optimizer }
        optimizerswitchname : array[toptimizerswitch] of string[50] =
