@@ -147,7 +147,12 @@ for var ch in 'hello' do  // ch is Char
 
 for var item in MyList do  // type from enumerator
   writeln(item);
+
+for var s in ['abc', 'longer string'] do  // s is AnsiString
+  writeln(s);
 ```
+
+String literals in an array literal infer `AnsiString` for the loop variable, same as `var a := [...]` inference - every element is kept fully even when the first one is the shortest. Without this rule the variable would take the literal's carrier type sized to the first element and silently truncate the rest. Char literals keep `Char`.
 
 ## Scoping
 
