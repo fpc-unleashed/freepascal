@@ -1913,6 +1913,36 @@ parser_e_async_no_nested=03431_E_`async` cannot run a nested routine - it needs 
 % frame, but the worker thread runs independently of that frame's lifetime.
 % Move the work to a top-level routine (or a method) and pass what it needs
 % as arguments.
+parser_e_parallel_for_requires_var=03432_E_`for parallel` requires an inline loop variable - write `for parallel var i := ...`
+% Each parallel iteration needs its own private loop counter, so the variable
+% must be declared inline with `var`. An existing outer variable would be
+% shared across worker threads, which carries no meaningful value.
+parser_e_parallel_for_no_for_in=03433_E_`for parallel` cannot be combined with a for-in loop
+% Parallel scheduling only covers ordinal `to`/`downto` ranges. Enumerators
+% are inherently sequential, so `for parallel var x in collection` is rejected.
+parser_e_parallel_for_no_exit=03434_E_`exit` is not allowed inside a `for parallel` body
+% The body runs in a hidden worker routine, so `exit` would only leave that
+% iteration, not the enclosing routine. Use `continue` to end the current iteration.
+parser_e_parallel_for_no_goto=03435_E_`goto` leaving a `for parallel` body is not allowed
+% Once the body is lowered to a worker routine, a label outside it lives in a
+% different routine, so the jump cannot be taken. Jumps that stay inside the
+% body are fine.
+%
+parser_e_parallel_for_no_int64_dispatch=03436_E_a 64-bit `for parallel` loop variable is not supported on this target
+% The pool hands out iterations through 64-bit interlocked operations, which
+% this target does not provide. Use a 32-bit loop variable instead.
+%
+parser_e_parallel_chunk_not_ordinal=03437_E_`chunk` size must be an ordinal value
+% The \var{chunk} clause of a parallel loop sets how many iterations a worker
+% claims per grab, so it has to be an integer-like value.
+%
+parser_e_parallel_chunk_must_be_positive=03438_E_`chunk` size must be positive
+% A zero or negative \var{chunk} would make a worker claim nothing and spin.
+% Runtime values below 1 are clamped to 1 instead.
+%
+parser_h_parallel_for_needs_cthreads=03439_H_`for parallel` needs a threading driver on this target - put `cthreads` first in the program uses clause
+% On Unix-like targets thread creation is provided by the \var{cthreads} unit;
+% without it the first spawned worker fails at run time. Windows needs nothing.
 %
 parser_e_interp_fmt_unit=03411_E_String interpolation format requires function "$1" in unit "$2" - add it to uses clause
 % The format mask after \var{:} in a string interpolation depends on a runtime
