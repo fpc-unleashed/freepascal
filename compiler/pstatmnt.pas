@@ -1222,7 +1222,14 @@ implementation
 
               case expr.resultdef.typ of
                 arraydef:
-                  result := tarraydef(expr.resultdef).elementdef;
+                  begin
+                    result := tarraydef(expr.resultdef).elementdef;
+                    { string literals carry a conststring array def sized
+                      to the first element which would truncate longer
+                      elements, widen to AnsiString like var x := [...] }
+                    if is_conststring_array(result) then
+                      result := getansistringdef;
+                  end;
                 stringdef:
                   begin
                     if is_wide_or_unicode_string(expr.resultdef) or
