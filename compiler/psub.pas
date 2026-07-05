@@ -3010,6 +3010,7 @@ implementation
     function read_async_block:tprocdef;
       var
         pd : tprocdef;
+        cancelsym : tparavarsym;
         old_current_procinfo : tprocinfo;
         old_current_structdef : tabstractrecorddef;
       begin
@@ -3024,6 +3025,14 @@ implementation
           begin
             if assigned(pd) then
               begin
+                // the spawning future's cooperative-cancel flag, readable in
+                // the block as `Cancelled`; the worker thunk passes the impl
+                // field by reference. constref makes user writes an error,
+                // volatile keeps every check a memory read
+                cancelsym:=cparavarsym.create('Cancelled',10,vs_constref,pasbool8type,[]);
+                include(cancelsym.varoptions,vo_volatile);
+                include(cancelsym.symoptions,sp_internal);
+                pd.parast.insertsym(cancelsym);
                 parse_proc_dec_finish(pd,[ppf_anonymous],nil);
                 { the usefwpd path of read_proc skips the calling-convention
                   setup, so do it here (this also fills pd.paras) }
