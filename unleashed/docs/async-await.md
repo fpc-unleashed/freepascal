@@ -68,6 +68,51 @@ Joining is repeatable. The event behind a future is re-armed after each `await`,
 var n := await sum + 1;          // does not wait again, reads the cached 5
 ```
 
+## Controlling the worker
+
+Beyond `await`, the future carries a small control surface. Everything except `Cancel` is read-only; assigning to any of these is a compile error:
+
+```pas
+var h := async crunch(data);
+
+h.Cancel;             // raise the cooperative cancel flag
+writeln(h.Cancelled); // boolean: was Cancel called on this future
+writeln(h.Done);      // boolean: has the worker finished (never blocks)
+writeln(h.ThreadID);  // TThreadID: the worker's BeginThread id
+```
+
+`Done` is published by the worker right before it releases any awaiter, so a poll loop can track progress without blocking, and once `Done` is true an `await` returns immediately:
+
+```pas
+while not h.Done do begin
+  UpdateProgress;
+  Sleep(10);
+end;
+writeln(await h);     // the result is already in, this does not wait
+```
+
+## Cooperative cancellation
+
+`Cancel` kills nothing. It raises a flag that the work is expected to poll and honor. Inside `async begin ... end` the flag is visible as a read-only boolean named `Cancelled`, the same way `WorkerIndex` is visible in a `for parallel` body:
+
+```pas
+var h := async begin
+  while not Cancelled do
+    DoChunk;
+end;
+// later, from the spawning side:
+h.Cancel;             // ask the worker to stop
+await h;              // returns once the loop notices the flag
+```
+
+Each nested `async begin` sees its own `Cancelled`, the one of the future it runs under. The call form runs an ordinary routine which cannot see the flag; a routine that must be cancellable takes its own flag as an argument (`Cancel`/`Cancelled` on the handle still work, as caller-side bookkeeping).
+
+## `ThreadID` and the RTL thread API
+
+`ThreadID` returns the value `BeginThread` handed back, which is exactly the currency of the RTL thread API: `ThreadSetPriority`, `WaitForThreadTerminate(h.ThreadID, 100)` and, if you accept the consequences, `KillThread(h.ThreadID)`.
+
+`KillThread` is a last resort. The thread dies without unwinding: no `finally` runs, everything it allocated leaks, and if it held a lock (the heap manager's, for instance) the whole process may deadlock later. The future's machinery is not compensated either: a killed worker never signals completion, so `Done` stays false, a later `await` blocks forever, and the future object itself is never freed (the worker's self-reference is never released). Prefer `Cancel` plus a polling worker.
+
 ## Fire and forget
 
 Spawn without keeping the future and the work still runs - the worker holds the only reference, and the future object frees itself once the thread is done:
