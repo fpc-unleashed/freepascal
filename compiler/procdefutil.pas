@@ -39,8 +39,9 @@ procedure convert_to_funcref_intf(const n:tidstring;var def:tdef);
 function adjust_funcref(var def:tdef;sym,dummysym:tsym):boolean;
 
 { synthesized COM interface for `future of T` (elemdef) or bare `future`
-  (elemdef=nil); interned per-module, exposes a single `__Await` method that
-  `await` lowers to }
+  (elemdef=nil); interned per-module, exposes the `__Await` method that
+  `await` lowers to and the worker-control methods (`Cancel`, `Cancelled`,
+  `Done`, `ThreadID`) }
 function get_future_intf_def(elemdef:tdef):tobjectdef;
 
 { the function-reference interface for a parameterless anonymous procedure
@@ -75,7 +76,7 @@ implementation
 
   function get_future_intf_def(elemdef:tdef):tobjectdef;
 
-    function add_await_method(intf:tobjectdef;rettype:tdef):tprocdef;
+    function add_intf_method(intf:tobjectdef;const mname:string;rettype:tdef):tprocdef;
       var
         oldstack : tsymtablestack;
       begin
@@ -100,7 +101,7 @@ implementation
         exclude(result.procoptions,po_classmethod);
         exclude(result.procoptions,po_delphi_nested_cc);
         result.forwarddef:=false;
-        result.procsym:=cprocsym.create('__Await');
+        result.procsym:=cprocsym.create(mname);
         result.visibility:=vis_public;
         intf.symtable.insertsym(result.procsym);
         intf.symtable.insertdef(result);
@@ -152,7 +153,13 @@ implementation
       symowner.insertdef(result);
       addsymref(sym);
 
-      add_await_method(result,elemdef);
+      add_intf_method(result,'__Await',elemdef);
+      // worker-control surface: a cooperative cancel flag and non-blocking
+      // state reads, implemented by every future-impl class
+      add_intf_method(result,'Cancel',nil);
+      add_intf_method(result,'Cancelled',pasbool8type);
+      add_intf_method(result,'Done',pasbool8type);
+      add_intf_method(result,'ThreadID',search_system_type('TTHREADID').typedef);
 
       build_vmt(result);
     end;
@@ -365,6 +372,83 @@ implementation
     end;
 
 
+  { synthesize the worker-control methods on a future-impl class: `Cancel`
+    raises the cooperative flag, `Cancelled`/`Done` read the flags without
+    blocking, `ThreadID` returns the id BeginThread handed back (usable with
+    the RTL thread API) }
+  procedure async_add_control_methods(clsdef:tobjectdef;fCancel,fDone,fTid:tfieldvarsym);
+
+    function new_method(const mname:string;rettype:tdef):tprocdef;
+      var
+        oldstack : tsymtablestack;
+      begin
+        oldstack:=symtablestack;
+        symtablestack:=nil;
+        result:=cprocdef.create(normal_function_level,false);
+        result.struct:=clsdef;
+        if assigned(rettype) then
+          begin
+            result.proctypeoption:=potype_function;
+            result.returndef:=rettype;
+          end
+        else
+          begin
+            result.proctypeoption:=potype_procedure;
+            result.returndef:=voidtype;
+          end;
+        result.proccalloption:=pocall_default;
+        include(result.procoptions,po_hascallingconvention);
+        include(result.procoptions,po_virtualmethod);
+        exclude(result.procoptions,po_delphi_nested_cc);
+        result.forwarddef:=false;
+        result.procsym:=cprocsym.create(mname);
+        result.visibility:=vis_public;
+        clsdef.symtable.insertsym(result.procsym);
+        clsdef.symtable.insertdef(result);
+        handle_calling_convention(result,hcc_default_actions_impl);
+        proc_add_definition(result);
+        insert_funcret_local(result);
+        result.calcparas;
+        symtablestack:=oldstack;
+      end;
+
+    function self_field(pd:tprocdef;f:tfieldvarsym):tnode;
+      var
+        s : tsym;
+      begin
+        s:=async_find_self(pd);
+        result:=csubscriptnode.create(f,cloadnode.create(s,s.owner));
+      end;
+
+    procedure add_getter(const mname:string;f:tfieldvarsym;rettype:tdef);
+      var
+        pd : tprocdef;
+        body : tnode;
+        stmt : tstatementnode;
+      begin
+        pd:=new_method(mname,rettype);
+        body:=internalstatements(stmt);
+        addstatement(stmt,cassignmentnode.create(
+          cloadnode.create(pd.funcretsym,pd.funcretsym.owner),self_field(pd,f)));
+        async_defer_method(pd,body);
+      end;
+
+    var
+      pd : tprocdef;
+      body : tnode;
+      stmt : tstatementnode;
+    begin
+      pd:=new_method('Cancel',nil);
+      body:=internalstatements(stmt);
+      addstatement(stmt,cassignmentnode.create(self_field(pd,fCancel),
+        cordconstnode.create(1,pasbool8type,false)));
+      async_defer_method(pd,body);
+      add_getter('Cancelled',fCancel,pasbool8type);
+      add_getter('Done',fDone,pasbool8type);
+      add_getter('ThreadID',fTid,fTid.vardef);
+    end;
+
+
   { `await f` -> f.__Await (a plain interface method call) }
   function build_one_await(an:tawaitnode):tnode;
     var
@@ -408,7 +492,7 @@ implementation
       argdefs,
       argfields,
       spawnargsyms : tfplist;
-      fEvent,fExc,fKeep,fRes,fSelf,fPv,fTid : tfieldvarsym;
+      fEvent,fExc,fKeep,fRes,fSelf,fPv,fTid,fCancel,fDone : tfieldvarsym;
       thunkpd,spawnpd,awaitpd : tprocdef;
       implsym : tlocalvarsym;
       pparam : tparavarsym;
@@ -586,6 +670,8 @@ implementation
       fExc:=add_field('__exc',class_tobject);
       fKeep:=add_field('__keepalive',interface_iunknown);
       fTid:=add_field('__tid',search_system_type('TTHREADID').typedef);
+      fCancel:=add_field('__cancel',pasbool8type);
+      fDone:=add_field('__done',pasbool8type);
       fRes:=nil;
       if not isvoid then
         fRes:=add_field('__res',elemdef);
@@ -642,6 +728,10 @@ implementation
         nil,
         cassignmentnode.create(impl_field(fExc),
           ctypeconvnode.create_internal(rtl('ACQUIREEXCEPTIONOBJECT',nil),class_tobject))));
+      // the work (or its exception capture) is complete - publish it for the
+      // non-blocking `Done` probe before releasing any awaiter
+      addstatement(stmt,cassignmentnode.create(impl_field(fDone),
+        cordconstnode.create(1,pasbool8type,false)));
       addstatement(stmt,rtl('RTLEVENTSETEVENT',ccallparanode.create(impl_field(fEvent),nil)));
       addstatement(stmt,cassignmentnode.create(impl_field(fKeep),cnilnode.create));
       addstatement(stmt,cassignmentnode.create(cloadnode.create(thunkpd.funcretsym,thunkpd.funcretsym.owner),
@@ -725,6 +815,7 @@ implementation
       async_defer_method(spawnpd,body);
 
       async_add_destructor(clsdef,fEvent,fExc,fTid);
+      async_add_control_methods(clsdef,fCancel,fDone,fTid);
 
       build_vmt(clsdef);
 
@@ -766,7 +857,7 @@ implementation
       futureintf : tobjectdef;
       procnode : tnode;
       procreftype : tdef;
-      fEvent,fExc,fKeep,fProc,fTid : tfieldvarsym;
+      fEvent,fExc,fKeep,fProc,fTid,fCancel,fDone : tfieldvarsym;
       thunkpd,spawnpd,awaitpd : tprocdef;
       implsym : tlocalvarsym;
       pparam,procparam : tparavarsym;
@@ -873,6 +964,8 @@ implementation
       fKeep:=add_field('__keepalive',interface_iunknown);
       fProc:=add_field('__proc',procreftype);
       fTid:=add_field('__tid',search_system_type('TTHREADID').typedef);
+      fCancel:=add_field('__cancel',pasbool8type);
+      fDone:=add_field('__done',pasbool8type);
 
       { ---- __Thunk: invoke the captured reference on the worker thread ---- }
       thunkpd:=new_method('__Thunk',ptrsinttype,true);
@@ -890,6 +983,10 @@ implementation
         nil,
         cassignmentnode.create(impl_field(fExc),
           ctypeconvnode.create_internal(rtl('ACQUIREEXCEPTIONOBJECT',nil),class_tobject))));
+      // the work (or its exception capture) is complete - publish it for the
+      // non-blocking `Done` probe before releasing any awaiter
+      addstatement(stmt,cassignmentnode.create(impl_field(fDone),
+        cordconstnode.create(1,pasbool8type,false)));
       addstatement(stmt,rtl('RTLEVENTSETEVENT',ccallparanode.create(impl_field(fEvent),nil)));
       addstatement(stmt,cassignmentnode.create(impl_field(fKeep),cnilnode.create));
       addstatement(stmt,cassignmentnode.create(cloadnode.create(thunkpd.funcretsym,thunkpd.funcretsym.owner),
@@ -940,6 +1037,7 @@ implementation
       async_defer_method(spawnpd,body);
 
       async_add_destructor(clsdef,fEvent,fExc,fTid);
+      async_add_control_methods(clsdef,fCancel,fDone,fTid);
 
       build_vmt(clsdef);
 
