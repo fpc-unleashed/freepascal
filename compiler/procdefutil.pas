@@ -974,7 +974,11 @@ implementation
       finish_method(thunkpd);
       implsym:=clocalvarsym.create('__impl',vs_value,clsdef,[]);
       thunkpd.localst.insertsym(implsym);
-      workcall:=ccallnode.create_procvar(nil,impl_field(fProc));
+      // the block reads the cancel flag through its `Cancelled` constref
+      // parameter, so hand it the impl's field
+      workcall:=ccallnode.create_procvar(
+        ccallparanode.create(impl_field(fCancel),nil),
+        impl_field(fProc));
       body:=internalstatements(stmt);
       addstatement(stmt,cassignmentnode.create(cloadnode.create(implsym,implsym.owner),
         ctypeconvnode.create_internal(cloadnode.create(pparam,pparam.owner),clsdef)));
