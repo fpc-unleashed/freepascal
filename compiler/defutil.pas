@@ -2165,7 +2165,7 @@ implementation
       var
         sym : tsym;
       begin
-        { T is carried by the return type of the single `__Await` method;
+        { T is carried by the return type of the `__Await` method;
           a bare `future` has a `procedure __Await`, hence voidtype }
         result:=nil;
         if not is_future_intf(def) then

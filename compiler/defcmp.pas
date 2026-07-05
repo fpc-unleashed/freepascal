@@ -1912,8 +1912,9 @@ implementation
                { object pascal objects }
                { two independently synthesized `future of T` interfaces are the
                  same type when their element types match: each module interns
-                 its own def instance, but the layout is identical (a single
-                 `__Await` method on IUnknown), so compare structurally }
+                 its own def instance, but the layout is identical (the same
+                 `__Await` and control methods on IUnknown), so compare
+                 structurally }
                if is_future_intf(def_to) and
                   is_future_intf(def_from) and
                   assigned(get_future_element_def(def_from)) and
