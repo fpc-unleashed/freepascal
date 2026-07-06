@@ -165,7 +165,7 @@ begin
       if not(cs_link_on_target in current_settings.globalswitches) then
        s:=FindObjectFile(s,'',false);
       if (idf_version>=50200) then
-        LinkRes.AddFileName(ExtractFileName(maybequoted(s)))
+        LinkRes.AddFileName(maybequoted(ExtractFileName(s)))
       else
         LinkRes.AddFileName((maybequoted(s)));
      end;
@@ -180,7 +180,7 @@ begin
         begin
           S:=StaticLibFiles.GetFirst;
           if (idf_version>=50200) then
-            LinkRes.AddFileName(ExtractFileName(maybequoted(s)))
+            LinkRes.AddFileName(maybequoted(ExtractFileName(s)))
           else
             LinkRes.AddFileName((maybequoted(s)));
         end;
@@ -1133,21 +1133,21 @@ begin
   {$pop}
 
   memory_filename:=IncludeTrailingPathDelimiter(outputexedir)+memory_filename;
-  cmdstr:='-C -P -x c -E -o '+memory_filename+' -I $OUTPUT ';
+  { quote all paths, they may contain spaces; strip the trailing path
+    delimiter, quoting would turn it into an escaped quote on windows }
+  cmdstr:='-C -P -x c -E -o '+maybequoted(memory_filename)+' -I '+maybequoted(ExcludeTrailingBackslash(outputexedir))+' ';
   binstr:='gcc';
   if current_settings.controllertype = ct_none then
     Message(exec_f_controllertype_expected)
   else if current_settings.controllertype = ct_esp32 then
     begin
       if idf_version>=40400 then
-        cmdstr:=cmdstr+'-I $IDF_PATH/components/esp_system/ld $IDF_PATH/components/esp_system/ld/esp32/memory.ld.in'
+        cmdstr:=cmdstr+'-I '+maybequoted(idfpath+'/components/esp_system/ld')+' '+maybequoted(idfpath+'/components/esp_system/ld/esp32/memory.ld.in')
       else
-        cmdstr:=cmdstr+'$IDF_PATH/components/esp32/ld/esp32.ld';
+        cmdstr:=cmdstr+maybequoted(idfpath+'/components/esp32/ld/esp32.ld');
     end
   else
-    cmdstr:=cmdstr+'$IDF_PATH/components/esp8266/ld/esp8266.ld';
-  Replace(cmdstr,'$IDF_PATH',idfpath);
-  Replace(cmdstr,'$OUTPUT',outputexedir);
+    cmdstr:=cmdstr+maybequoted(idfpath+'/components/esp8266/ld/esp8266.ld');
   success:=DoExec(FindUtil(utilsprefix+binstr),cmdstr,true,true);
 
   { generate linker maps }
@@ -1161,8 +1161,8 @@ begin
 
   sections_filename:=IncludeTrailingPathDelimiter(outputexedir)+sections_filename;
 
-  cmdstr:={$ifndef UNIX}'$IDF_PATH/tools/ldgen/ldgen.py '+{$endif UNIX}
-          '--config $OUTPUT/sdkconfig --fragments';
+  cmdstr:={$ifndef UNIX}maybequoted(idfpath+'/tools/ldgen/ldgen.py')+' '+{$endif UNIX}
+          '--config '+maybequoted(outputexedir+'/sdkconfig')+' --fragments';
 
   { Pick corresponding linker fragments list for SDK version }
   if (current_settings.controllertype = ct_esp32) then
@@ -1174,35 +1174,33 @@ begin
     idf_index:=esp8266_v3_3;
 
   for S in esp_fragment_list[idf_index] do
-    cmdstr:=cmdstr+' $IDF_PATH/components/'+S+'.lf';
+    cmdstr:=cmdstr+' '+maybequoted(idfpath+'/components/'+S+'.lf');
 
   if (current_settings.controllertype = ct_esp32) then
     begin
      if idf_version>=40400 then
-       cmdstr:=cmdstr+' --input $IDF_PATH/components/esp_system/ld/esp32/sections.ld.in'
+       cmdstr:=cmdstr+' --input '+maybequoted(idfpath+'/components/esp_system/ld/esp32/sections.ld.in')
      else
-       cmdstr:=cmdstr+' --input $IDF_PATH/components/esp32/ld/esp32.project.ld.in';
+       cmdstr:=cmdstr+' --input '+maybequoted(idfpath+'/components/esp32/ld/esp32.project.ld.in');
     end
   else
     begin
       cmdstr:=cmdstr+
-              ' --env "COMPONENT_KCONFIGS_PROJBUILD=  $IDF_PATH/components/bootloader/Kconfig.projbuild'+
-              ' $IDF_PATH/components/esptool_py/Kconfig.projbuild  $IDF_PATH/components/partition_table/Kconfig.projbuild"'+
-              ' --env "COMPONENT_KCONFIGS=$IDF_PATH/components/app_update/Kconfig'+
-              ' $IDF_PATH/components/esp8266/Kconfig  $IDF_PATH/components/freertos/Kconfig'+
-              ' $IDF_PATH/components/log/Kconfig $IDF_PATH/components/lwip/Kconfig"'+
-              ' --input $IDF_PATH/components/esp8266/ld/esp8266.project.ld.in';
+              ' --env "COMPONENT_KCONFIGS_PROJBUILD=  '+idfpath+'/components/bootloader/Kconfig.projbuild'+
+              ' '+idfpath+'/components/esptool_py/Kconfig.projbuild  '+idfpath+'/components/partition_table/Kconfig.projbuild"'+
+              ' --env "COMPONENT_KCONFIGS='+idfpath+'/components/app_update/Kconfig'+
+              ' '+idfpath+'/components/esp8266/Kconfig  '+idfpath+'/components/freertos/Kconfig'+
+              ' '+idfpath+'/components/log/Kconfig '+idfpath+'/components/lwip/Kconfig"'+
+              ' --input '+maybequoted(idfpath+'/components/esp8266/ld/esp8266.project.ld.in');
     end;
 
   S:=FindUtil(utilsprefix+'objdump');
-  cmdstr:=cmdstr+' --output '+sections_filename+
-          ' --kconfig $IDF_PATH/Kconfig'+
-          ' --env-file $OUTPUT/config.env'+
-          ' --libraries-file $OUTPUT/ldgen_libraries'+
-          ' --objdump '+S;
+  cmdstr:=cmdstr+' --output '+maybequoted(sections_filename)+
+          ' --kconfig '+maybequoted(idfpath+'/Kconfig')+
+          ' --env-file '+maybequoted(outputexedir+'/config.env')+
+          ' --libraries-file '+maybequoted(outputexedir+'/ldgen_libraries')+
+          ' --objdump '+maybequoted(S);
 
-  Replace(cmdstr,'$IDF_PATH',idfpath);
-  Replace(cmdstr,'$OUTPUT',outputexedir);
   if success then
     success:=DoExec(binstr,cmdstr,true,false);
 end;
@@ -1578,7 +1576,7 @@ begin
       begin
        Info.ExeCmd[1] := Info.ExeCmd[1]+' -u call_user_start -u g_esp_sys_info -u _printf_float -u _scanf_float '+
          '-L $IDF_PATH/components/'+cntrlr+'/ld -T '+cntrlr+'.peripherals.ld -T '+cntrlr+'.rom.ld '+ { SDK scripts }
-         '-T '+memory_script+' -T '+sections_script; { Project scripts }
+         '-T '+maybequoted(memory_script)+' -T '+maybequoted(sections_script); { Project scripts }
       end
     else
 {$endif XTENSA}
@@ -1591,7 +1589,7 @@ begin
       else
         Info.ExeCmd[1]:=Info.ExeCmd[1]+' -L $IDF_PATH/components/soc/'+cntrlr+'/ld';
 
-      Info.ExeCmd[1]:=Info.ExeCmd[1]+' -T '+memory_script+' -T '+sections_script;
+      Info.ExeCmd[1]:=Info.ExeCmd[1]+' -T '+maybequoted(memory_script)+' -T '+maybequoted(sections_script);
       Info.ExeCmd[1]:=Info.ExeCmd[1]+' -T '+cntrlr+'.rom.ld -T '+cntrlr+'.rom.api.ld';
 {$ifdef XTENSA}
       if current_settings.controllertype = ct_esp32 then
@@ -1726,20 +1724,21 @@ begin
 
 { Post process }
   if success and not(cs_link_nolink in current_settings.globalswitches) then
-    success:=PostProcessExecutable(FixedExeFileName,false);
+    { pass the plain file name, FixedExeFileName may be quoted }
+    success:=PostProcessExecutable(ChangeFileExt(current_module.exefilename,'.elf'),false);
 
 {$if defined(XTENSA) or defined(RISCV32)}
   if success then
     begin
 {$if defined(DARWIN)}
       success:=FindFileInExeLocations('python',true,binstr);
-      cmdstr:=idfpath+'/components/esptool_py/esptool/esptool.py ';
+      cmdstr:=maybequoted(idfpath+'/components/esptool_py/esptool/esptool.py')+' ';
 {$elseif defined(UNIX)}
       binstr:=TargetFixPath(idfpath,false)+'/components/esptool_py/esptool/esptool.py';
       cmdstr:='';
 {$else}
       binstr:='python';
-      cmdstr:=idfpath+'/components/esptool_py/esptool/esptool.py ';
+      cmdstr:=maybequoted(idfpath+'/components/esptool_py/esptool/esptool.py')+' ';
 {$endif UNIX}
 
 {$ifdef XTENSA}
