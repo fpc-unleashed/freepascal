@@ -1507,8 +1507,9 @@ begin
     exit;
   if IdfVersionSet then
     exit;
-  { nothing specified -> defaults }
-  case current_settings.controllertype of
+  { nothing specified -> defaults; note: use init_settings, current_settings
+    is not yet loaded from it while options are being parsed }
+  case init_settings.controllertype of
 {$ifdef XTENSA}
     ct_esp8266:
       begin
