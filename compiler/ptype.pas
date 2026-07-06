@@ -48,9 +48,10 @@ interface
     { helpers to build anonymous tuple records, exported for pexpr }
     function make_tuple_recdef:trecorddef;
     procedure add_tuple_field(recdef:trecorddef;const fname:TIDString;ftype:tdef);
-    { redo the layout of tuples parsed inside structured type definitions,
-      called whenever such a definition completes }
-    procedure relayout_pending_tuples;
+    { bracket a structured type definition; end_struct_decl redoes the layout
+      of tuples parsed inside it (see make_tuple_recdef) }
+    procedure begin_struct_decl;
+    procedure end_struct_decl;
 
 
     { reads any type declaration, where the resulting type will get name as type identifier }
@@ -765,6 +766,7 @@ implementation
 
     var
       pending_tuple_relayouts : tfplist;
+      struct_decl_depth : longint;
 
     { creates an anonymous internal record to back a tuple type }
     function make_tuple_recdef:trecorddef;
@@ -778,8 +780,11 @@ implementation
         include(result.defoptions,df_tuple);
         { a tuple parsed inside a structured type's definition (e.g. in a
           method signature) can reference the host type before its size is
-          final; schedule a layout recalculation for when it completes }
-        if assigned(current_structdef) then
+          final; schedule a layout recalculation for when it completes.
+          Only while a definition is actually being parsed: current_structdef
+          alone also covers method implementations, and entries made there
+          would never be consumed and dangle past the end of the module }
+        if struct_decl_depth>0 then
           begin
             if not assigned(pending_tuple_relayouts) then
               pending_tuple_relayouts:=tfplist.create;
@@ -788,19 +793,26 @@ implementation
       end;
 
 
-    procedure relayout_pending_tuples;
+    procedure begin_struct_decl;
+      begin
+        inc(struct_decl_depth);
+      end;
+
+
+    procedure end_struct_decl;
       var
         i : longint;
       begin
+        dec(struct_decl_depth);
         if not assigned(pending_tuple_relayouts) then
           exit;
         { backwards: a nested tuple is registered after its enclosing one and
           must be relayouted first so the parent sees its final size }
         for i:=pending_tuple_relayouts.count-1 downto 0 do
           tabstractrecordsymtable(trecorddef(pending_tuple_relayouts[i]).symtable).relayoutfields;
-        { once no structured definition is in progress anymore all sizes are
-          final, so the list can be dropped }
-        if not assigned(current_structdef) then
+        { once no definition is in progress anymore all sizes are final, so
+          the list can be dropped }
+        if struct_decl_depth=0 then
           pending_tuple_relayouts.clear;
       end;
 
@@ -1404,6 +1416,7 @@ implementation
          pre_body_align, pre_body_bitalign : shortint;
          pre_body_sorg : TIDString;
       begin
+         begin_struct_decl;
          old_current_structdef:=current_structdef;
          old_current_genericdef:=current_genericdef;
          old_current_specializedef:=current_specializedef;
@@ -1729,7 +1742,7 @@ implementation
          current_specializedef:=old_current_specializedef;
          { tuples parsed inside this definition got their layout from the
            then-incomplete record size - redo it now that the size is final }
-         relayout_pending_tuples;
+         end_struct_decl;
       end;
 
 

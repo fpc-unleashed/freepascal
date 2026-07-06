@@ -1539,6 +1539,7 @@ implementation
         st: TSymtable;
         olddef: tdef;
       begin
+        begin_struct_decl;
         old_current_structdef:=current_structdef;
         old_current_genericdef:=current_genericdef;
         old_current_specializedef:=current_specializedef;
@@ -1885,7 +1886,7 @@ implementation
         parse_generic:=old_parse_generic;
         { tuples parsed inside this definition got their layout from the
           then-incomplete type size - redo it now that the size is final }
-        relayout_pending_tuples;
+        end_struct_decl;
       end;
 
 end.
