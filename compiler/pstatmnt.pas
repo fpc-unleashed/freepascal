@@ -1970,6 +1970,8 @@ implementation
                   handle_calling_convention(thunkpd,hcc_default_actions_impl);
                   thunkps:=cprocsym.create('$parthreadentry'+thunkpd.unique_id_str);
                   current_module.localsymtable.insertsym(thunkps);
+                  { only ever address-taken, so the unused-symbol pass must skip it }
+                  include(thunkps.symoptions,sp_internal);
                   thunkpd.procsym:=thunkps;
                   proc_add_definition(thunkpd);
                   thunkpd.forwarddef:=true;
