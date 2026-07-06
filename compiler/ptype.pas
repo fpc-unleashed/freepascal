@@ -48,6 +48,9 @@ interface
     { helpers to build anonymous tuple records, exported for pexpr }
     function make_tuple_recdef:trecorddef;
     procedure add_tuple_field(recdef:trecorddef;const fname:TIDString;ftype:tdef);
+    { redo the layout of tuples parsed inside structured type definitions,
+      called whenever such a definition completes }
+    procedure relayout_pending_tuples;
 
 
     { reads any type declaration, where the resulting type will get name as type identifier }
@@ -760,6 +763,9 @@ implementation
       end;
 
 
+    var
+      pending_tuple_relayouts : tfplist;
+
     { creates an anonymous internal record to back a tuple type }
     function make_tuple_recdef:trecorddef;
       begin
@@ -770,6 +776,32 @@ implementation
         exclude(result.defstates,ds_init_table_written);
         exclude(result.defstates,ds_rtti_table_written);
         include(result.defoptions,df_tuple);
+        { a tuple parsed inside a structured type's definition (e.g. in a
+          method signature) can reference the host type before its size is
+          final; schedule a layout recalculation for when it completes }
+        if assigned(current_structdef) then
+          begin
+            if not assigned(pending_tuple_relayouts) then
+              pending_tuple_relayouts:=tfplist.create;
+            pending_tuple_relayouts.add(result);
+          end;
+      end;
+
+
+    procedure relayout_pending_tuples;
+      var
+        i : longint;
+      begin
+        if not assigned(pending_tuple_relayouts) then
+          exit;
+        { backwards: a nested tuple is registered after its enclosing one and
+          must be relayouted first so the parent sees its final size }
+        for i:=pending_tuple_relayouts.count-1 downto 0 do
+          tabstractrecordsymtable(trecorddef(pending_tuple_relayouts[i]).symtable).relayoutfields;
+        { once no structured definition is in progress anymore all sizes are
+          final, so the list can be dropped }
+        if not assigned(current_structdef) then
+          pending_tuple_relayouts.clear;
       end;
 
 
@@ -1695,6 +1727,9 @@ implementation
          current_structdef:=old_current_structdef;
          current_genericdef:=old_current_genericdef;
          current_specializedef:=old_current_specializedef;
+         { tuples parsed inside this definition got their layout from the
+           then-incomplete record size - redo it now that the size is final }
+         relayout_pending_tuples;
       end;
 
 

@@ -1883,6 +1883,9 @@ implementation
         current_genericdef:=old_current_genericdef;
         current_specializedef:=old_current_specializedef;
         parse_generic:=old_parse_generic;
+        { tuples parsed inside this definition got their layout from the
+          then-incomplete type size - redo it now that the size is final }
+        relayout_pending_tuples;
       end;
 
 end.

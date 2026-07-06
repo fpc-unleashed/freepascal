@@ -132,6 +132,10 @@ interface
             ordered by increasing offset) }
           function findfieldbyoffset(offset:asizeint): tfieldvarsym;
           procedure addalignmentpadding;
+          { recompute all field offsets from scratch; used for tuple recdefs
+            whose fields referenced a structured type while its size was not
+            final yet }
+          procedure relayoutfields;
           procedure insertdef(def:TDefEntry);override;
           function is_packed: boolean;
           { current bit-level data size during construction (only meaningful
@@ -1666,6 +1670,37 @@ implementation
         padded_datasize:=align(_datasize,padalignment);
         _paddingsize:=padded_datasize-_datasize;
         _datasize:=padded_datasize;
+      end;
+
+
+    procedure tabstractrecordsymtable.relayoutfields;
+      var
+        i : longint;
+        sym : tsym;
+      begin
+        _datasize:=0;
+        databitsize:=0;
+        _paddingsize:=0;
+        recordalignment:=1;
+        padalignment:=1;
+        case usefieldalignment of
+          C_alignment,
+          bit_alignment:
+            fieldalignment:=1;
+          mac68k_alignment:
+            fieldalignment:=2;
+          else
+            fieldalignment:=usefieldalignment;
+        end;
+        for i:=0 to symlist.count-1 do
+          begin
+            sym:=tsym(symlist[i]);
+            if sym.typ<>fieldvarsym then
+              continue;
+            tfieldvarsym(sym).fieldoffset:=-1;
+            addfield(tfieldvarsym(sym),tfieldvarsym(sym).visibility);
+          end;
+        addalignmentpadding;
       end;
 
 
