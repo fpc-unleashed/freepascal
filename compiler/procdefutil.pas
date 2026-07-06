@@ -505,6 +505,7 @@ implementation
       newparams,callparams : tcallparanode;
       excloc : tlocalvarsym;
       clsname : tsymstr;
+      clssym : ttypesym;
 
     function add_field(const fname:string;ftype:tdef):tfieldvarsym;
       begin
@@ -663,7 +664,10 @@ implementation
       clsdef:=cobjectdef.create(odt_class,clsname,
         tobjectdef(search_system_type('TINTERFACEDOBJECT').typedef),false);
       current_module.localsymtable.insertdef(clsdef);
-      current_module.localsymtable.insertsym(ctypesym.create(clsname,clsdef));
+      { never looked up by name, so the unused-symbol pass must skip it }
+      clssym:=ctypesym.create(clsname,clsdef);
+      include(clssym.symoptions,sp_internal);
+      current_module.localsymtable.insertsym(clssym);
       clsdef.register_implemented_interface(futureintf,true);
 
       fEvent:=add_field('__event',search_system_type('PRTLEVENT').typedef);
@@ -865,6 +869,7 @@ implementation
       body,thenblk,workcall : tnode;
       stmt,thenstmt : tstatementnode;
       clsname : tsymstr;
+      clssym : ttypesym;
 
     function add_field(const fname:string;ftype:tdef):tfieldvarsym;
       begin
@@ -956,7 +961,10 @@ implementation
       clsdef:=cobjectdef.create(odt_class,clsname,
         tobjectdef(search_system_type('TINTERFACEDOBJECT').typedef),false);
       current_module.localsymtable.insertdef(clsdef);
-      current_module.localsymtable.insertsym(ctypesym.create(clsname,clsdef));
+      { never looked up by name, so the unused-symbol pass must skip it }
+      clssym:=ctypesym.create(clsname,clsdef);
+      include(clssym.symoptions,sp_internal);
+      current_module.localsymtable.insertsym(clssym);
       clsdef.register_implemented_interface(futureintf,true);
 
       fEvent:=add_field('__event',search_system_type('PRTLEVENT').typedef);
