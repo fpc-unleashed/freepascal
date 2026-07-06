@@ -1816,6 +1816,44 @@ implementation
       var
         stowner,tmpdef : tdef;
         st : tsymtable;
+
+      { digs through a tuple's fields (recursively, arrays stripped like in
+        the main loop) for a type that embeds the still-incomplete stowner;
+        returns it, or nil if the tuple is safe }
+      function tuple_embedded_incomplete_ref(tupledef:tdef):tdef;
+        var
+          i : longint;
+          sym : tsym;
+          fdef : tdef;
+        begin
+          result:=nil;
+          for i:=0 to trecorddef(tupledef).symtable.symlist.count-1 do
+            begin
+              sym:=tsym(trecorddef(tupledef).symtable.symlist[i]);
+              if sym.typ<>fieldvarsym then
+                continue;
+              fdef:=tfieldvarsym(sym).vardef;
+              while (fdef.typ=arraydef) do
+                begin
+                  if allowdynarray and (ado_IsDynamicArray in tarraydef(fdef).arrayoptions) then
+                    begin
+                      fdef:=nil;
+                      break;
+                    end;
+                  fdef:=tarraydef(fdef).elementdef;
+                end;
+              if not assigned(fdef) then
+                continue;
+              if (fdef.typ=recorddef) and (df_tuple in fdef.defoptions) then
+                result:=tuple_embedded_incomplete_ref(fdef)
+              else if (is_object(fdef) or is_record(fdef)) and
+                  is_owned_by(tabstractrecorddef(stowner),tabstractrecorddef(fdef)) then
+                result:=fdef;
+              if assigned(result) then
+                exit;
+            end;
+        end;
+
       begin
         result:=true;
         st:=symtablestack.top;
@@ -1840,6 +1878,11 @@ implementation
               end
             else
               tmpdef:=def;
+            { a tuple is never the incomplete host itself, but its fields can
+              embed it - dig for the offending type }
+            if assigned(tmpdef) and (tmpdef.typ=recorddef) and
+               (df_tuple in tmpdef.defoptions) then
+              tmpdef:=tuple_embedded_incomplete_ref(tmpdef);
             if assigned(tmpdef) and
                 (is_object(tmpdef) or is_record(tmpdef)) and
                 is_owned_by(tabstractrecorddef(stowner),tabstractrecorddef(tmpdef)) then
