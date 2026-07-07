@@ -3587,6 +3587,19 @@ implementation
          ordtype:=tordtype(ppufile.getbyte);
          low:=ppufile.getexprint;
          high:=ppufile.getexprint;
+         { PPUs written before 128 bit support store 0,0 placeholder bounds }
+         if (low=0) and (high=0) then
+           case ordtype of
+             s128bit:
+               begin
+                 low:=int128_low;
+                 high:=int128_high;
+               end;
+             u128bit:
+               high:=uint128_high;
+             else
+               ;
+           end;
          setsize;
          ppuload_platform(ppufile);
       end;

@@ -302,6 +302,18 @@ interface
     {# Returns true, if def is a 64 bit ordinal type }
     function is_64bit(def : tdef) : boolean;
 
+    {# Returns true, if def is a 128 bit integer type }
+    function is_128bitint(def : tdef) : boolean;
+
+    {# Returns true, if def is a 128 bit signed integer type }
+    function is_s128bitint(def : tdef) : boolean;
+
+    {# Returns true, if def is a 128 bit unsigned integer type }
+    function is_u128bitint(def : tdef) : boolean;
+
+    {# Returns true, if def is a 128 bit ordinal type }
+    function is_128bit(def : tdef) : boolean;
+
     { returns true, if def is a longint type }
     function is_s32bitint(def : tdef) : boolean;
 
@@ -556,8 +568,12 @@ implementation
          range_to_basetype:=u32bit
         else if (l>=low(int64)) and (h<=high(int64)) then
          range_to_basetype:=s64bit
+        else if (l>=low(int64)) and (h<=high(qword)) then
+         range_to_basetype:=u64bit
+        else if (l>=int128_low) and (h<=int128_high) then
+         range_to_basetype:=s128bit
         else
-         range_to_basetype:=u64bit;
+         range_to_basetype:=u128bit;
       end;
 
 
@@ -578,8 +594,12 @@ implementation
          def:=u32inttype
         else if (l>=low(int64)) and (h<=high(int64)) then
          def:=s64inttype
+        else if (l>=low(int64)) and (h<=high(qword)) then
+         def:=u64inttype
+        else if (l>=int128_low) and (h<=int128_high) then
+         def:=s128inttype
         else
-         def:=u64inttype;
+         def:=u128inttype;
       end;
 
 
@@ -599,8 +619,8 @@ implementation
              begin
                dt:=torddef(def).ordtype;
                is_ordinal:=dt in [uchar,uwidechar,
-                                  u8bit,u16bit,u32bit,u64bit,
-                                  s8bit,s16bit,s32bit,s64bit,
+                                  u8bit,u16bit,u32bit,u64bit,u128bit,
+                                  s8bit,s16bit,s32bit,s64bit,s128bit,
                                   pasbool1,pasbool8,pasbool16,pasbool32,pasbool64,
                                   bool8bit,bool16bit,bool32bit,bool64bit,customint];
              end;
@@ -729,8 +749,8 @@ implementation
     function is_integer(def : tdef) : boolean;
       begin
         result:=(def.typ=orddef) and
-                    (torddef(def).ordtype in [u8bit,u16bit,u32bit,u64bit,
-                                          s8bit,s16bit,s32bit,s64bit,
+                    (torddef(def).ordtype in [u8bit,u16bit,u32bit,u64bit,u128bit,
+                                          s8bit,s16bit,s32bit,s64bit,s128bit,
                                           customint]);
       end;
 
@@ -1252,6 +1272,32 @@ implementation
       end;
 
 
+    { true, if def is a 128 bit int type }
+    function is_128bitint(def : tdef) : boolean;
+      begin
+         is_128bitint:=(def.typ=orddef) and (torddef(def).ordtype in [u128bit,s128bit])
+      end;
+
+
+    function is_s128bitint(def: tdef): boolean;
+      begin
+        is_s128bitint:=(def.typ=orddef) and (torddef(def).ordtype=s128bit)
+      end;
+
+
+    function is_u128bitint(def: tdef): boolean;
+      begin
+        is_u128bitint:=(def.typ=orddef) and (torddef(def).ordtype=u128bit)
+      end;
+
+
+    { true, if def is a 128 bit type }
+    function is_128bit(def : tdef) : boolean;
+      begin
+         is_128bit:=(def.typ=orddef) and (torddef(def).ordtype in [u128bit,s128bit])
+      end;
+
+
     { returns true, if def is a longint type }
     function is_s32bitint(def : tdef) : boolean;
       begin
@@ -1285,13 +1331,13 @@ implementation
     function is_oversizedint(def : tdef) : boolean;
       begin
 {$if defined(cpu8bitalu)}
-         result:=is_64bitint(def) or is_32bitint(def) or is_16bitint(def);
+         result:=is_128bitint(def) or is_64bitint(def) or is_32bitint(def) or is_16bitint(def);
 {$elseif defined(cpu16bitalu)}
-         result:=is_64bitint(def) or is_32bitint(def);
+         result:=is_128bitint(def) or is_64bitint(def) or is_32bitint(def);
 {$elseif defined(cpu32bitaddr)}
-         result:=is_64bitint(def);
+         result:=is_128bitint(def) or is_64bitint(def);
 {$elseif defined(cpu64bitaddr)}
-         result:=false;
+         result:=is_128bitint(def);
 {$endif}
       end;
 
@@ -1299,13 +1345,13 @@ implementation
     function is_oversizedord(def : tdef) : boolean;
       begin
 {$if defined(cpu8bitalu)}
-         result:=is_64bit(def) or is_32bit(def) or is_16bit(def);
+         result:=is_128bit(def) or is_64bit(def) or is_32bit(def) or is_16bit(def);
 {$elseif defined(cpu16bitalu)}
-         result:=is_64bit(def) or is_32bit(def);
+         result:=is_128bit(def) or is_64bit(def) or is_32bit(def);
 {$elseif defined(cpu32bitaddr)}
-         result:=is_64bit(def);
+         result:=is_128bit(def) or is_64bit(def);
 {$elseif defined(cpu64bitaddr)}
-         result:=false;
+         result:=is_128bit(def);
 {$endif}
       end;
 
@@ -2020,6 +2066,10 @@ implementation
             result:=torddef(s64inttype);
           u64bit:
             result:=torddef(u64inttype);
+          s128bit:
+            result:=torddef(s128inttype);
+          u128bit:
+            result:=torddef(u128inttype);
           else
             begin
               { avoid warning }
@@ -2045,6 +2095,10 @@ implementation
               result:=torddef(s64inttype);
             s64bit:
               result:=torddef(u64inttype);
+            u64bit:
+              result:=torddef(s128inttype);
+            s128bit:
+              result:=torddef(u128inttype);
             else
               ;
           end;
@@ -2099,6 +2153,12 @@ implementation
                   def:=get_common_intdef(torddef(def),torddef(sinttype),false);
                 end;
             end;
+          s128bit:
+            { not x = -x-1 }
+            v:=(-v)-1;
+          u128bit:
+            { flip all 128 bits }
+            v:=uint128_high-v;
           else
             result:=false;
         end;

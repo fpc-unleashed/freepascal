@@ -1373,15 +1373,33 @@ end;
 function getexprint:Tconstexprint;
 
 var
-  issigned : boolean;
+  marker : byte;
   v : int64;
 begin
-  issigned:=ppufile.getboolean;
-  v:=ppufile.getint64;
-  if issigned then
-    result:=v
-  else
-    result:=qword(v);
+  marker:=ppufile.getbyte;
+  case marker of
+    0,1:
+      begin
+        { values in low(int64)..high(qword), the pre-128-bit layout }
+        v:=ppufile.getint64;
+        if marker=1 then
+          result:=v
+        else
+          result:=qword(v);
+      end;
+    2,3:
+      begin
+        result.overflow:=false;
+        result.signed:=marker=3;
+        result.vlo:=ppufile.getqword;
+        result.vhi:=ppufile.getqword;
+      end;
+    else
+      begin
+        WriteError('!! ppufile error: invalid exprint marker');
+        result:=0;
+      end;
+  end;
 end;
 
 Procedure ReadPosInfo(Def: TPpuDef = nil);
