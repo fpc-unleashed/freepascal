@@ -35,6 +35,7 @@ unit optloop;
     function OptimizeInductionVariables(node : tnode) : boolean;
     function optimize_record_writes(var n: tnode): boolean;
     function OptimizeForLoop(var node : tnode) : boolean;
+    function OptimizeLICM(node : tnode) : boolean;
 
   implementation
 
@@ -1138,6 +1139,277 @@ unit optloop;
         if pi_dfaavailable in current_procinfo.flags then
           foreachnodestatic(pm_postprocess,node,@OptimizeForLoop_iterforloops,@ctx);
         Result:=ctx.changedforloop;
+      end;
+
+
+{*****************************************************************************
+                       Loop-invariant code motion (LICM)
+*****************************************************************************}
+
+    { LICM hoists side-effect-free, exception-free, loop-invariant
+      subexpressions of a loop body into the loop preheader, so they evaluate
+      once instead of on every iteration.
+
+      Soundness policy (deliberately conservative -- a wrong hoist is a
+      miscompile):
+        * only pure, exception-free expression trees are hoisted: plain reads of
+          non-aliased local/parameter variables and constants combined with
+          +, - and * (no calls, no pointer derefs, no array indexing, no
+          div/mod, no range/overflow-checked arithmetic, no volatile/threadvars,
+          no property/field access);
+        * because the hoisted value cannot trap and has no side effects, it is
+          safe to evaluate it in the preheader even when the loop is zero-trip;
+        * loop-invariance is proven via the DFA def-set of the whole loop node
+          (which, for a for-loop, includes the counter), so any variable
+          assigned anywhere in the loop -- including the counter -- disqualifies
+          the expression;
+        * aliasing is punted on: any variable whose address is taken is treated
+          as non-invariant, and pointer/field/index reads are never hoisted, so
+          a store through a pointer in the loop cannot invalidate a hoist. }
+
+    type
+      tlicmcontext = object
+        loopdefsum : tdfaset;
+        inittemps,
+        deletetemps : tblocknode;
+        initstatements,
+        deletestatements : tstatementnode;
+        nhoists : sizeint;
+        hoisted : array of record
+          temp : ttempcreatenode;
+          expr : tnode;
+        end;
+        changed : boolean;
+        function is_pure_invariant(expr : tnode) : boolean;
+        function find_existing_hoist(n : tnode) : ttempcreatenode;
+        function hoistcandidate(var n : tnode) : foreachnoderesult;
+        procedure processloop(var n : tnode);
+      end;
+
+
+    function licm_contains_load(var n: tnode; arg: pointer): foreachnoderesult;
+      begin
+        if n.nodetype=loadn then
+          begin
+            pboolean(arg)^:=true;
+            result:=fen_norecurse_true;
+          end
+        else
+          result:=fen_false;
+      end;
+
+
+    { only plain numeric / pointer values may take part in a hoist: this keeps
+      managed types (strings, interfaces, variants, dynamic arrays) out, whose
+      operators allocate, can raise, or need managed temps -- e.g. "+" on
+      strings is concatenation, not arithmetic }
+    function licm_simple_type(def : tdef) : boolean;
+      begin
+        result:=assigned(def) and (def.typ in [orddef,enumdef,floatdef,pointerdef]);
+      end;
+
+
+    function tlicmcontext.is_pure_invariant(expr : tnode) : boolean;
+      var
+        sym : tabstractvarsym;
+      begin
+        result:=false;
+        case expr.nodetype of
+          ordconstn,realconstn,pointerconstn,niln:
+            result:=true;
+          loadn:
+            begin
+              if not(tloadnode(expr).symtableentry is tabstractvarsym) then
+                exit;
+              if not licm_simple_type(expr.resultdef) then
+                exit;
+              sym:=tabstractvarsym(tloadnode(expr).symtableentry);
+              result:=
+                (sym.typ in [localvarsym,paravarsym]) and
+                { plain read, not a write/modify target }
+                (([nf_write,nf_modify]*expr.flags)=[]) and
+                { no aliasing possible if the address is never taken }
+                not(sym.addr_taken) and
+                not(sym.different_scope) and
+                { volatile and threadvars must be read every time }
+                not(vo_volatile in sym.varoptions) and
+                not(vo_is_thread_var in sym.varoptions) and
+                { must have DFA info and not be defined anywhere in the loop }
+                assigned(expr.optinfo) and
+                assigned(loopdefsum) and
+                not(DynSetIn(loopdefsum,expr.optinfo^.index));
+            end;
+          typeconvn:
+            { a range-checked conversion may raise -> not safe to speculate }
+            if (cs_check_range in expr.localswitches) then
+              result:=false
+            else
+              result:=is_pure_invariant(ttypeconvnode(expr).left);
+          addn,subn,muln:
+            { checked arithmetic may raise under -Cr/-Co -> not safe to speculate;
+              the numeric-result guard keeps string "+" (concatenation) etc. out }
+            if licm_simple_type(expr.resultdef) and
+               (([cs_check_overflow,cs_check_range]*expr.localswitches)=[]) then
+              result:=is_pure_invariant(taddnode(expr).left) and
+                      is_pure_invariant(taddnode(expr).right);
+          unaryminusn:
+            if licm_simple_type(expr.resultdef) and
+               (([cs_check_overflow,cs_check_range]*expr.localswitches)=[]) then
+              result:=is_pure_invariant(tunarynode(expr).left);
+          else
+            ;
+        end;
+      end;
+
+
+    function tlicmcontext.find_existing_hoist(n : tnode) : ttempcreatenode;
+      var
+        i : sizeint;
+      begin
+        result:=nil;
+        for i:=0 to nhoists-1 do
+          if hoisted[i].expr.isequal(n) then
+            exit(hoisted[i].temp);
+      end;
+
+
+    function tlicmcontext.hoistcandidate(var n : tnode) : foreachnoderesult;
+      var
+        found : boolean;
+        tempnode : ttempcreatenode;
+        oldexpr : tnode;
+      begin
+        result:=fen_false;
+
+        { do not descend into nested loops: their invariants belong to their own
+          preheader and are handled when the postorder walk reaches them }
+        if n.nodetype in [forn,whilerepeatn] then
+          begin
+            result:=fen_norecurse_false;
+            exit;
+          end;
+
+        { only whole arithmetic subexpressions are worth hoisting }
+        if not(n.nodetype in [addn,subn,muln]) then
+          exit;
+        if ([nf_write,nf_modify]*n.flags)<>[] then
+          exit;
+        if not is_pure_invariant(n) then
+          exit;
+
+        { a purely constant expression is already folded; require at least one
+          variable read so we actually save work }
+        found:=false;
+        foreachnodestatic(pm_postprocess,n,@licm_contains_load,@found);
+        if not found then
+          exit;
+
+        { reuse a temp if we already hoisted an identical expression }
+        tempnode:=find_existing_hoist(n);
+        if tempnode<>nil then
+          begin
+            n.free;
+            n:=ctemprefnode.create(tempnode);
+            do_firstpass(n);
+            result:=fen_norecurse_false;
+            exit;
+          end;
+
+        if not assigned(inittemps) then
+          begin
+            inittemps:=internalstatements(initstatements);
+            deletetemps:=internalstatements(deletestatements);
+          end;
+
+        oldexpr:=n;
+        tempnode:=ctempcreatenode.create(oldexpr.resultdef,oldexpr.resultdef.size,tt_persistent,
+          tstoreddef(oldexpr.resultdef).is_intregable or tstoreddef(oldexpr.resultdef).is_fpuregable);
+
+        addstatement(initstatements,tempnode);
+        addstatement(initstatements,cassignmentnode.create(ctemprefnode.create(tempnode),oldexpr));
+        addstatement(deletestatements,ctempdeletenode.create(tempnode));
+
+        if nhoists>=length(hoisted) then
+          SetLength(hoisted,4+nhoists+nhoists shr 1);
+        hoisted[nhoists].temp:=tempnode;
+        hoisted[nhoists].expr:=oldexpr;
+        inc(nhoists);
+
+        { replace the subtree in the loop body with a reference to the temp }
+        n:=ctemprefnode.create(tempnode);
+        do_firstpass(n);
+
+        changed:=true;
+        result:=fen_norecurse_false;
+      end;
+
+
+    function licm_hoistcandidate_callback(var n: tnode; arg: pointer): foreachnoderesult;
+      begin
+        result:=tlicmcontext(arg^).hoistcandidate(n);
+      end;
+
+
+    procedure tlicmcontext.processloop(var n : tnode);
+      var
+        oldn,newn : tnode;
+        newstatements : tstatementnode;
+      begin
+        { compute the def-set of the whole loop node (includes the for-counter) }
+        CalcDefSum(n);
+        if not assigned(n.optinfo) then
+          exit;
+        loopdefsum:=n.optinfo^.defsum;
+
+        inittemps:=nil;
+        deletetemps:=nil;
+        initstatements:=nil;
+        deletestatements:=nil;
+        nhoists:=0;
+
+        { walk the loop body top-down so the largest invariant subtree wins }
+        if n.nodetype=forn then
+          foreachnodestatic(pm_preprocess,tfornode(n).t2,@licm_hoistcandidate_callback,@self)
+        else
+          foreachnodestatic(pm_preprocess,twhilerepeatnode(n).right,@licm_hoistcandidate_callback,@self);
+
+        if not assigned(inittemps) then
+          exit;
+
+        do_firstpass(tnode(inittemps));
+        do_firstpass(tnode(deletetemps));
+
+        { wrap the loop as: preheader-temps ; loop ; temp-releases }
+        oldn:=n;
+        newn:=internalstatements(newstatements);
+        addstatement(newstatements,inittemps);
+        addstatement(newstatements,oldn);
+        addstatement(newstatements,deletetemps);
+        n:=newn;
+      end;
+
+
+    function licm_processloop_callback(var n: tnode; arg: pointer): foreachnoderesult;
+      begin
+        result:=fen_false;
+        if n.nodetype in [forn,whilerepeatn] then
+          tlicmcontext(arg^).processloop(n);
+      end;
+
+
+    function OptimizeLICM(node : tnode) : boolean;
+      var
+        ctx : tlicmcontext;
+      begin
+        Result:=false;
+        if not(pi_dfaavailable in current_procinfo.flags) then
+          exit;
+        ctx.changed:=false;
+        ctx.nhoists:=0;
+        ctx.hoisted:=nil;
+        { postorder so nested (inner) loops are processed before their parents }
+        foreachnodestatic(pm_postprocess,node,@licm_processloop_callback,@ctx);
+        Result:=ctx.changed;
       end;
 
 end.

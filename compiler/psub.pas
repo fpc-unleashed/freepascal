@@ -1235,6 +1235,18 @@ implementation
                RedoDFA:=false; { Don't redo it again unless necessary }
              end;
 
+           { loop-invariant code motion; needs valid DFA, and (like strength
+             reduction) we skip procedures containing labels }
+           if (cs_opt_loopmotion in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizeLICM(code) or RedoDFA;
+
+           if RedoDFA then
+             begin
+               dfabuilder.redodfainfo(code);
+               RedoDFA:=false;
+             end;
+
            if cs_opt_forloop in current_settings.optimizerswitches then
              RedoDFA:=OptimizeForLoop(code);
 

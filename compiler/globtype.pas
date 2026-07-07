@@ -380,7 +380,10 @@ interface
          cs_opt_use_load_modify_store,
          cs_opt_unused_para,
          cs_opt_consts,
-         cs_opt_forloop
+         cs_opt_forloop,
+         { loop-invariant code motion: hoist side-effect-free, exception-free
+           loop-invariant subexpressions into the loop preheader }
+         cs_opt_loopmotion
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -454,7 +457,7 @@ interface
          'ORDERFIELDS','FASTMATH','DEADVALUES','REMOVEEMPTYPROCS',
          'CONSTPROP',
          'DEADSTORE','FORCENOSTACKFRAME','USELOADMODIFYSTORE',
-         'UNUSEDPARA','CONSTS','FORLOOP'
+         'UNUSEDPARA','CONSTS','FORLOOP','LICM'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
@@ -489,7 +492,7 @@ interface
        genericlevel3optimizerswitches = [cs_opt_level3,cs_opt_constant_propagate,cs_opt_nodedfa,cs_opt_loopstrength
                                          {$ifndef llvm},cs_opt_use_load_modify_store{$endif},
                                          cs_opt_loopunroll,cs_opt_forloop];
-       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath];
+       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion];
 
        { whole program optimizations whose information generation requires
          information from all loaded units
