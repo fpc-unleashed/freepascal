@@ -3651,6 +3651,11 @@ implementation
         result := 0;
         if ordtype = uvoid then
           exit;
+        if ordtype in [s128bit,u128bit] then
+          begin
+            result:=128;
+            exit;
+          end;
 
 {$ifndef cpu64bitalu}
         if (ordtype in [s64bit,u64bit]) then

@@ -79,6 +79,10 @@ function uint128_high:Tconstexprint;
 function shl128(const a,b:Tconstexprint):Tconstexprint;
 function shr128(const a,b:Tconstexprint):Tconstexprint;
 
+{ parses an integer literal in val syntax (optional sign, $/&/% prefixes)
+  into a 128 bit value; error is set when malformed or out of range }
+function str_to_tconstexprint(const s:shortstring;out error:boolean):Tconstexprint;
+
 operator := (const u:qword):Tconstexprint;inline;
 operator := (const s:int64):Tconstexprint;inline;
 operator := (const c:Tconstexprint):qword;
@@ -711,6 +715,82 @@ begin
     end;
 end;
 {$pop}
+
+function str_to_tconstexprint(const s:shortstring;out error:boolean):Tconstexprint;
+var
+  i:longint;
+  base,digit:integer;
+  c:char;
+  neg:boolean;
+begin
+  result:=0;
+  error:=true;
+  i:=1;
+  neg:=false;
+  if length(s)=0 then
+    exit;
+  case s[1] of
+    '-':
+      begin
+        neg:=true;
+        inc(i);
+      end;
+    '+':
+      inc(i);
+    else
+      ;
+  end;
+  base:=10;
+  if (i<=length(s)) then
+    case s[i] of
+      '$':
+        begin
+          base:=16;
+          inc(i);
+        end;
+      '&':
+        begin
+          base:=8;
+          inc(i);
+        end;
+      '%':
+        begin
+          base:=2;
+          inc(i);
+        end;
+      else
+        ;
+    end;
+  if i>length(s) then
+    exit;
+  while i<=length(s) do
+    begin
+      c:=s[i];
+      case c of
+        '0'..'9':
+          digit:=ord(c)-ord('0');
+        'a'..'f':
+          digit:=ord(c)-ord('a')+10;
+        'A'..'F':
+          digit:=ord(c)-ord('A')+10;
+        else
+          exit;
+      end;
+      if digit>=base then
+        exit;
+      result:=result*int64(base)+int64(digit);
+      if result.overflow then
+        exit;
+      inc(i);
+    end;
+  if neg then
+    begin
+      result:=-result;
+      if result.overflow then
+        exit;
+    end;
+  error:=false;
+end;
 
 function tostr(const i:Tconstexprint):shortstring;overload;
 var

@@ -815,6 +815,8 @@ implementation
                     rvalue:=tordconstnode(right).value and byte($1f);
                   8:
                     rvalue:=tordconstnode(right).value and byte($3f);
+                  16:
+                    rvalue:=tordconstnode(right).value and byte($7f);
                   else
                     internalerror(2013122302);
                 end;
@@ -828,11 +830,19 @@ implementation
                  { shr is an unsigned operation, so cut off upper bits }
                  if forinline then
                    lvalue:=lvalue and mask;
+                 { 128 bit types shift over the full payload, the operators
+                   keep the historical 64 bit window }
                  case nodetype of
                     shrn:
-                      lvalue:=lvalue shr rvalue;
+                      if is_128bitint(resultdef) then
+                        lvalue:=shr128(lvalue,rvalue)
+                      else
+                        lvalue:=lvalue shr rvalue;
                     shln:
-                      lvalue:=lvalue shl rvalue;
+                      if is_128bitint(resultdef) then
+                        lvalue:=shl128(lvalue,rvalue)
+                      else
+                        lvalue:=lvalue shl rvalue;
                     else
                       internalerror(2019050517);
                  end;
@@ -1018,12 +1028,23 @@ implementation
 
 
     function tunaryminusnode.simplify(forinline : boolean):tnode;
+      var
+        v : tconstexprint;
       begin
         result:=nil;
         { constant folding }
         if is_constintnode(left) then
           begin
-             result:=create_simplified_ord_const(-tordconstnode(left).value,resultdef,forinline,cs_check_overflow in localswitches);
+             v:=-tordconstnode(left).value;
+             if v.overflow or
+                (not(m_int128 in current_settings.modeswitches) and not v.representable64) then
+               begin
+                 Message(parser_e_arithmetic_operation_overflow);
+                 { Recover }
+                 result:=genintconstnode(0);
+                 exit;
+               end;
+             result:=create_simplified_ord_const(v,resultdef,forinline,cs_check_overflow in localswitches);
              exit;
           end;
         if is_constrealnode(left) then

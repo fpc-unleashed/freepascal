@@ -938,7 +938,8 @@ const
                addn :
                  begin
                    v:=lv+rv;
-                   if v.overflow then
+                   if v.overflow or
+                      (not(m_int128 in current_settings.modeswitches) and not v.representable64) then
                      begin
                        Message(parser_e_arithmetic_operation_overflow);
                        { Recover }
@@ -955,7 +956,8 @@ const
                subn :
                  begin
                    v:=lv-rv;
-                   if v.overflow then
+                   if v.overflow or
+                      (not(m_int128 in current_settings.modeswitches) and not v.representable64) then
                      begin
                        Message(parser_e_arithmetic_operation_overflow);
                        { Recover }
@@ -982,7 +984,8 @@ const
                muln :
                  begin
                    v:=lv*rv;
-                   if v.overflow then
+                   if v.overflow or
+                      (not(m_int128 in current_settings.modeswitches) and not v.representable64) then
                      begin
                        message(parser_e_arithmetic_operation_overflow);
                        { Recover }
@@ -2910,6 +2913,7 @@ const
                      ((nodetype=andn) or
                       ((nodetype in [orn,xorn,equaln,unequaln,gtn,gten,ltn,lten]) and
                         not is_64bitint(ld) and not is_64bitint(rd) and
+                        not is_128bitint(ld) and not is_128bitint(rd) and
                        (is_signed(ld)=is_signed(rd)))) then
                begin
                  { Delphi-compatible: prefer unsigned type for "and", when the
@@ -2944,6 +2948,22 @@ const
                      ) then
                begin
                  { done here }
+               end
+             { is there a signed 128 bit type ? }
+             else if ((torddef(rd).ordtype=s128bit) or (torddef(ld).ordtype=s128bit)) then
+               begin
+                  if (torddef(ld).ordtype<>s128bit) then
+                   inserttypeconv(left,s128inttype);
+                  if (torddef(rd).ordtype<>s128bit) then
+                   inserttypeconv(right,s128inttype);
+               end
+             { is there an unsigned 128 bit type ? }
+             else if ((torddef(rd).ordtype=u128bit) or (torddef(ld).ordtype=u128bit)) then
+               begin
+                  if (torddef(ld).ordtype<>u128bit) then
+                   inserttypeconv(left,u128inttype);
+                  if (torddef(rd).ordtype<>u128bit) then
+                   inserttypeconv(right,u128inttype);
                end
              { is there a signed 64 bit type ? }
              else if ((torddef(rd).ordtype=s64bit) or (torddef(ld).ordtype=s64bit)) then

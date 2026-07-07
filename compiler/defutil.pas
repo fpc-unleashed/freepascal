@@ -718,6 +718,14 @@ implementation
             internalerror(2019062203);
         end;
         size:=def.size;
+        if size=16 then
+          begin
+            if is_signed(def) then
+              result:=(lv=int128_low) and (hv=int128_high)
+            else
+              result:=(lv=0) and (hv=uint128_high);
+            exit;
+          end;
         case size of
           1: mask:=$ff;
           2: mask:=$ffff;
@@ -1460,6 +1468,11 @@ implementation
                2: sextval.svalue:=smallint(l.svalue);
                4: sextval.svalue:=longint(l.svalue);
                8: sextval.svalue:=l.svalue;
+               16:
+                 begin
+                   sextval.vlo:=l.vlo;
+                   sextval.vhi:=l.vhi;
+                 end;
                else
                  internalerror(201906230);
               end;
@@ -1539,6 +1552,7 @@ implementation
                 2: mask:=$ffff;
                 4: mask:=$ffffffff;
                 8: mask:=$ffffffffffffffff;
+                16: mask:=uint128_high;
                 else
                   internalerror(2019062305);
                 end;
