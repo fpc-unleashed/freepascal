@@ -139,6 +139,25 @@ procedure fpc_AnsiStr_Currency(c : currency;len,fr : SizeInt;out s : RawByteStri
     procedure fpc_UnicodeStr_int64(v : int64;len : SizeInt;out s : UnicodeString); compilerproc;
   {$endif FPC_HAS_FEATURE_WIDESTRINGS}
 {$endif CPU64}
+
+{$if declared(int128)}
+  procedure fpc_shortstr_int128(v : Int128;len : SizeInt;out s : shortstring); compilerproc;
+  procedure fpc_shortstr_uint128(v : UInt128;len : SizeInt;out s : shortstring); compilerproc;
+  procedure fpc_chararray_int128(v : Int128;len : SizeInt;out a : array of AnsiChar); compilerproc;
+  procedure fpc_chararray_uint128(v : UInt128;len : SizeInt;out a : array of AnsiChar); compilerproc;
+  {$ifdef FPC_HAS_FEATURE_ANSISTRINGS}
+  procedure fpc_ansistr_int128(v : Int128;len : SizeInt;out s : RawByteString;cp : TSystemCodePage); compilerproc; inline;
+  procedure fpc_ansistr_uint128(v : UInt128;len : SizeInt;out s : RawByteString;cp : TSystemCodePage); compilerproc; inline;
+  {$endif FPC_HAS_FEATURE_ANSISTRINGS}
+  {$ifdef FPC_HAS_FEATURE_WIDESTRINGS}
+    {$ifndef FPC_WIDESTRING_EQUAL_UNICODESTRING}
+    procedure fpc_widestr_int128(v : Int128;len : SizeInt;out s : widestring); compilerproc;
+    procedure fpc_widestr_uint128(v : UInt128;len : SizeInt;out s : widestring); compilerproc;
+    {$endif ndef FPC_WIDESTRING_EQUAL_UNICODESTRING}
+    procedure fpc_UnicodeStr_int128(v : Int128;len : SizeInt;out s : UnicodeString); compilerproc;
+    procedure fpc_UnicodeStr_uint128(v : UInt128;len : SizeInt;out s : UnicodeString); compilerproc;
+  {$endif FPC_HAS_FEATURE_WIDESTRINGS}
+{$endif}
 {$if defined(CPU16) or defined(CPU8)}
   procedure fpc_shortstr_longword(v : longword;len : SizeInt;out s : shortstring); compilerproc;
   procedure fpc_shortstr_longint(v : longint;len : SizeInt;out s : shortstring); compilerproc;
@@ -262,6 +281,23 @@ Function fpc_Val_int64_UnicodeStr (Const S : UnicodeString; out Code : ValSInt):
 {$endif FPC_HAS_FEATURE_WIDESTRINGS}
 
 {$endif CPU64}
+
+{$if declared(int128)}
+Function fpc_val_int128_shortstr(Const S: ShortString; out Code: ValSInt): Int128; compilerproc;
+Function fpc_val_uint128_shortstr(Const S: ShortString; out Code: ValSInt): UInt128; compilerproc;
+{$ifdef FPC_HAS_FEATURE_ANSISTRINGS}
+Function fpc_Val_int128_AnsiStr (Const S : RawByteString; out Code : ValSInt): Int128; compilerproc;
+Function fpc_Val_uint128_AnsiStr (Const S : RawByteString; out Code : ValSInt): UInt128; compilerproc;
+{$endif FPC_HAS_FEATURE_ANSISTRINGS}
+{$ifdef FPC_HAS_FEATURE_WIDESTRINGS}
+{$ifndef FPC_WIDESTRING_EQUAL_UNICODESTRING}
+Function fpc_Val_int128_WideStr (Const S : WideString; out Code : ValSInt): Int128; compilerproc;
+Function fpc_Val_uint128_WideStr (Const S : WideString; out Code : ValSInt): UInt128; compilerproc;
+{$endif ndef FPC_WIDESTRING_EQUAL_UNICODESTRING}
+Function fpc_Val_int128_UnicodeStr (Const S : UnicodeString; out Code : ValSInt): Int128; compilerproc;
+Function fpc_Val_uint128_UnicodeStr (Const S : UnicodeString; out Code : ValSInt): UInt128; compilerproc;
+{$endif FPC_HAS_FEATURE_WIDESTRINGS}
+{$endif}
 
 {$if defined(CPU16) or defined(CPU8)}
 Function fpc_val_longint_shortstr(Const S: ShortString; out Code: ValSInt): LongInt; compilerproc;
@@ -456,6 +492,12 @@ procedure fpc_write_text_int64(len : longint;var t : text;i : int64); compilerpr
 procedure fpc_write_text_qword_iso(len : longint;var t : text;q : qword); compilerproc;
 procedure fpc_write_text_int64_iso(len : longint;var t : text;i : int64); compilerproc;
 {$endif CPU64}
+{$if declared(int128)}
+procedure fpc_write_text_uint128(len : longint;var t : text;q : UInt128); compilerproc;
+procedure fpc_write_text_int128(len : longint;var t : text;i : Int128); compilerproc;
+procedure fpc_write_text_uint128_iso(len : longint;var t : text;q : UInt128); compilerproc;
+procedure fpc_write_text_int128_iso(len : longint;var t : text;i : Int128); compilerproc;
+{$endif}
 {$if defined(CPU16) or defined(CPU8)}
 procedure fpc_write_text_longword(len : longint;var t : text;q : longword); compilerproc;
 procedure fpc_write_text_longint(len : longint;var t : text;i : longint); compilerproc;
@@ -572,6 +614,12 @@ procedure fpc_Read_Text_QWord_Iso(var f : text; out q : qword); compilerproc;
 Procedure fpc_Read_Text_Int64(var f : text; out i : int64); compilerproc;
 procedure fpc_Read_Text_Int64_Iso(var f : text; out i : int64); compilerproc;
 {$endif CPU64}
+{$if declared(int128)}
+Procedure fpc_Read_Text_UInt128(var f : text; out u : UInt128); compilerproc;
+Procedure fpc_Read_Text_Int128(var f : text; out i : Int128); compilerproc;
+Procedure fpc_Read_Text_UInt128_Iso(var f : text; out u : UInt128); compilerproc;
+Procedure fpc_Read_Text_Int128_Iso(var f : text; out i : Int128); compilerproc;
+{$endif}
 {$if defined(CPU16) or defined(CPU8)}
 Procedure fpc_Read_Text_LongWord(var f : text; out q : longword); compilerproc;
 Procedure fpc_Read_Text_LongInt(var f : text; out i : longint); compilerproc;
@@ -621,6 +669,36 @@ function fpc_mul_int64(f1,f2 : int64) : int64; compilerproc;
 function fpc_mul_int64_checkoverflow(f1,f2 : int64) : int64; compilerproc;
 function fpc_mul_dword_to_qword(f1,f2 : dword) : qword; compilerproc;
 function fpc_mul_longint_to_int64(f1,f2 : longint) : int64; compilerproc;
+
+{$if declared(int128)}
+{ from int128.inc }
+function fpc_add_int128(a,b : Int128) : Int128; compilerproc;
+function fpc_sub_int128(a,b : Int128) : Int128; compilerproc;
+function fpc_mul_int128(a,b : Int128) : Int128; compilerproc;
+function fpc_and_int128(a,b : Int128) : Int128; compilerproc;
+function fpc_or_int128(a,b : Int128) : Int128; compilerproc;
+function fpc_xor_int128(a,b : Int128) : Int128; compilerproc;
+function fpc_not_int128(a : Int128) : Int128; compilerproc;
+function fpc_neg_int128(a : Int128) : Int128; compilerproc;
+function fpc_add_int128_checkoverflow(a,b : Int128) : Int128; compilerproc;
+function fpc_sub_int128_checkoverflow(a,b : Int128) : Int128; compilerproc;
+function fpc_mul_int128_checkoverflow(a,b : Int128) : Int128; compilerproc;
+function fpc_add_uint128_checkoverflow(a,b : UInt128) : UInt128; compilerproc;
+function fpc_sub_uint128_checkoverflow(a,b : UInt128) : UInt128; compilerproc;
+function fpc_mul_uint128_checkoverflow(a,b : UInt128) : UInt128; compilerproc;
+function fpc_neg_int128_checkoverflow(a : Int128) : Int128; compilerproc;
+function fpc_neg_uint128_checkoverflow(a : Int128) : Int128; compilerproc;
+function fpc_cmp_int128(a,b : Int128) : longint; compilerproc;
+function fpc_cmp_uint128(a,b : UInt128) : longint; compilerproc;
+function fpc_div_int128(n,z : Int128) : Int128; compilerproc;
+function fpc_mod_int128(n,z : Int128) : Int128; compilerproc;
+function fpc_div_uint128(n,z : UInt128) : UInt128; compilerproc;
+function fpc_mod_uint128(n,z : UInt128) : UInt128; compilerproc;
+function fpc_shl_int128(value : Int128; shift : int64) : Int128; compilerproc;
+function fpc_shr_int128(value : Int128; shift : int64) : Int128; compilerproc;
+function fpc_int128_to_double(v : Int128) : double; compilerproc;
+function fpc_uint128_to_double(v : UInt128) : double; compilerproc;
+{$endif}
 
 function fpc_div_currency(n,z : currency) : currency; compilerproc;
 function fpc_mod_currency(n,z : currency) : currency; compilerproc;

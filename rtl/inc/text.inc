@@ -1110,6 +1110,61 @@ end;
 
 {$endif CPU64}
 
+{$if declared(int128)}
+
+procedure fpc_write_text_uint128(len : longint;var t : text;q : UInt128); iocheck; compilerproc;
+var
+  s : shortstring;
+begin
+  if (InOutRes<>0) then
+   exit;
+  str(q,s);
+  write_str(len,t,s);
+end;
+
+
+procedure fpc_write_text_int128(len : longint;var t : text;i : Int128); iocheck; compilerproc;
+var
+  s : shortstring;
+begin
+  if (InOutRes<>0) then
+   exit;
+  str(i,s);
+  write_str(len,t,s);
+end;
+
+
+procedure fpc_write_text_uint128_iso(len : longint;var t : text;q : UInt128); iocheck; compilerproc;
+var
+  s : shortstring;
+begin
+  if (InOutRes<>0) then
+    exit;
+  str(q,s);
+  if len=-1 then
+    len:=39
+  else if len<length(s) then
+    len:=length(s);
+  write_str_iso(len,t,s);
+end;
+
+
+procedure fpc_write_text_int128_iso(len : longint;var t : text;i : Int128); iocheck; compilerproc;
+var
+  s : shortstring;
+begin
+  if (InOutRes<>0) then
+   exit;
+  str(i,s);
+  if len=-1 then
+    len:=40
+  else if len<length(s) then
+    len:=length(s);
+  write_str_iso(len,t,s);
+end;
+
+{$endif}
+
 {$if defined(CPU16) or defined(CPU8)}
 procedure fpc_write_text_longword(len : longint;var t : text;q : longword); iocheck; compilerproc;
 var
@@ -2280,6 +2335,78 @@ End;
 
 
 {$endif CPU64}
+
+{$if declared(int128)}
+
+procedure fpc_Read_Text_UInt128(var f : text; out u : UInt128); iocheck; compilerproc;
+var
+  hs   : ShortString;
+  code : Longint;
+Begin
+  u:=0;
+  If not CheckRead(f) then
+    exit;
+  hs:='';
+  if IgnoreSpaces(f) then
+   begin
+     if (TextRec(f).BufPos>=TextRec(f).BufEnd) then
+      exit;
+     ReadNumeric(f,hs);
+   end;
+  Val(hs,u,code);
+  If code<>0 Then
+   InOutRes:=106;
+End;
+
+procedure fpc_Read_Text_Int128(var f : text; out i : Int128); iocheck; compilerproc;
+var
+  hs   : ShortString;
+  code : Longint;
+Begin
+  i:=0;
+  If not CheckRead(f) then
+    exit;
+  hs:='';
+  if IgnoreSpaces(f) then
+   begin
+     if (TextRec(f).BufPos>=TextRec(f).BufEnd) then
+      exit;
+     ReadNumeric(f,hs);
+   end;
+  Val(hs,i,code);
+  If code<>0 Then
+   InOutRes:=106;
+End;
+
+procedure fpc_Read_Text_UInt128_Iso(var f : text; out u : UInt128); iocheck; compilerproc;
+var
+  hs   : ShortString;
+  code : Longint;
+Begin
+  u:=0;
+  if not CheckRead(f) then
+    Exit;
+  ReadInteger(f,hs);
+  Val(hs,u,code);
+  If code<>0 Then
+    InOutRes:=106;
+End;
+
+procedure fpc_Read_Text_Int128_Iso(var f : text; out i : Int128); iocheck; compilerproc;
+var
+  hs   : ShortString;
+  code : Longint;
+Begin
+  i:=0;
+  if not CheckRead(f) then
+    Exit;
+  ReadInteger(f,hs);
+  Val(hs,i,code);
+  If code<>0 Then
+    InOutRes:=106;
+End;
+
+{$endif}
 
 {$if defined(CPU16) or defined(CPU8)}
 procedure fpc_Read_Text_LongWord(var f : text; out q : longword); iocheck; compilerproc;

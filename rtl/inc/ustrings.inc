@@ -1619,6 +1619,54 @@ end;
 
 {$endif CPU64}
 
+{$if declared(int128)}
+
+Procedure fpc_UnicodeStr_Int128(v : Int128; Len : SizeInt; out S : UnicodeString);compilerproc;
+Var
+  SS: ShortString;
+begin
+  Str (v:Len,SS);
+  S:=UnicodeString(SS);
+end;
+
+Procedure fpc_UnicodeStr_UInt128(v : UInt128; Len : SizeInt; out S : UnicodeString);compilerproc;
+Var
+  SS: ShortString;
+begin
+  str(v:Len,SS);
+  S:=UnicodeString(SS);
+end;
+
+Function fpc_Val_Int128_UnicodeStr(Const S : UnicodeString; out Code : ValSInt): Int128; compilerproc;
+Var
+  SS : ShortString;
+begin
+  fpc_Val_Int128_UnicodeStr:=0;
+  if length(S)>255 then
+    code:=256
+  else
+    begin
+      SS := ShortString(S);
+      Val(SS,fpc_Val_Int128_UnicodeStr,Code);
+    end;
+end;
+
+Function fpc_Val_UInt128_UnicodeStr(Const S : UnicodeString; out Code : ValSInt): UInt128; compilerproc;
+Var
+  SS : ShortString;
+begin
+  fpc_Val_UInt128_UnicodeStr:=0;
+  if length(S)>255 then
+    code:=256
+  else
+    begin
+      SS := ShortString(S);
+      Val(SS,fpc_Val_UInt128_UnicodeStr,Code);
+    end;
+end;
+
+{$endif}
+
 
 {$if defined(CPU16) or defined(CPU8)}
 

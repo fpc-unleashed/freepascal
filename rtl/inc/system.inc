@@ -568,6 +568,12 @@ type
 {$I int64p.inc}
 {$I int64.inc}
 
+{ 128 bit integer helpers; requires sstrings.inc for space() and int64.inc.
+  guarded on the type being known so the bootstrap compiler skips it }
+{$if declared(int128)}
+{$I int128.inc}
+{$endif}
+
 {Requires int64.inc, since that contains the VAL functions for int64 and qword}
 {$ifdef FPC_HAS_FEATURE_ANSISTRINGS}
 {$i astrings.inc}
