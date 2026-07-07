@@ -2467,6 +2467,17 @@ implementation
           inc(ordinal_distance_hi); { Carry. }
       end;
 
+    { the spread between two ordinal types exceeds a qword once a 128 bit type
+      takes part; saturate it so the widest type still ranks as the loosest
+      (worst) match instead of tripping the qword conversion }
+    function ordinal_spread(const d: Tconstexprint): qword;
+      begin
+        if d.fitsinqword then
+          result:=d.uvalue
+        else
+          result:=high(qword);
+      end;
+
 
 {****************************************************************************
                            TCallCandidates
@@ -3340,8 +3351,8 @@ implementation
                  begin
                    eq:=te_equal;
                    { is_in_limit(def_from, def_to) means that def_from.low >= def_to.low and def_from.high <= def_to.high. }
-                   hp^.increment_ordinal_distance(torddef(def_from).low-torddef(def_to).low);
-                   hp^.increment_ordinal_distance(torddef(def_to).high-torddef(def_from).high);
+                   hp^.increment_ordinal_distance(ordinal_spread(torddef(def_from).low-torddef(def_to).low));
+                   hp^.increment_ordinal_distance(ordinal_spread(torddef(def_to).high-torddef(def_from).high));
                    { Give wrong sign a small penalty, this is need to get a difference
                      from word->[longword,longint] }
                    if (is_signed(def_from)<>is_signed(def_to)) then
