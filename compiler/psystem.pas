@@ -544,10 +544,10 @@ implementation
         addtype('LongInt',s32inttype);
         addtype('QWord',u64inttype);
         addtype('Int64',s64inttype);
-{$ifdef cpu64bitalu}
+{$if defined(cpu64bitalu) or defined(i386)}
         addtype('UInt128',u128inttype);
         addtype('Int128',s128inttype);
-{$endif cpu64bitalu}
+{$endif}
         addtype('AnsiChar',cansichartype);
         addtype('WideChar',cwidechartype);
         addtype('Text',cfiledef.createtext);
