@@ -1006,6 +1006,7 @@ implementation
                32 bit for backwards compatibility. That way 'shl 33' is
                the same as 'shl 1'. It's ugly but compatible with delphi/tp/gcc }
              if (not is_64bit(left.resultdef)) and
+                (not is_128bit(left.resultdef)) and
                 (torddef(left.resultdef).ordtype<>u32bit) then
                begin
                  { keep signedness of original type }
@@ -1280,6 +1281,14 @@ implementation
                }
              end
 {$endif SUPPORT_MMX}
+         else if is_128bit(left.resultdef) then
+           begin
+             { express as 0 - l so it lowers through the int128 sub helper }
+             result:=caddnode.create(subn,cordconstnode.create(0,s128inttype,false),left);
+             left:=nil;
+             typecheckpass(result);
+             exit;
+           end
          else if is_oversizedord(left.resultdef) then
            begin
              if is_64bit(left.resultdef) then

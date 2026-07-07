@@ -2778,7 +2778,18 @@ implementation
                           end;
                       end;
                     else
-                      ;
+                      { 128 bit has no native inc/dec; express succ/pred as an
+                        add/sub so it lowers to the int128 helpers }
+                      if is_128bit(left.resultdef) then
+                        begin
+                          if inlinenumber=in_succ_x then
+                            result:=caddnode.create(addn,left,cordconstnode.create(1,left.resultdef,false))
+                          else
+                            result:=caddnode.create(subn,left,cordconstnode.create(1,left.resultdef,false));
+                          result.flags:=result.flags+(flags*[nf_internal]);
+                          left:=nil;
+                          typecheckpass(result);
+                        end;
                   end;
                 end;
               in_low_x,
@@ -5264,6 +5275,8 @@ implementation
              { enums are class instances on the JVM -> special treatment }
              or (tcallparanode(left).left.resultdef.typ=enumdef)
 {$endif}
+             { 128 bit has no native inc/dec instruction }
+             or is_128bit(tcallparanode(left).left.resultdef)
             then
              { convert to simple add (JM) }
              result:=getaddsub_for_incdec

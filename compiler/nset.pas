@@ -798,13 +798,27 @@ implementation
                   else
                     newcheck:=@check;
                   labitem:=TLinkedListCaseLabelItem(lablist[j]).casenode;
-                  newcheck^:=caddnode.create(equaln,left.getcopy,labitem^._low_str.getcopy);
-                  if (labitem^._low_str.fullcompare(labitem^._high_str)<>0) then
+                  if labitem^.label_type=ltOrdinal then
                     begin
-                      newcheck^.nodetype:=gten;
-                      newcheck^:=caddnode.create(
-                        andn,newcheck^,caddnode.create(
-                          lten,left.getcopy,labitem^._high_str.getcopy));
+                      newcheck^:=caddnode.create(equaln,left.getcopy,cordconstnode.create(labitem^._low,left.resultdef,false));
+                      if labitem^._low<>labitem^._high then
+                        begin
+                          newcheck^.nodetype:=gten;
+                          newcheck^:=caddnode.create(
+                            andn,newcheck^,caddnode.create(
+                              lten,left.getcopy,cordconstnode.create(labitem^._high,left.resultdef,false)));
+                        end;
+                    end
+                  else
+                    begin
+                      newcheck^:=caddnode.create(equaln,left.getcopy,labitem^._low_str.getcopy);
+                      if (labitem^._low_str.fullcompare(labitem^._high_str)<>0) then
+                        begin
+                          newcheck^.nodetype:=gten;
+                          newcheck^:=caddnode.create(
+                            andn,newcheck^,caddnode.create(
+                              lten,left.getcopy,labitem^._high_str.getcopy));
+                        end;
                     end;
                 end;
               result:=cifnode.create(check,
@@ -907,6 +921,38 @@ implementation
                addstatement(stmt,temp_cleanup);
              result:=if_block;
              elseblock:= nil;
+             exit;
+           end;
+
+         { 128 bit case values cannot be held in a register for the linear
+           compare list; lower to an if-else chain whose comparisons become
+           int128 helper calls }
+         if is_128bit(left.resultdef) then
+           begin
+             if not valid_for_addr(left,false) then
+               begin
+                 init_block:=internalstatements(stmt);
+                 tempcaseexpr:=ctempcreatenode.create(
+                   left.resultdef,left.resultdef.size,tt_persistent,true);
+                 temp_cleanup:=ctempdeletenode.create(tempcaseexpr);
+                 typecheckpass(tnode(tempcaseexpr));
+                 addstatement(stmt,tempcaseexpr);
+                 addstatement(stmt,cassignmentnode.create(
+                   ctemprefnode.create(tempcaseexpr),left));
+                 left:=ctemprefnode.create(tempcaseexpr);
+                 typecheckpass(left);
+               end;
+             if_node:=makeifblock(elseblock);
+             if assigned(init_block) then
+               firstpass(tnode(init_block));
+             if_block:=internalstatements(stmt);
+             if assigned(init_block) then
+               addstatement(stmt,init_block);
+             addstatement(stmt,if_node);
+             if assigned(temp_cleanup) then
+               addstatement(stmt,temp_cleanup);
+             result:=if_block;
+             elseblock:=nil;
              exit;
            end;
 

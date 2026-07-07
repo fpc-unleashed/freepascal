@@ -1144,8 +1144,10 @@ const
                 exit;
               end
 
-            { change "0 - val" to "-val" }
-            else if is_constintnode(left) and (is_integer(right.resultdef) or is_pointer(right.resultdef)) then
+            { change "0 - val" to "-val" (128 bit negates through this very sub
+              helper, so leave its 0 - val alone to avoid bouncing back) }
+            else if is_constintnode(left) and (is_integer(right.resultdef) or is_pointer(right.resultdef)) and
+                    not is_128bit(right.resultdef) then
               begin
                 if (tordconstnode(left).value = 0) then
                   result := ctypeconvnode.create_internal(cunaryminusnode.create(right.getcopy),right.resultdef);
