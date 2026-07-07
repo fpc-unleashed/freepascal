@@ -376,7 +376,12 @@ begin
           int128_absneg(tint128rec(n).lo,tint128rec(n).hi,nlo,nhi);
   int128_divmodu(zlo,zhi,nlo,nhi,qlo,qhi,rlo,rhi);
   if negres then
-    int128_neg(qlo,qhi);
+    int128_neg(qlo,qhi)
+  else
+    { the only signed div overflow is low(Int128) div -1 = 2^127, which has no
+      positive representation; trap it like int64 div does on every target }
+    if int64(qhi)<0 then
+      HandleErrorAddrFrameInd(215,get_pc_addr,get_frame);
   tint128rec(result).lo:=qlo;
   tint128rec(result).hi:=qhi;
 end;
