@@ -2571,7 +2571,8 @@ const
          'cs_opt_unused_para',
          'cs_opt_consts',
          'cs_opt_forloop',
-         'cs_opt_loopmotion'
+         'cs_opt_loopmotion',
+         'cs_opt_loopunswitch'
        );
     var
          globalswitch  : tglobalswitch;
