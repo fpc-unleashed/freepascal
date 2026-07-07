@@ -1459,8 +1459,14 @@ implementation
              oldval:=l;
              getrangedefmasksize(todef,rangedef,mask,rangedefsize);
              l:=l and mask;
-             {reset sign, i.e. converting -1 to qword changes the value to high(qword)}
-             l.signed:=false;
+             {reset sign, i.e. converting -1 to qword changes the value to high(qword);
+              for <=64-bit ranges reinterpret as unsigned via uvalue, which also
+              discards any sign-extension the bitwise mask left in the high half of
+              the 128-bit payload}
+             if rangedefsize<=8 then
+               l:=l.uvalue
+             else
+               l.signed:=false;
              sextval:=0;
              { do sign extension if necessary (JM) }
              case rangedefsize of
