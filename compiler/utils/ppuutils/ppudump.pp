@@ -2573,7 +2573,8 @@ const
          'cs_opt_forloop',
          'cs_opt_loopmotion',
          'cs_opt_loopunswitch',
-         'cs_opt_bitidiom'
+         'cs_opt_bitidiom',
+         'cs_opt_rangecheckelim'
        );
     var
          globalswitch  : tglobalswitch;

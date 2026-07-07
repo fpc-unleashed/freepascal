@@ -389,7 +389,10 @@ interface
          cs_opt_loopunswitch,
          { bit-idiom recognition: rewrite the scalar clear-lowest-set-bit
            population-count loop into the PopCnt intrinsic }
-         cs_opt_bitidiom
+         cs_opt_bitidiom,
+         { value-range range-check elimination: drop the -Cr per-access array
+           bounds check where a for-loop counter is provably an in-bounds index }
+         cs_opt_rangecheckelim
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -463,7 +466,8 @@ interface
          'ORDERFIELDS','FASTMATH','DEADVALUES','REMOVEEMPTYPROCS',
          'CONSTPROP',
          'DEADSTORE','FORCENOSTACKFRAME','USELOADMODIFYSTORE',
-         'UNUSEDPARA','CONSTS','FORLOOP','LICM','LOOPUNSWITCH','BITIDIOM'
+         'UNUSEDPARA','CONSTS','FORLOOP','LICM','LOOPUNSWITCH','BITIDIOM',
+         'RANGEELIM'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
@@ -498,7 +502,7 @@ interface
        genericlevel3optimizerswitches = [cs_opt_level3,cs_opt_constant_propagate,cs_opt_nodedfa,cs_opt_loopstrength
                                          {$ifndef llvm},cs_opt_use_load_modify_store{$endif},
                                          cs_opt_loopunroll,cs_opt_forloop];
-       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom];
+       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim];
 
        { whole program optimizations whose information generation requires
          information from all loaded units

@@ -38,6 +38,7 @@ unit optloop;
     function OptimizeLICM(node : tnode) : boolean;
     function OptimizeLoopUnswitch(node : tnode) : boolean;
     function OptimizeBitIdiom(node : tnode) : boolean;
+    function OptimizeRangeElim(node : tnode) : boolean;
 
   implementation
 
@@ -1985,6 +1986,315 @@ unit optloop;
         { postorder so nested (inner) loops are handled before their parents }
         foreachnodestatic(pm_postprocess,node,@bitidiom_callback,@changed);
         Result:=changed;
+      end;
+
+
+{*****************************************************************************
+              Value-range-analysis range-check elimination
+*****************************************************************************}
+
+    { The named gcc/LLVM value-range-propagation redundant-check-elimination
+      pass, ported (in a deliberately narrow, provably-safe form) to FPC: when
+      range checking is on (-Cr), the per-access array bounds check that -Cr
+      injects in front of  a[i]  inside a counted for-loop is removed whenever
+      the loop counter i is provably always a valid index of the array a.
+
+      The suppression mechanism reuses FPC's own per-node range-check switch:
+      the check emitted for  a[i]  is gated on  cs_check_range  being present in
+      the node's localswitches at codegen time (pass_2 loads each node's
+      localswitches into current_settings.localswitches around
+      pass_generate_code). For a *dynamic* array the check
+      (fpc_dynarray_rangecheck) is gated on the vecn's own localswitches; for a
+      *static* array the check lives in the index -> subrange typeconv child of
+      the vecn. So we clear cs_check_range on both the vecn and its index child
+      -- exactly the same primitive tvecnode.gen_array_rangecheck already uses
+      (nmem.pas: exclude(localswitches,cs_check_range)).
+
+      Exactly two patterns qualify (a wrongly removed check is a memory-safety
+      miscompile, so everything else keeps its check):
+
+        A. STATIC array, constant loop bounds within the array's bounds:
+             a : array[Lo..Hi] of T;
+             for i := c1 to c2 do  ... a[i] ...     ( c1,c2 constants )
+           eliminated iff  Lo <= min(c1,c2)  and  max(c1,c2) <= Hi.
+
+        B. DYNAMIC array bounded by its own high()/length()-1:
+             for i := k to high(a) do   ... a[i] ...     ( k a constant >= 0 )
+           (or  high(a) downto k, or the  length(a)-1  spelling). Because the
+           for-loop evaluates its end value once at entry and a is proven not
+           reassigned/SetLength'd in the body, length(a) is invariant across the
+           loop, so i in [k,high(a)] subset [0,length(a)-1] is always in bounds.
+           An empty/NIL a gives high(a) = -1 -> zero-trip -> body never runs.
+           Only accesses of that same array a are cleared; a[i+1], a manually
+           computed index, or  for i := 0 to length(a)  (no -1, off-by-one) do
+           NOT match and keep their check.
+
+      Soundness requirements enforced below (all reuse the neighbouring passes'
+      aliasing/DFA analysis):
+        * the counter i is a simple, non-aliased, non-volatile local/value-param
+          ordinal variable, not assigned anywhere in the loop body (DFA def-set)
+          and whose address is never taken;
+        * the index expression is exactly a plain read of i (optionally through a
+          typeconv), never i+/-offset, and never a different variable;
+        * in case B the array a is likewise a simple non-aliased local/value-param
+          dynamic array, not assigned in the body (DFA def-set) and not
+          address-taken (which also rules out SetLength(a)/by-ref passing);
+        * procedures containing labels are skipped at the call site in psub, so
+          control can never enter the loop body with i out of range. }
+
+    function rangeelim_skip_typeconv(n : tnode) : tnode;
+      { peel typeconv wrappers; the counter index and the loop bounds are often
+        wrapped in an internal cast to the counter/index type }
+      begin
+        while assigned(n) and (n.nodetype=typeconvn) and assigned(ttypeconvnode(n).left) do
+          n:=ttypeconvnode(n).left;
+        result:=n;
+      end;
+
+
+    function rangeelim_const_value(n : tnode; out v : tconstexprint) : boolean;
+      { true (with value) if n is an ordinal constant, through typeconv wrappers
+        which preserve a constant's value }
+      begin
+        n:=rangeelim_skip_typeconv(n);
+        result:=assigned(n) and (n.nodetype=ordconstn);
+        if result then
+          v:=tordconstnode(n).value;
+      end;
+
+
+    function rangeelim_simple_var(n : tnode) : tabstractvarsym;
+      { the referenced sym if n is a plain load of a simple, non-aliased,
+        non-volatile local variable or value parameter, else nil }
+      var
+        sym : tsym;
+        avs : tabstractvarsym;
+      begin
+        result:=nil;
+        if not assigned(n) or (n.nodetype<>loadn) then
+          exit;
+        sym:=tloadnode(n).symtableentry;
+        if not(sym is tabstractvarsym) then
+          exit;
+        avs:=tabstractvarsym(sym);
+        if not(avs.typ in [localvarsym,paravarsym]) then
+          exit;
+        if (avs.typ=paravarsym) and (avs.varspez<>vs_value) then
+          exit;
+        if avs.addr_taken or avs.different_scope then
+          exit;
+        if (vo_volatile in avs.varoptions) or (vo_is_thread_var in avs.varoptions) then
+          exit;
+        result:=avs;
+      end;
+
+
+    function rangeelim_dynhigh_bound(n : tnode; out aload : tnode) : tabstractvarsym;
+      { returns the dynamic-array var sym A (and the A-load node) if n computes
+        high(A) or length(A)-1 for a simple non-aliased dynamic array A, else
+        nil. high(A) = length(A)-1 is the largest valid index of A. Plain
+        length(A) is deliberately rejected (that is the off-by-one that must
+        keep its check). }
+      var
+        inner : tnode;
+        avs : tabstractvarsym;
+        k : tconstexprint;
+      begin
+        result:=nil;
+        aload:=nil;
+        n:=rangeelim_skip_typeconv(n);
+        if not assigned(n) then
+          exit;
+        inner:=nil;
+        if (n.nodetype=inlinen) and (tinlinenode(n).inlinenumber=in_high_x) then
+          inner:=tinlinenode(n).left
+        else if n.nodetype=subn then
+          begin
+            { length(A) - 1 }
+            if (rangeelim_skip_typeconv(taddnode(n).left).nodetype=inlinen) and
+               (tinlinenode(rangeelim_skip_typeconv(taddnode(n).left)).inlinenumber=in_length_x) and
+               rangeelim_const_value(taddnode(n).right,k) and (k=1) then
+              inner:=tinlinenode(rangeelim_skip_typeconv(taddnode(n).left)).left;
+          end;
+        if not assigned(inner) then
+          exit;
+        inner:=rangeelim_skip_typeconv(inner);
+        avs:=rangeelim_simple_var(inner);
+        if not assigned(avs) then
+          exit;
+        if not assigned(inner.resultdef) or not is_dynamic_array(inner.resultdef) then
+          exit;
+        aload:=inner;
+        result:=avs;
+      end;
+
+
+    type
+      trangeelimcontext = object
+        counter : tabstractvarsym;
+        loopbodydefsum : tdfaset;
+        haveconst : boolean;
+        lo, hi : tconstexprint;        { case A: proven counter range }
+        dynsym : tabstractvarsym;      { case B: the high()-bounding array, or nil }
+        changed : boolean;
+        function index_is_counter(idx : tnode) : boolean;
+        function eliminate(var n : tnode) : foreachnoderesult;
+        procedure processloop(var n : tnode);
+      end;
+
+
+    function trangeelimcontext.index_is_counter(idx : tnode) : boolean;
+      { true if idx is exactly a plain read of the loop counter (optionally
+        through a typeconv). An offset like i+1 is an addn -> rejected. }
+      begin
+        result:=false;
+        { the range-check bearing typeconv is peeled; require a plain read }
+        if ([nf_write,nf_modify]*idx.flags)<>[] then
+          exit;
+        idx:=rangeelim_skip_typeconv(idx);
+        if not assigned(idx) or (idx.nodetype<>loadn) then
+          exit;
+        if ([nf_write,nf_modify]*idx.flags)<>[] then
+          exit;
+        result:=tloadnode(idx).symtableentry=tsym(counter);
+      end;
+
+
+    function trangeelimcontext.eliminate(var n : tnode) : foreachnoderesult;
+      var
+        adef : tarraydef;
+      begin
+        result:=fen_false;
+        if n.nodetype<>vecn then
+          exit;
+        if not assigned(tvecnode(n).left) or not assigned(tvecnode(n).left.resultdef) then
+          exit;
+        { the index must be exactly the loop counter }
+        if not index_is_counter(tvecnode(n).right) then
+          exit;
+
+        if haveconst then
+          begin
+            { case A: static array whose [lowrange..highrange] contains [lo..hi] }
+            if tvecnode(n).left.resultdef.typ<>arraydef then
+              exit;
+            if not is_normal_array(tvecnode(n).left.resultdef) then
+              exit;
+            adef:=tarraydef(tvecnode(n).left.resultdef);
+            if not((lo>=adef.lowrange) and (hi<=adef.highrange)) then
+              exit;
+          end
+        else
+          begin
+            { case B: the very dynamic array whose high() bounds the loop }
+            if not assigned(dynsym) then
+              exit;
+            if tvecnode(n).left.nodetype<>loadn then
+              exit;
+            if tloadnode(tvecnode(n).left).symtableentry<>tsym(dynsym) then
+              exit;
+            if not is_dynamic_array(tvecnode(n).left.resultdef) then
+              exit;
+          end;
+
+        { qualifying access: drop its range check. Clearing on the vecn kills
+          the dynamic-array / string check emitted in ncgmem; clearing on the
+          index child kills the static-array subrange-typeconv check and the
+          dynarray index-widening check. }
+        exclude(n.localswitches,cs_check_range);
+        if assigned(tvecnode(n).right) then
+          exclude(tvecnode(n).right.localswitches,cs_check_range);
+        changed:=true;
+      end;
+
+
+    function rangeelim_eliminate_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      begin
+        result:=trangeelimcontext(arg^).eliminate(n);
+      end;
+
+
+    procedure trangeelimcontext.processloop(var n : tnode);
+      var
+        forn_ : tfornode;
+        a, b : tconstexprint;
+        dynstart, dynend : tabstractvarsym;
+        aloadstart, aloadend, achosen : tnode;
+      begin
+        forn_:=tfornode(n);
+
+        { counter must be a simple, non-aliased local/value-param variable }
+        counter:=rangeelim_simple_var(forn_.left);
+        if not assigned(counter) then
+          exit;
+
+        { DFA: the counter must not be assigned anywhere in the loop body
+          (e.g. TP/mac mode allows writing the for-variable) }
+        CalcDefSum(forn_.t2);
+        if not assigned(forn_.t2.optinfo) or not assigned(forn_.left.optinfo) then
+          exit;
+        loopbodydefsum:=forn_.t2.optinfo^.defsum;
+        if DynSetIn(loopbodydefsum,forn_.left.optinfo^.index) then
+          exit;
+
+        haveconst:=false;
+        dynsym:=nil;
+
+        if rangeelim_const_value(forn_.right,a) and rangeelim_const_value(forn_.t1,b) then
+          begin
+            { case A: both loop bounds are ordinal constants }
+            haveconst:=true;
+            if a<=b then
+              begin lo:=a; hi:=b; end
+            else
+              begin lo:=b; hi:=a; end;
+          end
+        else
+          begin
+            { case B: one bound is high(a)/length(a)-1, the other a const >= 0 }
+            dynstart:=rangeelim_dynhigh_bound(forn_.right,aloadstart);
+            dynend:=rangeelim_dynhigh_bound(forn_.t1,aloadend);
+            achosen:=nil;
+            if assigned(dynend) and rangeelim_const_value(forn_.right,a) and (a>=0) then
+              begin dynsym:=dynend; achosen:=aloadend; end
+            else if assigned(dynstart) and rangeelim_const_value(forn_.t1,b) and (b>=0) then
+              begin dynsym:=dynstart; achosen:=aloadstart; end
+            else
+              exit;
+            { the array must not be reassigned/SetLength'd inside the loop body:
+              addr_taken (already rejected in rangeelim_simple_var) rules out
+              SetLength(a) and by-ref passing anywhere in the procedure; the DFA
+              def-set rules out a plain  a := ...  in the body }
+            if not assigned(achosen.optinfo) then
+              exit;
+            if DynSetIn(loopbodydefsum,achosen.optinfo^.index) then
+              exit;
+          end;
+
+        { walk the body clearing the check on every qualifying access }
+        foreachnodestatic(pm_preprocess,forn_.t2,@rangeelim_eliminate_cb,@self);
+      end;
+
+
+    function rangeelim_processloop_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      begin
+        result:=fen_false;
+        if n.nodetype=forn then
+          trangeelimcontext(arg^).processloop(n);
+      end;
+
+
+    function OptimizeRangeElim(node : tnode) : boolean;
+      var
+        ctx : trangeelimcontext;
+      begin
+        Result:=false;
+        if not(pi_dfaavailable in current_procinfo.flags) then
+          exit;
+        ctx.changed:=false;
+        { postorder so nested (inner) loops are handled before their parents }
+        foreachnodestatic(pm_postprocess,node,@rangeelim_processloop_cb,@ctx);
+        Result:=ctx.changed;
       end;
 
 end.
