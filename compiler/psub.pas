@@ -1277,6 +1277,19 @@ implementation
                RedoDFA:=false;
              end;
 
+           { value-range range-check elimination: drop the -Cr per-access array
+             bounds check on a[i] inside a counted for-loop when the counter i
+             is provably an in-bounds index (static array with constant bounds
+             inside the array, or dynamic array bounded by its own high()).
+             Needs valid DFA to prove the counter (and, for the dynamic case,
+             the array) are not modified in the body; skips procedures with
+             labels like the loop passes above so control cannot enter the loop
+             with i out of range. It only clears the range-check localswitch on
+             qualifying nodes -> no CFG change, so no DFA refresh is needed. }
+           if (cs_opt_rangecheckelim in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             OptimizeRangeElim(code);
+
            if cs_opt_forloop in current_settings.optimizerswitches then
              RedoDFA:=OptimizeForLoop(code);
 
