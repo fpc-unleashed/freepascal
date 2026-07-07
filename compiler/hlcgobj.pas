@@ -519,6 +519,9 @@ unit hlcgobj;
           }
           procedure g_rangecheck(list: TAsmList; const l:tlocation; fromdef,todef: tdef); virtual;
 
+          { range check involving a 128 bit integer on either side }
+          procedure g_rangecheck128(list: TAsmList; const l:tlocation; fromdef,todef: tdef); virtual;
+
           {# Generates overflow checking code for a node }
           procedure g_overflowcheck(list: TAsmList; const Loc:tlocation; def:tdef); virtual; abstract;
           procedure g_overflowCheck_loc(List:TAsmList;const Loc:TLocation;def:TDef;var ovloc : tlocation);virtual; abstract;
@@ -3949,6 +3952,12 @@ implementation
              exit;
           end;
 {$endif ndef cpuhighleveltarget and ndef cpu64bitalu}
+      { 128 bit values need pairwise compares }
+      if is_128bit(fromdef) or is_128bit(todef) then
+        begin
+          g_rangecheck128(list,l,fromdef,todef);
+          exit;
+        end;
       { only check when assigning to scalar, subranges are different, }
       { when todef=fromdef then the check is always generated         }
       getrange(fromdef,lfrom,hfrom);
@@ -4125,6 +4134,116 @@ implementation
       cg.a_reg_dealloc(list, NR_DEFAULTFLAGS);
       g_call_system_proc(list,'fpc_rangeerror',[],nil).resetiftemp;
       a_label(list,neglabel);
+    end;
+
+  procedure thlcgobj.g_rangecheck128(list: TAsmList; const l: tlocation; fromdef,todef: tdef);
+    var
+      lto,hto,lfrom,hfrom: TConstExprInt;
+      from_signed: boolean;
+      lreg,hreg: tregister;
+      href: treference;
+      errlab,donelab: tasmlabel;
+
+    { branches to errlab when the value in hreg:lreg lies on the wrong side
+      of the bound: below it for dobelow, above it otherwise }
+    procedure checkbound(const bound: TConstExprInt; dobelow: boolean);
+      var
+        oklab: tasmlabel;
+        errcond,okcond,locond: topcmp;
+      begin
+        current_asmdata.getjumplabel(oklab);
+        if dobelow then
+          begin
+            if from_signed then
+              errcond:=OC_LT
+            else
+              errcond:=OC_B;
+            locond:=OC_B;
+          end
+        else
+          begin
+            if from_signed then
+              errcond:=OC_GT
+            else
+              errcond:=OC_A;
+            locond:=OC_A;
+          end;
+        case errcond of
+          OC_LT:
+            okcond:=OC_GT;
+          OC_GT:
+            okcond:=OC_LT;
+          OC_B:
+            okcond:=OC_A;
+          else
+            okcond:=OC_B;
+        end;
+        { the high halves decide unless they are equal }
+        cg.a_reg_alloc(list,NR_DEFAULTFLAGS);
+        a_cmp_const_reg_label(list,u64inttype,errcond,tcgint(int64(bound.vhi)),hreg,errlab);
+        a_cmp_const_reg_label(list,u64inttype,okcond,tcgint(int64(bound.vhi)),hreg,oklab);
+        a_cmp_const_reg_label(list,u64inttype,locond,tcgint(int64(bound.vlo)),lreg,errlab);
+        cg.a_reg_dealloc(list,NR_DEFAULTFLAGS);
+        a_label(list,oklab);
+      end;
+
+    begin
+      getrange(fromdef,lfrom,hfrom);
+      getrange(todef,lto,hto);
+      if todef.typ=arraydef then
+        todef:=tarraydef(todef).rangedef;
+      from_signed:=is_signed(fromdef);
+      { target range covers the source range completely? }
+      if (lto<=lfrom) and (hto>=hfrom) then
+        exit;
+      { disjoint ranges always fail }
+      if (hto<lfrom) or (lto>hfrom) then
+        begin
+          g_call_system_proc(list,'fpc_rangeerror',[],nil).resetiftemp;
+          exit;
+        end;
+      { clamp the bounds to the source range so value and bounds share the
+        source's comparison space }
+      if lto<lfrom then
+        lto:=lfrom;
+      if hto>hfrom then
+        hto:=hfrom;
+      { materialize the value as a 64 bit pair }
+      lreg:=getintregister(list,u64inttype);
+      hreg:=getintregister(list,u64inttype);
+      if is_128bit(fromdef) then
+        begin
+          if not(l.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
+            internalerror(2026070710);
+          href:=l.reference;
+          if target_info.endian=endian_big then
+            inc(href.offset,8);
+          a_load_ref_reg(list,u64inttype,u64inttype,href,lreg);
+          href:=l.reference;
+          if target_info.endian=endian_little then
+            inc(href.offset,8);
+          a_load_ref_reg(list,u64inttype,u64inttype,href,hreg);
+        end
+      else if from_signed then
+        begin
+          a_load_loc_reg(list,fromdef,s64inttype,l,lreg);
+          a_op_const_reg_reg(list,OP_SAR,s64inttype,63,lreg,hreg);
+        end
+      else
+        begin
+          a_load_loc_reg(list,fromdef,u64inttype,l,lreg);
+          a_load_const_reg(list,u64inttype,0,hreg);
+        end;
+      current_asmdata.getjumplabel(errlab);
+      current_asmdata.getjumplabel(donelab);
+      if lto>lfrom then
+        checkbound(lto,true);
+      if hto<hfrom then
+        checkbound(hto,false);
+      a_jmp_always(list,donelab);
+      a_label(list,errlab);
+      g_call_system_proc(list,'fpc_rangeerror',[],nil).resetiftemp;
+      a_label(list,donelab);
     end;
 
   procedure thlcgobj.g_copyvaluepara_openarray(list: TAsmList; const ref: treference; const lenloc: tlocation; arrdef: tarraydef; destreg: tregister);

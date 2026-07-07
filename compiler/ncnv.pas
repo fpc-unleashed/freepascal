@@ -4528,6 +4528,24 @@ implementation
 
     function ttypeconvnode._first_int_to_real : tnode;
       begin
+         { 128 bit sources go through a helper on all targets }
+         if is_128bit(left.resultdef) then
+           begin
+             if is_signed(left.resultdef) then
+               begin
+                 inserttypeconv_internal(left,s128inttype);
+                 result:=ccallnode.createintern('fpc_int128_to_double',ccallparanode.create(left,nil));
+               end
+             else
+               begin
+                 inserttypeconv_internal(left,u128inttype);
+                 result:=ccallnode.createintern('fpc_uint128_to_double',ccallparanode.create(left,nil));
+               end;
+             left:=nil;
+             result:=ctypeconvnode.create_internal(result,resultdef);
+             firstpass(result);
+             exit;
+           end;
          result:=first_int_to_real;
       end;
 

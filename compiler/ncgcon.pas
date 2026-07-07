@@ -190,7 +190,32 @@ implementation
 *****************************************************************************}
 
     procedure tcgordconstnode.pass_generate_code;
+      var
+        lastlabel : tasmlabel;
       begin
+         if is_128bit(resultdef) then
+           begin
+             { 128 bit constants live in memory, like float constants }
+             location_reset_ref(location,LOC_CREFERENCE,def_cgsize(resultdef),const_align(resultdef.alignment),[]);
+             current_asmdata.getdatalabel(lastlabel);
+             maybe_new_object_file(current_asmdata.asmlists[al_typedconsts]);
+             new_section(current_asmdata.asmlists[al_typedconsts],sec_rodata_norel,lastlabel.name,const_align(resultdef.alignment));
+             current_asmdata.asmlists[al_typedconsts].concat(Tai_label.Create(lastlabel));
+             if target_info.endian=endian_little then
+               begin
+                 current_asmdata.asmlists[al_typedconsts].concat(Tai_const.Create_64bit(int64(value.vlo)));
+                 current_asmdata.asmlists[al_typedconsts].concat(Tai_const.Create_64bit(int64(value.vhi)));
+               end
+             else
+               begin
+                 current_asmdata.asmlists[al_typedconsts].concat(Tai_const.Create_64bit(int64(value.vhi)));
+                 current_asmdata.asmlists[al_typedconsts].concat(Tai_const.Create_64bit(int64(value.vlo)));
+               end;
+             if (tf_needs_symbol_size in target_info.flags) then
+               current_asmdata.asmlists[al_typedconsts].concat(Tai_symbol_end.Create(lastlabel));
+             location.reference.symbol:=lastlabel;
+             exit;
+           end;
          location_reset(location,LOC_CONSTANT,def_cgsize(resultdef));
 {$if defined(cpu64bitalu) or defined(cpuhighleveltarget)}
          location.value:=value.svalue;

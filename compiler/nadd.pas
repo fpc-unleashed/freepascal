@@ -74,6 +74,8 @@ interface
           { only implements "muln" nodes, the rest always has to be done in }
           { the code generator for performance reasons (JM)                 }
           function first_add64bitint: tnode; virtual;
+          { lowers all 128 bit operations and comparisons to helper calls }
+          function first_add128bitint: tnode; virtual;
           function first_addpointer: tnode; virtual;
           function first_cmppointer: tnode; virtual;
 
@@ -4635,6 +4637,85 @@ const
       end;
 
 
+    function taddnode.first_add128bitint: tnode;
+      var
+        procname: string[31];
+        cmpcall: tnode;
+      begin
+        case nodetype of
+          addn:
+            procname:='add';
+          subn:
+            procname:='sub';
+          muln:
+            procname:='mul';
+          andn:
+            procname:='and';
+          orn:
+            procname:='or';
+          xorn:
+            procname:='xor';
+          equaln,unequaln,ltn,lten,gtn,gten:
+            begin
+              if is_signed(left.resultdef) then
+                begin
+                  inserttypeconv_internal(left,s128inttype);
+                  inserttypeconv_internal(right,s128inttype);
+                  procname:='fpc_cmp_int128';
+                end
+              else
+                begin
+                  inserttypeconv_internal(left,u128inttype);
+                  inserttypeconv_internal(right,u128inttype);
+                  procname:='fpc_cmp_uint128';
+                end;
+              cmpcall:=ccallnode.createintern(procname,
+                ccallparanode.create(right,ccallparanode.create(left,nil)));
+              left:=nil;
+              right:=nil;
+              result:=caddnode.create(nodetype,cmpcall,cordconstnode.create(0,s32inttype,false));
+              firstpass(result);
+              exit;
+            end;
+          else
+            internalerror(2026070704);
+        end;
+        { the unchecked helpers work on the raw two's complement payload, so
+          the signed entry points serve both signednesses; only overflow
+          detection needs sign specific variants }
+        if (nodetype in [addn,subn,muln]) and
+           (cs_check_overflow in current_settings.localswitches) and
+           not is_signed(resultdef) then
+          begin
+            procname:='fpc_'+procname+'_uint128_checkoverflow';
+            inserttypeconv_internal(left,u128inttype);
+            inserttypeconv_internal(right,u128inttype);
+          end
+        else
+          begin
+            if (nodetype in [addn,subn,muln]) and
+               (cs_check_overflow in current_settings.localswitches) then
+              procname:='fpc_'+procname+'_int128_checkoverflow'
+            else
+              procname:='fpc_'+procname+'_int128';
+            inserttypeconv_internal(left,s128inttype);
+            inserttypeconv_internal(right,s128inttype);
+          end;
+        result:=ccallnode.createintern(procname,
+          ccallparanode.create(right,ccallparanode.create(left,nil)));
+        left:=nil;
+        right:=nil;
+        firstpass(result);
+        if result.resultdef.typ<>orddef then
+          internalerror(2026070705);
+        if torddef(result.resultdef).ordtype<>torddef(resultdef).ordtype then
+          begin
+            result:=ctypeconvnode.create_internal(result,resultdef);
+            firstpass(result);
+          end;
+      end;
+
+
     function taddnode.first_addpointer: tnode;
       begin
         result:=nil;
@@ -4993,6 +5074,14 @@ const
                  { if the code generator can handle 32 to 64-bit muls,
                    we're done here }
                  expectloc:=LOC_REGISTER;
+               end
+             { 128 bit ints are lowered to helper calls }
+             else if torddef(ld).ordtype in [s128bit,u128bit] then
+               begin
+                 result := first_add128bitint;
+                 if not assigned(result) then
+                   internalerror(2026070706);
+                 exit;
                end
 {$if not defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
               { is there a 64 bit type ? }

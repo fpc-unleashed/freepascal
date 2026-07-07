@@ -247,7 +247,7 @@ implementation
       ordtype: tordtype;
     begin
       ordtype := torddef(def).ordtype;
-      if not (ordtype in [scurrency,s64bit,u64bit,s32bit,u32bit,s16bit,u16bit,s8bit,u8bit]) then
+      if not (ordtype in [scurrency,s64bit,u64bit,s128bit,u128bit,s32bit,u32bit,s16bit,u16bit,s8bit,u8bit]) then
         internalerror(2013032603);
 
       if is_oversizedord(def) then
@@ -256,6 +256,8 @@ implementation
             scurrency,
             s64bit: exit('int64');
             u64bit: exit('qword');
+            s128bit: exit('int128');
+            u128bit: exit('uint128');
             s32bit: exit('longint');
             u32bit: exit('longword');
             s16bit: exit('smallint');
@@ -455,7 +457,7 @@ implementation
             bool8bit,bool16bit,bool32bit,bool64bit:
               procname := procname + 'bool';
 
-            scurrency,s64bit,u64bit,s32bit,u32bit,s16bit,u16bit,s8bit,u8bit:
+            scurrency,s64bit,u64bit,s128bit,u128bit,s32bit,u32bit,s16bit,u16bit,s8bit,u8bit:
               begin
                 intrinsiccode := in_str_x_string;
                 procname := procname + get_str_int_func(source.resultdef);
@@ -739,6 +741,16 @@ implementation
                 func_suffix := 'qword';
                 readfunctype:=u64inttype;
               end;
+            s128bit:
+              begin
+                func_suffix := 'int128';
+                readfunctype:=s128inttype;
+              end;
+            u128bit :
+              begin
+                func_suffix := 'uint128';
+                readfunctype:=u128inttype;
+              end;
             s32bit:
               begin
                 func_suffix := 'longint';
@@ -918,10 +930,12 @@ implementation
                     s16bit,
                     s32bit,
                     s64bit,
+                    s128bit,
                     u8bit,
                     u16bit,
                     u32bit,
-                    u64bit:
+                    u64bit,
+                    u128bit:
                       begin
                         get_read_write_int_func(para.left.resultdef,func_suffix,readfunctype);
                         name := procprefixes[do_read]+func_suffix;
@@ -1633,7 +1647,7 @@ implementation
       ordtype: tordtype;
     begin
       ordtype := torddef(def).ordtype;
-      if not (ordtype in [s64bit,u64bit,s32bit,u32bit,s16bit,u16bit,s8bit,u8bit]) then
+      if not (ordtype in [s64bit,u64bit,s128bit,u128bit,s32bit,u32bit,s16bit,u16bit,s8bit,u8bit]) then
         internalerror(2020080101);
 
       if is_oversizedint(def) then
@@ -1641,6 +1655,8 @@ implementation
           case ordtype of
             s64bit: exit('int64');
             u64bit: exit('qword');
+            s128bit: exit('int128');
+            u128bit: exit('uint128');
             s32bit: exit('longint');
             u32bit: exit('longword');
             s16bit: exit('smallint');
@@ -1789,8 +1805,8 @@ implementation
           orddef:
             begin
               case torddef(destpara.resultdef).ordtype of
-                s8bit,s16bit,s32bit,s64bit,
-                u8bit,u16bit,u32bit,u64bit:
+                s8bit,s16bit,s32bit,s64bit,s128bit,
+                u8bit,u16bit,u32bit,u64bit,u128bit:
                   begin
                     suffix := get_val_int_func(destpara.resultdef) + '_';
                     { we also need a destsize para in the case of sint or uint }

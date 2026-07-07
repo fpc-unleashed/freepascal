@@ -2593,7 +2593,9 @@ implementation
 {$endif cpuhighleveltarget}
      begin
         case typ of
-          orddef,
+          orddef:
+            { 128 bit ints need a register pair and always live in memory }
+            is_intregable:=not(torddef(self).ordtype in [u128bit,s128bit]);
           pointerdef,
           enumdef,
           classrefdef:
