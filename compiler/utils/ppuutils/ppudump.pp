@@ -2570,7 +2570,8 @@ const
          'cs_opt_use_load_modify_store',
          'cs_opt_unused_para',
          'cs_opt_consts',
-         'cs_opt_forloop'
+         'cs_opt_forloop',
+         'cs_opt_loopmotion'
        );
     var
          globalswitch  : tglobalswitch;
