@@ -1235,6 +1235,22 @@ implementation
                RedoDFA:=false; { Don't redo it again unless necessary }
              end;
 
+           { loop unswitching: hoist a loop-invariant conditional out of a loop
+             and clone the loop into branch-free then/else variants. Run before
+             LICM so the clones it produces are then exposed to invariant
+             hoisting; needs valid DFA to prove the condition invariant and,
+             like strength reduction and LICM, we skip procedures with labels. }
+           if (cs_opt_loopunswitch in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizeLoopUnswitch(code) or RedoDFA;
+
+           if RedoDFA then
+             begin
+               dfabuilder.redodfainfo(code);
+               { refresh DFA so LICM sees fresh info on the cloned loops }
+               RedoDFA:=false;
+             end;
+
            { loop-invariant code motion; needs valid DFA, and (like strength
              reduction) we skip procedures containing labels }
            if (cs_opt_loopmotion in current_settings.optimizerswitches)

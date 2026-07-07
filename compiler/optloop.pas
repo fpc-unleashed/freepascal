@@ -36,6 +36,7 @@ unit optloop;
     function optimize_record_writes(var n: tnode): boolean;
     function OptimizeForLoop(var node : tnode) : boolean;
     function OptimizeLICM(node : tnode) : boolean;
+    function OptimizeLoopUnswitch(node : tnode) : boolean;
 
   implementation
 
@@ -1209,7 +1210,12 @@ unit optloop;
       end;
 
 
-    function tlicmcontext.is_pure_invariant(expr : tnode) : boolean;
+    { Standalone purity+invariance test shared by LICM and loop unswitching:
+      given the DFA def-set of a loop, decides whether an expression tree is a
+      pure, non-trapping, loop-invariant numeric/pointer value (see the LICM
+      soundness policy above). Kept as a free function so the unswitching pass
+      can reuse the exact same analysis rather than duplicating it. }
+    function licm_is_pure_invariant(loopdefsum : tdfaset; expr : tnode) : boolean;
       var
         sym : tabstractvarsym;
       begin
@@ -1244,21 +1250,27 @@ unit optloop;
             if (cs_check_range in expr.localswitches) then
               result:=false
             else
-              result:=is_pure_invariant(ttypeconvnode(expr).left);
+              result:=licm_is_pure_invariant(loopdefsum,ttypeconvnode(expr).left);
           addn,subn,muln:
             { checked arithmetic may raise under -Cr/-Co -> not safe to speculate;
               the numeric-result guard keeps string "+" (concatenation) etc. out }
             if licm_simple_type(expr.resultdef) and
                (([cs_check_overflow,cs_check_range]*expr.localswitches)=[]) then
-              result:=is_pure_invariant(taddnode(expr).left) and
-                      is_pure_invariant(taddnode(expr).right);
+              result:=licm_is_pure_invariant(loopdefsum,taddnode(expr).left) and
+                      licm_is_pure_invariant(loopdefsum,taddnode(expr).right);
           unaryminusn:
             if licm_simple_type(expr.resultdef) and
                (([cs_check_overflow,cs_check_range]*expr.localswitches)=[]) then
-              result:=is_pure_invariant(tunarynode(expr).left);
+              result:=licm_is_pure_invariant(loopdefsum,tunarynode(expr).left);
           else
             ;
         end;
+      end;
+
+
+    function tlicmcontext.is_pure_invariant(expr : tnode) : boolean;
+      begin
+        result:=licm_is_pure_invariant(loopdefsum,expr);
       end;
 
 
@@ -1409,6 +1421,238 @@ unit optloop;
         ctx.hoisted:=nil;
         { postorder so nested (inner) loops are processed before their parents }
         foreachnodestatic(pm_postprocess,node,@licm_processloop_callback,@ctx);
+        Result:=ctx.changed;
+      end;
+
+
+{*****************************************************************************
+                             Loop unswitching
+*****************************************************************************}
+
+    { Loop unswitching (gcc's -funswitch-loops): when a conditional inside a
+      loop tests a loop-invariant expression, the test is hoisted out of the
+      loop and the loop is cloned into a then-variant and an else-variant, so
+      each cloned body is branch-free for that test:
+
+          for i:=... do          temp:=<cond>;         // evaluated once
+            if <cond> then  -->   if temp then
+              A                     for i:=... do A     // branch-free
+            else                  else
+              B;                    for i:=... do B;    // branch-free
+
+      Soundness policy (a wrong unswitch is a miscompile, so this is
+      deliberately conservative and reuses the LICM analysis):
+        * the condition must be pure, non-trapping and loop-invariant per the
+          DFA def-set of the whole loop node (licm_is_pure_invariant), extended
+          only with relational (=,<>,<,<=,>,>=) and boolean-not wrappers, which
+          also cannot trap or have side effects; anything else (calls, derefs,
+          div/mod, checked arithmetic, addr-taken/volatile/threadvars) is not
+          invariant and blocks unswitching;
+        * because the condition is pure and non-trapping it is safe to evaluate
+          once in the preheader even when the loop is zero-trip;
+        * only one if is unswitched per loop (no cascading), and only when the
+          loop body fits the size budget below, so cloning cannot blow up;
+        * nested loops are unswitched innermost-first (postorder), matching LICM;
+        * procedures containing labels are skipped at the call site in psub, as
+          strength reduction and LICM do, so goto never crosses a clone
+          boundary; break/exit/continue inside a branch stay correct because the
+          two clones are mutually exclusive and each is its own loop. }
+
+    const
+      { Code-size budget: unswitching duplicates the whole loop body, so only
+        do it for bodies of at most this many weighted nodes. Mirrors the
+        node_count_weighted heuristic that loop unrolling uses. }
+      UNSWITCH_MAX_NODE_WEIGHT = 50;
+
+    type
+      tunswitchcontext = object
+        loopdefsum : tdfaset;
+        condtemp : ptempinfo;
+        usethenbranch : boolean;
+        foundif : tifnode;
+        changed : boolean;
+        function is_invariant_cond(expr : tnode) : boolean;
+        function findcandidate(var n : tnode) : foreachnoderesult;
+        function pickbranch(var n : tnode) : foreachnoderesult;
+        procedure processloop(var n : tnode);
+      end;
+
+
+    function tunswitchcontext.is_invariant_cond(expr : tnode) : boolean;
+      begin
+        result:=false;
+        case expr.nodetype of
+          equaln,unequaln,ltn,lten,gtn,gten:
+            { a relational comparison of two pure invariants is itself pure and
+              non-trapping }
+            result:=licm_is_pure_invariant(loopdefsum,taddnode(expr).left) and
+                    licm_is_pure_invariant(loopdefsum,taddnode(expr).right);
+          notn:
+            result:=is_invariant_cond(tunarynode(expr).left);
+          else
+            { a plain boolean flag load, a constant, or invariant arithmetic }
+            result:=licm_is_pure_invariant(loopdefsum,expr);
+        end;
+      end;
+
+
+    function tunswitchcontext.findcandidate(var n : tnode) : foreachnoderesult;
+      begin
+        result:=fen_false;
+        if assigned(foundif) then
+          begin
+            result:=fen_norecurse_false;
+            exit;
+          end;
+        { do not descend into nested loops: each is unswitched on its own turn }
+        if n.nodetype in [forn,whilerepeatn] then
+          begin
+            result:=fen_norecurse_false;
+            exit;
+          end;
+        if (n.nodetype=ifn) and
+          (([nf_write,nf_modify]*n.flags)=[]) and
+          { at least one branch must exist to specialise into }
+          (assigned(tifnode(n).right) or assigned(tifnode(n).t1)) and
+          is_invariant_cond(tifnode(n).left) then
+          begin
+            foundif:=tifnode(n);
+            result:=fen_norecurse_true;
+          end;
+      end;
+
+
+    function tunswitchcontext.pickbranch(var n : tnode) : foreachnoderesult;
+      var
+        branch : tnode;
+        theif : tifnode;
+      begin
+        result:=fen_false;
+        if (n.nodetype=ifn) and
+          (tifnode(n).left.nodetype=temprefn) and
+          (ttemprefnode(tifnode(n).left).tempinfo=condtemp) then
+          begin
+            theif:=tifnode(n);
+            if usethenbranch then
+              begin
+                branch:=theif.right;
+                theif.right:=nil;
+              end
+            else
+              begin
+                branch:=theif.t1;
+                theif.t1:=nil;
+              end;
+            if not assigned(branch) then
+              branch:=cnothingnode.create;
+            n.free;
+            n:=branch;
+            result:=fen_norecurse_true;
+          end;
+      end;
+
+
+    function unswitch_findcandidate_callback(var n: tnode; arg: pointer): foreachnoderesult;
+      begin
+        result:=tunswitchcontext(arg^).findcandidate(n);
+      end;
+
+
+    function unswitch_specialize_callback(var n: tnode; arg: pointer): foreachnoderesult;
+      begin
+        result:=tunswitchcontext(arg^).pickbranch(n);
+      end;
+
+
+    procedure tunswitchcontext.processloop(var n : tnode);
+      var
+        body,condexpr,clone1,clone2,newn : tnode;
+        tempnode : ttempcreatenode;
+        newstatements : tstatementnode;
+      begin
+        { compute the def-set of the whole loop node (includes the for-counter) }
+        CalcDefSum(n);
+        if not assigned(n.optinfo) then
+          exit;
+        loopdefsum:=n.optinfo^.defsum;
+
+        if n.nodetype=forn then
+          body:=tfornode(n).t2
+        else
+          body:=twhilerepeatnode(n).right;
+        if not assigned(body) then
+          exit;
+
+        { size budget: unswitching duplicates the whole body }
+        if node_count_weighted(body,UNSWITCH_MAX_NODE_WEIGHT+1)>UNSWITCH_MAX_NODE_WEIGHT then
+          exit;
+
+        { find the first loop-invariant if inside the body (one per loop) }
+        foundif:=nil;
+        foreachnodestatic(pm_preprocess,body,@unswitch_findcandidate_callback,@self);
+        if not assigned(foundif) then
+          exit;
+
+        { keep the condition tree; it will be evaluated once in the preheader }
+        condexpr:=foundif.left;
+
+        tempnode:=ctempcreatenode.create(condexpr.resultdef,condexpr.resultdef.size,tt_persistent,
+          tstoreddef(condexpr.resultdef).is_intregable);
+        condtemp:=tempnode.tempinfo;
+
+        { mark the target if by pointing its condition at the (unique) temp;
+          after cloning, each copy carries an if testing this temp, which lets
+          us locate and specialise it in every clone }
+        foundif.left:=ctemprefnode.create(tempnode);
+
+        { two specialised copies of the whole loop; the tempcreate is outside
+          the copied subtree, so every cloned temp-ref keeps pointing at it }
+        clone1:=n.getcopy;
+        clone2:=n.getcopy;
+        node_reset_flags(clone1,[],[tnf_pass1_done]);
+        node_reset_flags(clone2,[],[tnf_pass1_done]);
+
+        { clone1: condition known true -> keep the then-branch }
+        usethenbranch:=true;
+        foreachnodestatic(pm_preprocess,clone1,@unswitch_specialize_callback,@self);
+        { clone2: condition known false -> keep the else-branch }
+        usethenbranch:=false;
+        foreachnodestatic(pm_preprocess,clone2,@unswitch_specialize_callback,@self);
+
+        { build: temp := cond ; if temp then clone1 else clone2 ; release temp }
+        newn:=internalstatements(newstatements);
+        addstatement(newstatements,tempnode);
+        addstatement(newstatements,cassignmentnode.create(ctemprefnode.create(tempnode),condexpr));
+        addstatement(newstatements,cifnode.create(ctemprefnode.create(tempnode),clone1,clone2));
+        addstatement(newstatements,ctempdeletenode.create(tempnode));
+
+        { the original loop (with its temp-ref marker) is no longer needed }
+        n.free;
+        n:=newn;
+        do_firstpass(n);
+        changed:=true;
+      end;
+
+
+    function unswitch_processloop_callback(var n: tnode; arg: pointer): foreachnoderesult;
+      begin
+        result:=fen_false;
+        if n.nodetype in [forn,whilerepeatn] then
+          tunswitchcontext(arg^).processloop(n);
+      end;
+
+
+    function OptimizeLoopUnswitch(node : tnode) : boolean;
+      var
+        ctx : tunswitchcontext;
+      begin
+        Result:=false;
+        if not(pi_dfaavailable in current_procinfo.flags) then
+          exit;
+        ctx.changed:=false;
+        ctx.foundif:=nil;
+        { postorder so nested (inner) loops are unswitched before their parents }
+        foreachnodestatic(pm_postprocess,node,@unswitch_processloop_callback,@ctx);
         Result:=ctx.changed;
       end;
 

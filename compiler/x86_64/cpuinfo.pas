@@ -208,7 +208,7 @@ const
                                  { no need to write info about those }
                                  [cs_opt_level1,cs_opt_level2,cs_opt_level3]+
                                  [{$ifndef llvm}cs_opt_regvar,{$endif}cs_opt_loopunroll,cs_opt_stackframe,cs_userbp,
-				  cs_opt_tailrecursion,cs_opt_nodecse,cs_opt_reorder_fields,cs_opt_fastmath,cs_opt_loopmotion];
+				  cs_opt_tailrecursion,cs_opt_nodecse,cs_opt_reorder_fields,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch];
 
    level1optimizerswitches = genericlevel1optimizerswitches;
    level2optimizerswitches = genericlevel2optimizerswitches + level1optimizerswitches +
