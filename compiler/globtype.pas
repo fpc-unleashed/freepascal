@@ -579,7 +579,8 @@ interface
          m_autoproperties,      { accessor-less property synthesizes a backing field and binds read/write to it directly }
          m_lock,                { thread-safe locking: `lock(v) do stmt` / `trylock ... wait N do ... else ...` }
          m_asyncawait,          { `async expr` runs on a worker thread yielding `future of T`; `await f` joins and reads the result }
-         m_parallelfor          { run `for parallel [(N)] var i := lo to hi do` body across worker threads }
+         m_parallelfor,         { run `for parallel [(N)] var i := lo to hi do` body across worker threads }
+         m_int128               { 128 bit integer types Int128/UInt128 with literals beyond 64 bit }
        );
        tmodeswitches = set of tmodeswitch;
 
@@ -808,7 +809,8 @@ interface
          'AUTOPROPERTIES',
          'LOCK',
          'ASYNCAWAIT',
-         'PARALLELFOR'
+         'PARALLELFOR',
+         'INT128'
          );
 
 
