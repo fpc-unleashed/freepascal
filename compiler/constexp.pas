@@ -327,13 +327,13 @@ var
 begin
   if overflow then
     internalerrorproc(200706095);
-  if representable64 then
-    begin
-      if signed then
-        result:=svalue
-      else
-        result:=uvalue;
-    end
+  { pick the accessor by actual representability, not the signed flag: a value
+    in [2^63, 2^64-1] carried as signed (e.g. cast to Int128) has vhi=0 but its
+    svalue reads negative, so it must go through uvalue }
+  if fitsinint64 then
+    result:=svalue
+  else if fitsinqword then
+    result:=uvalue
   else
     begin
       if extract_sign_abs(mlo,mhi) then
