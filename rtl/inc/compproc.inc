@@ -698,6 +698,8 @@ function fpc_shl_int128(value : Int128; shift : int64) : Int128; compilerproc;
 function fpc_shr_int128(value : Int128; shift : int64) : Int128; compilerproc;
 function fpc_int128_to_double(v : Int128) : double; compilerproc;
 function fpc_uint128_to_double(v : UInt128) : double; compilerproc;
+function fpc_int64_to_int128(v : int64) : Int128; compilerproc;
+function fpc_qword_to_uint128(v : qword) : UInt128; compilerproc;
 {$endif}
 
 function fpc_div_currency(n,z : currency) : currency; compilerproc;

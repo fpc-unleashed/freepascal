@@ -3925,6 +3925,23 @@ implementation
 
       begin
         first_int_to_int:=nil;
+{$ifndef cpu64bitalu}
+        { without a 64 bit ALU the inline 128 bit widening (which needs a 64 bit
+          register for the sign extension) is unavailable, so route it through a
+          helper the same way the arithmetic is lowered }
+        if is_128bit(resultdef) and not is_128bit(left.resultdef) then
+          begin
+            if is_signed(left.resultdef) then
+              result:=ccallnode.createinternres('fpc_int64_to_int128',
+                ccallparanode.create(ctypeconvnode.create_internal(left,s64inttype),nil),resultdef)
+            else
+              result:=ccallnode.createinternres('fpc_qword_to_uint128',
+                ccallparanode.create(ctypeconvnode.create_internal(left,u64inttype),nil),resultdef);
+            left:=nil;
+            firstpass(result);
+            exit;
+          end;
+{$endif not cpu64bitalu}
         expectloc:=left.expectloc;
         if not is_void(left.resultdef) then
           begin

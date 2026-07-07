@@ -477,6 +477,27 @@ begin
 end;
 
 {****************************************************************************
+                          int64/qword widen to int128
+    on targets without a 64 bit ALU the inline sign/zero extension is not
+    available, so the widening goes through these helpers
+****************************************************************************}
+
+function fpc_int64_to_int128(v:int64):Int128; [public,alias:'FPC_INT64_TO_INT128']; compilerproc;
+begin
+  tint128rec(result).lo:=qword(v);
+  if v<0 then
+    tint128rec(result).hi:=high(qword)
+  else
+    tint128rec(result).hi:=0;
+end;
+
+function fpc_qword_to_uint128(v:qword):UInt128; [public,alias:'FPC_QWORD_TO_UINT128']; compilerproc;
+begin
+  tint128rec(result).lo:=v;
+  tint128rec(result).hi:=0;
+end;
+
+{****************************************************************************
                           decimal conversion core
 ****************************************************************************}
 
