@@ -1315,6 +1315,20 @@ implementation
                RedoDFA:=false;
              end;
 
+           { bit-population-count idiom recognition: rewrite the scalar
+             clear-lowest-set-bit loop into the PopCnt intrinsic. Pure node
+             pattern-match (does not use DFA); skips procedures with labels
+             like the loop passes above so control never enters mid-rewrite. }
+           if (cs_opt_bitidiom in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizeBitIdiom(code) or RedoDFA;
+
+           if RedoDFA then
+             begin
+               dfabuilder.redodfainfo(code);
+               RedoDFA:=false;
+             end;
+
            if cs_opt_forloop in current_settings.optimizerswitches then
              RedoDFA:=OptimizeForLoop(code);
 
