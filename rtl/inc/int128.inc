@@ -707,3 +707,36 @@ begin
   tint128rec(result).lo:=lo;
   tint128rec(result).hi:=hi;
 end;
+
+{****************************************************************************
+                    abs / sqr / odd (plain overloads)
+    these lower to the operators above; no dedicated compiler support
+****************************************************************************}
+
+Function Abs(l:Int128):Int128;
+begin
+  if l<0 then
+    Abs:=-l
+  else
+    Abs:=l;
+end;
+
+Function Sqr(l:Int128):Int128;
+begin
+  Sqr:=l*l;
+end;
+
+Function Sqr(l:UInt128):UInt128;
+begin
+  Sqr:=l*l;
+end;
+
+Function Odd(l:Int128):Boolean;
+begin
+  Odd:=odd(tint128rec(l).lo);
+end;
+
+Function Odd(l:UInt128):Boolean;
+begin
+  Odd:=odd(tint128rec(l).lo);
+end;
