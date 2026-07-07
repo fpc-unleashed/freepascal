@@ -1372,10 +1372,16 @@ end;
 
 function getexprint:Tconstexprint;
 
+var
+  issigned : boolean;
+  v : int64;
 begin
-  getexprint.overflow:=false;
-  getexprint.signed:=ppufile.getboolean;
-  getexprint.svalue:=ppufile.getint64;
+  issigned:=ppufile.getboolean;
+  v:=ppufile.getint64;
+  if issigned then
+    result:=v
+  else
+    result:=qword(v);
 end;
 
 Procedure ReadPosInfo(Def: TPpuDef = nil);

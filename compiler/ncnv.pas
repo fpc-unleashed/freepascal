@@ -3795,10 +3795,17 @@ implementation
                      end;
                    left.resultdef:=resultdef;
                    tordconstnode(left).typedef:=resultdef;
-                   if is_signed(resultdef) then
-                     tordconstnode(left).value.signed:=true
+                   { reinterpret the (possibly truncated) payload with the
+                     signedness of the target type }
+                   if resultdef.size<=8 then
+                     begin
+                       if is_signed(resultdef) then
+                         tordconstnode(left).value:=tordconstnode(left).value.svalue
+                       else
+                         tordconstnode(left).value:=tordconstnode(left).value.uvalue;
+                     end
                    else
-                     tordconstnode(left).value.signed:=false;
+                     tordconstnode(left).value.signed:=is_signed(resultdef);
                    result:=left;
                    left:=nil;
                    exit;

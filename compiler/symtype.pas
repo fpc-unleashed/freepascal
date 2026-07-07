@@ -1084,10 +1084,16 @@ implementation
 
     function tcompilerppufile.getexprint:Tconstexprint;
 
+    var
+      issigned : boolean;
+      v : int64;
     begin
-      getexprint.overflow:=false;
-      getexprint.signed:=getboolean;
-      getexprint.svalue:=getint64;
+      issigned:=getboolean;
+      v:=getint64;
+      if issigned then
+        result:=v
+      else
+        result:=qword(v);
     end;
 
 
