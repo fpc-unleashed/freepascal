@@ -383,22 +383,36 @@ interface
        ttempdeletenodeclass = class of ttempdeletenode;
 
        { Autovectorizer body node (backend-only, created by OptimizeVectorize in
-         optloop). Represents "process vecwidth single-precision elements of an
-         element-wise  a[i] := b[i] op c[i]  using one packed SSE/AVX op".
-         left  = destination vecn  a[i]
-         right = source vecn       b[i]
-         third = source vecn       c[i]
-         The three index nodes all read the same loop counter i; the code
-         generator loads vecwidth (=4) consecutive singles at element i from b
-         and c, applies the packed op, and stores vecwidth results to a. Only the
-         x86 backend implements pass_generate_code; the base raises an internal
-         error (the pass fires only where the VECTORIZE switch is supported, i.e.
-         x86_64). Never streamed to a PPU: OptimizeVectorize refuses to run on
-         inline-candidate procedures, so the node cannot leak into inline info. }
+         optloop). Processes vecwidth (=4) single-precision elements per step
+         with one packed SSE/AVX op. It has four kinds (field `kind`):
+
+           vok_arr_arr    a[i] := b[i] op c[i]
+                          left=a[i]  right=b[i]  third=c[i]  (vecn each)
+           vok_arr_scalar a[i] := b[i] op s   (or  s op b[i], scalarleft=true)
+                          left=a[i]  right=b[i]  third=tempref to a 16-byte slot
+                          pre-filled with [s,s,s,s] by a vok_broadcast node
+           vok_copy       a[i] := b[i]
+                          left=a[i]  right=b[i]  third=nil
+           vok_broadcast  splat := [s,s,s,s]   (hoisted, runs once before loop)
+                          left=tempref to the 16-byte slot  right=scalar single s
+
+         The index nodes all read the same loop counter i; the vector loop only
+         advances i while i+vecwidth-1 <= hi, so the 128-bit window never reads
+         past the scalar loop's maximum index. Only the x86 backend implements
+         pass_generate_code; the base raises an internal error (the pass fires
+         only where the VECTORIZE switch is supported, i.e. x86_64). Never
+         streamed to a PPU: OptimizeVectorize refuses to run on inline-candidate
+         procedures, so the node cannot leak into inline info. }
+       tvectoropkind = (vok_arr_arr, vok_arr_scalar, vok_copy, vok_broadcast);
        tvectoropnode = class(ttertiarynode)
           op : TOpCG;         { OP_ADD, OP_SUB or OP_IMUL (single-precision) }
           vecwidth : longint; { number of single lanes processed per iteration }
+          kind : tvectoropkind;
+          scalarleft : boolean; { vok_arr_scalar: true if s is the op's left operand (s op b[i]) }
           constructor create(a,b,c : tnode; _op : TOpCG; _vecwidth : longint);virtual;
+          constructor create_scalar(a,b,splat : tnode; _op : TOpCG; _scalarleft : boolean; _vecwidth : longint);
+          constructor create_copy(a,b : tnode; _vecwidth : longint);
+          constructor create_broadcast(splat,scalar : tnode);
           function pass_typecheck : tnode;override;
           function pass_1 : tnode;override;
           function dogetcopy : tnode;override;
@@ -562,17 +576,51 @@ implementation
         inherited create(vectoropn,a,b,c);
         op:=_op;
         vecwidth:=_vecwidth;
+        kind:=vok_arr_arr;
+        scalarleft:=false;
+      end;
+
+
+    constructor tvectoropnode.create_scalar(a,b,splat : tnode; _op : TOpCG; _scalarleft : boolean; _vecwidth : longint);
+      begin
+        inherited create(vectoropn,a,b,splat);
+        op:=_op;
+        vecwidth:=_vecwidth;
+        kind:=vok_arr_scalar;
+        scalarleft:=_scalarleft;
+      end;
+
+
+    constructor tvectoropnode.create_copy(a,b : tnode; _vecwidth : longint);
+      begin
+        inherited create(vectoropn,a,b,nil);
+        op:=OP_NONE;
+        vecwidth:=_vecwidth;
+        kind:=vok_copy;
+        scalarleft:=false;
+      end;
+
+
+    constructor tvectoropnode.create_broadcast(splat,scalar : tnode);
+      begin
+        inherited create(vectoropn,splat,scalar,nil);
+        op:=OP_NONE;
+        vecwidth:=0;
+        kind:=vok_broadcast;
+        scalarleft:=false;
       end;
 
 
     function tvectoropnode.pass_typecheck : tnode;
       begin
         result:=nil;
-        { the child vecn nodes were already typechecked in the original loop
-          body; just make sure they carry a resultdef }
+        { the child nodes were already typechecked in the original loop body (or
+          are internally-built temp refs / invariant scalars); just make sure
+          they carry a resultdef }
         typecheckpass(left);
         typecheckpass(right);
-        typecheckpass(third);
+        if assigned(third) then
+          typecheckpass(third);
         resultdef:=voidtype;
       end;
 
@@ -582,7 +630,8 @@ implementation
         result:=nil;
         firstpass(left);
         firstpass(right);
-        firstpass(third);
+        if assigned(third) then
+          firstpass(third);
         expectloc:=LOC_VOID;
       end;
 
@@ -594,6 +643,8 @@ implementation
         n:=tvectoropnode(inherited dogetcopy);
         n.op:=op;
         n.vecwidth:=vecwidth;
+        n.kind:=kind;
+        n.scalarleft:=scalarleft;
         result:=n;
       end;
 
@@ -602,7 +653,9 @@ implementation
       begin
         result:=inherited docompare(p) and
                 (tvectoropnode(p).op=op) and
-                (tvectoropnode(p).vecwidth=vecwidth);
+                (tvectoropnode(p).vecwidth=vecwidth) and
+                (tvectoropnode(p).kind=kind) and
+                (tvectoropnode(p).scalarleft=scalarleft);
       end;
 
 {*****************************************************************************

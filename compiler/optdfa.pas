@@ -986,6 +986,10 @@ unit optdfa;
             typeconvn,
             inlinen,
             tempcreaten,
+            { autovectorizer body node: search its vecn/scalar children for a use
+              of the variable exactly like a call/assignment (a[i] written,
+              b[i]/c[i]/scalar read) }
+            vectoropn,
             tempdeleten:
               MaybeSearchIn(node);
             nothingn,
