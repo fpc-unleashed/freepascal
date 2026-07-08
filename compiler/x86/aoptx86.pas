@@ -238,6 +238,9 @@ unit aoptx86;
           stack frame for a sibling tail call, i.e. tear the frame down before
           the call and jump instead of call/return. }
         function CurrentProcAllowsSiblingTailFrameReuse : Boolean;
+        { Store merging (gcc -fstore-merging): coalesce a run of adjacent narrow
+          constant stores off the same base register into one wider store. }
+        function TryStoreMerge(var p : tai) : Boolean;
 {$endif x86_64}
         function PostPeepholeOptLea(var p : tai) : Boolean;
         function PostPeepholeOptPush(var p: tai): Boolean;
@@ -17289,6 +17292,15 @@ unit aoptx86;
         hp1: tai;
       begin
         Result:=false;
+{$ifdef x86_64}
+        { Store merging: coalesce adjacent narrow constant stores to consecutive
+          addresses off the same base register into one wider store. }
+        if TryStoreMerge(p) then
+          begin
+            Result:=true;
+            Exit;
+          end;
+{$endif x86_64}
         if (taicpu(p).oper[1]^.typ = top_reg) and (taicpu(p).oper[0]^.typ = top_const) then
           begin
 
@@ -18361,6 +18373,214 @@ unit aoptx86;
           end;
 {$endif x86_64}
       end;
+
+
+{$ifdef x86_64}
+{ items[] is fully written (0..count-1) before it is read and the read paths are
+  all guarded by count>=2, but the flow analyser cannot see that -- silence the
+  spurious "may be uninitialised" hint so a -Sew self-compile stays clean }
+{$push}{$warn 5036 off}
+    { Store merging (gcc -fstore-merging).  Coalesce a straight-line run of
+      adjacent narrow constant stores to consecutive addresses off the SAME base
+      register into one wider, naturally-aligned store, composing the constants
+      little-endian.  Motivating shapes: record field-by-field initialisation and
+      small constant fills lowered by the code generator to per-field
+      "mov $const,off(base)".
+
+      Legality: the run is collected forward from p following GetNextInstruction,
+      which only skips register-allocation / line-info markers.  Collection stops
+      at the first instruction that is not itself a qualifying constant store to
+      the same base register, so a call, a label/jump, a memory read, a base
+      overwrite or any other instruction between two stores terminates the run and
+      those stores are never merged together -- there is provably nothing but
+      const-stores-to-base between the merged instructions, and a const store
+      neither reads memory nor writes its own base register.  Any pair of stores
+      in the run that overlaps at all aborts the whole attempt (overlapping stores
+      are order-sensitive), so every remaining store writes a distinct byte range
+      and re-ordering / widening is sound.
+
+      A merged group must exactly tile a window [base_off, base_off+tw) with
+      tw in 2/4/8, base_off (= p's offset) a multiple of tw (prefer natural
+      alignment; unaligned would be correct on x86-64 but we keep the mild quality
+      gate), and at least two component stores.  x86-64 has no move of a full
+      64-bit immediate to memory, so a tw=8 merge is only emitted when the
+      composed value fits a sign-extended 32-bit immediate; otherwise the next
+      smaller width is tried (a full 64-bit constant group then coalesces into two
+      32-bit stores instead of four 16-bit ones -- still a win, same as gcc). }
+    function TX86AsmOptimizer.TryStoreMerge(var p : tai) : Boolean;
+      const
+        MaxRunLen = 16;
+      type
+        tstoreitem = record
+          ai     : tai;
+          offset : asizeint;
+          width  : byte;
+          val    : qword;
+        end;
+
+      function StoreOpSize(w : byte) : topsize;
+        begin
+          case w of
+            1: Result:=S_B;
+            2: Result:=S_W;
+            4: Result:=S_L;
+            8: Result:=S_Q;
+            else
+              Result:=S_NO;
+          end;
+        end;
+
+      function QualifyingStore(hpx : tai; out off : asizeint; out ww : byte; out vv : qword) : boolean;
+        begin
+          Result:=false;
+          if (hpx.typ<>ait_instruction) then
+            exit;
+          if not MatchInstruction(hpx,A_MOV,[S_B,S_W,S_L,S_Q]) then
+            exit;
+          if (taicpu(hpx).oper[0]^.typ<>top_const) then
+            exit;
+          if (taicpu(hpx).oper[1]^.typ<>top_ref) then
+            exit;
+          with taicpu(hpx).oper[1]^.ref^ do
+            begin
+              { base must be a plain register (%rbp/%rsp/GP pointer); a stack or
+                frame base is fine -- it is not modified by a store to it }
+              if (base=NR_NO) or (base=NR_INVALID) then
+                exit;
+              if (index<>NR_NO) then
+                exit;
+              if (symbol<>nil) or (relsymbol<>nil) then
+                exit;
+              if (segment<>NR_NO) then
+                exit;
+              if (refaddr<>addr_no) then
+                exit;
+              if (volatility<>[]) then
+                exit;
+              off:=offset;
+            end;
+          ww:=topsize2memsize[taicpu(hpx).opsize] shr 3;
+          if ww>=8 then
+            vv:=qword(taicpu(hpx).oper[0]^.val)
+          else
+            vv:=qword(taicpu(hpx).oper[0]^.val) and ((qword(1) shl (ww*8))-1);
+          Result:=true;
+        end;
+
+      var
+        items : array[0..MaxRunLen-1] of tstoreitem;
+        count, i, j, b, bitpos, inwin : integer;
+        hp : tai;
+        basereg : tregister;
+        offx : asizeint;
+        wx : byte;
+        vvx : qword;
+        tw : integer;
+        base_off, winstart, winend : asizeint;
+        covered, fullmask, mergedval : qword;
+        signext : int64;
+        opsz : topsize;
+      begin
+        Result:=false;
+        if not (cs_opt_storemerge in current_settings.optimizerswitches) then
+          exit;
+        { p itself must be a qualifying constant store }
+        if not QualifyingStore(p, base_off, wx, vvx) then
+          exit;
+        basereg:=taicpu(p).oper[1]^.ref^.base;
+
+        { collect the maximal run of consecutive qualifying stores to basereg }
+        count:=0;
+        hp:=p;
+        while (count<MaxRunLen) do
+          begin
+            if not QualifyingStore(hp, offx, wx, vvx) then
+              break;
+            if (taicpu(hp).oper[1]^.ref^.base<>basereg) then
+              break;
+            items[count].ai:=hp;
+            items[count].offset:=offx;
+            items[count].width:=wx;
+            items[count].val:=vvx;
+            inc(count);
+            if not GetNextInstruction(hp, hp) then
+              break;
+          end;
+
+        if count<2 then
+          exit;
+
+        { abort on any overlap between stores in the run (order-sensitive) }
+        for i:=0 to count-1 do
+          for j:=i+1 to count-1 do
+            if (items[i].offset < items[j].offset+items[j].width) and
+               (items[j].offset < items[i].offset+items[i].width) then
+              exit;
+
+        { Try to tile an aligned window that CONTAINS p's own store, anchored at
+          the natural alignment boundary at or below p's offset, with tw in 8,4,2
+          (largest first).  Anchoring on p (the first store of the run in program
+          order) guarantees p is a component of any successful merge, so p can be
+          widened in place -- while still allowing p to be the high half of the
+          window (e.g. a "hi" field stored before its "lo" neighbour).  The whole
+          run is nothing but non-overlapping const-stores to base, so composing
+          them into one store placed at p's slot preserves the final memory. }
+        for tw:=8 downto 1 do
+          begin
+            if not (tw in [2,4,8]) then
+              continue;
+            { floored alignment of p's offset to tw (offsets may be negative for
+              %rbp-relative frames) }
+            b:=base_off mod tw;
+            if b<0 then
+              inc(b, tw);
+            winstart:=base_off - b;
+            winend:=winstart+tw;
+            covered:=0;
+            mergedval:=0;
+            inwin:=0;
+            for i:=0 to count-1 do
+              if (items[i].offset>=winstart) and (items[i].offset+items[i].width<=winend) then
+                begin
+                  inc(inwin);
+                  for b:=0 to items[i].width-1 do
+                    begin
+                      bitpos:=(items[i].offset-winstart)+b;
+                      covered:=covered or (qword(1) shl bitpos);
+                      mergedval:=mergedval or
+                        (((items[i].val shr (b*8)) and qword($FF)) shl (bitpos*8));
+                    end;
+                end;
+            fullmask:=(qword(1) shl tw)-1;
+            if (covered<>fullmask) or (inwin<2) then
+              continue;
+            { encodability: no 64-bit immediate-to-memory move on x86-64 }
+            if tw=8 then
+              begin
+                signext:=int64(int32(mergedval and qword($FFFFFFFF)));
+                if qword(signext)<>mergedval then
+                  continue;
+              end;
+            opsz:=StoreOpSize(tw);
+            if opsz=S_NO then
+              continue;
+            { remove the other component stores; widen p in place (p is always a
+              window member here, and is the earliest of them in program order) }
+            for i:=0 to count-1 do
+              if (items[i].ai<>p) and
+                 (items[i].offset>=winstart) and (items[i].offset+items[i].width<=winend) then
+                RemoveInstruction(items[i].ai);
+            taicpu(p).oper[1]^.ref^.offset:=winstart;
+            taicpu(p).loadconst(0, tcgint(mergedval));
+            taicpu(p).changeopsize(opsz);
+            DebugMsg(SPeepholeOptimization + 'StoreMerge: coalesced '+tostr(inwin)+
+              ' constant stores into one '+tostr(tw*8)+'-bit store', p);
+            Result:=true;
+            exit;
+          end;
+      end;
+{$pop}
+{$endif x86_64}
 
 
     function TX86AsmOptimizer.PostPeepholeOptMovzx(var p : tai) : Boolean;
