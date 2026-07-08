@@ -528,7 +528,20 @@ interface
            incref, a local via its own reference). The borrow is lowered to a
            plain pointer copy and a's finalization is skipped. Opt-in (NOT in
            -O4) for the first cut }
-         cs_opt_refelide
+         cs_opt_refelide,
+         { switch-to-lookup-table conversion (gcc -ftree-switch-conversion, the
+           static-table half of tree-switch-conversion.cc, complementing
+           -OoCASECLUSTER which only optimizes the DISPATCH): when every arm of a
+           fully-covered (no-hole) case over an ordinal merely assigns
+           compile-time constants to the same set of simple ordinal variables,
+           replace the whole statement -- dispatch AND bodies -- with per-variable
+           static const arrays indexed by (selector-low) plus a single range guard
+           jumping to the else part, eliminating all branching for the classic
+           "map enum -> weight/flag" shape (which a jump table still pays an
+           indirect branch for). Bails on any side effect, non-constant or
+           non-assignment arm, on a sparse/hole-containing label range, or on a
+           too-large table }
+         cs_opt_switchtable
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -606,7 +619,7 @@ interface
          'RANGEELIM','VECTORIZE','JUMPTHREAD','LOOPDISTPAT',
          'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC','UNROLLJAM',
          'PREDCOM','SRA','STOREMERGE','CASECLUSTER','CROSSJUMP','BLOCKORDER',
-         'SINK','STOREMOTION','VRP','REFELIDE'
+         'SINK','STOREMOTION','VRP','REFELIDE','SWITCHTABLE'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
@@ -641,7 +654,7 @@ interface
        genericlevel3optimizerswitches = [cs_opt_level3,cs_opt_constant_propagate,cs_opt_nodedfa,cs_opt_loopstrength
                                          {$ifndef llvm},cs_opt_use_load_modify_store{$endif},
                                          cs_opt_loopunroll,cs_opt_forloop];
-       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert,cs_opt_reassoc,cs_opt_unrolljam,cs_opt_predcom,cs_opt_sra,cs_opt_storemerge,cs_opt_casecluster,cs_opt_crossjump,cs_opt_blockorder,cs_opt_sink,cs_opt_storemotion,cs_opt_vrp];
+       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert,cs_opt_reassoc,cs_opt_unrolljam,cs_opt_predcom,cs_opt_sra,cs_opt_storemerge,cs_opt_casecluster,cs_opt_crossjump,cs_opt_blockorder,cs_opt_sink,cs_opt_storemotion,cs_opt_vrp,cs_opt_switchtable];
 
        { whole program optimizations whose information generation requires
          information from all loaded units

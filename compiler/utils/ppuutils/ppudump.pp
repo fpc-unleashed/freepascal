@@ -2593,7 +2593,8 @@ const
          'cs_opt_sink',
          'cs_opt_storemotion',
          'cs_opt_vrp',
-         'cs_opt_refelide'
+         'cs_opt_refelide',
+         'cs_opt_switchtable'
        );
     var
          globalswitch  : tglobalswitch;
