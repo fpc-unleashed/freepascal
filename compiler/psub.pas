@@ -1334,6 +1334,27 @@ implementation
                RedoDFA:=false;
              end;
 
+           { predictive commoning: in a counted loop that reads B[i+c] for a small
+             window of constant offsets c, carry the window in a rotating set of
+             scalar temporaries and load only the leading edge B[i+maxoff] each
+             iteration instead of re-loading every offset (the stencil / 1-D
+             convolution sliding window). Run before the vectorizer / strength
+             reduction / the for->while lowering: it matches on for-nodes with
+             plain B[i+c] index nodes, which strength reduction would rewrite into
+             pointer walks the recognizer can't match. Needs valid DFA to prove the
+             counter is not modified in its body; skips procedures with labels like
+             the loop passes below so control cannot enter a partly-rotated body
+             mid-stream. }
+           if (cs_opt_predcom in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizePredCom(code) or RedoDFA;
+
+           if RedoDFA then
+             begin
+               dfabuilder.redodfainfo(code);
+               RedoDFA:=false;
+             end;
+
            { conservative loop autovectorization: rewrite a counted single-
              precision element-wise for-loop  for i:=lo to hi do a[i]:=b[i] op c[i]
              into a 128-bit SSE packed main loop (4 singles/iteration) plus a

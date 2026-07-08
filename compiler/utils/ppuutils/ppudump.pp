@@ -2583,7 +2583,8 @@ const
          'cs_opt_loopfuse',
          'cs_opt_ifconvert',
          'cs_opt_reassoc',
-         'cs_opt_unrolljam'
+         'cs_opt_unrolljam',
+         'cs_opt_predcom'
        );
     var
          globalswitch  : tglobalswitch;
