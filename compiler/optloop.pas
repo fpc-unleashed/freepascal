@@ -51,6 +51,7 @@ unit optloop;
     function OptimizeCodeSink(node : tnode) : boolean;
     function OptimizeStoreMotion(node : tnode) : boolean;
     function OptimizeVRP(node : tnode) : boolean;
+    function OptimizeRefElide(node : tnode) : boolean;
 
   implementation
 
@@ -8051,6 +8052,208 @@ unit optloop;
         root:=node;
         vrp_walk_stmt(root,facts,@changed);
         result:=changed;
+      end;
+
+
+{*****************************************************************************
+                             OptimizeRefElide
+ *****************************************************************************}
+
+    { -OoREFELIDE: managed-type reference-count traffic elision (ARC-style pair
+      elimination). Recognises a straight-line ansistring borrow
+
+          a := b;   (* a a local ansistring, b a value-parameter or a
+                       single-assignment local ansistring *)
+
+      where the destination a is thereafter only READ -- never reassigned,
+      never has its address taken, never passed by var/out (all of which the
+      addr_taken flag and a whole-routine write/address scan certify) -- and
+      lowers it to a plain pointer copy while marking a so it is NOT finalized
+      at scope end. Sound because the SOURCE b keeps the buffer alive for a's
+      entire lifetime: a value parameter through the incref FPC does on entry
+      (held until the parameter is finalized at scope exit, so no aliasing
+      store or exception can drop it early), a local through its own reference
+      (b is written at most once, so its buffer never changes and is held until
+      b's own scope-end finalization). a therefore never needs to own a
+      reference: the incref the assignment would perform and the decref its
+      finalization would perform are pure overhead and are both removed.
+
+      Runs BEFORE do_firstpass, while  a := b  is still a plain assignmentnode
+      (firstpass would otherwise lower it into an fpc_ansistr_assign call). The
+      analysis is entirely flow-insensitive -- it relies only on
+      whole-routine occurrence counts and the addr_taken/different_scope
+      symbol flags -- so it is correct under any control flow (branches, loops,
+      gotos) and across the implicit exception frame. }
+
+    type
+      trefelide_cand = record
+        assign : tnode;   { the a := b  tassignmentnode }
+        asym   : tsym;    { destination local }
+        bsym   : tsym;    { source }
+        accept : boolean;
+      end;
+      trefelide_candarr = array of trefelide_cand;
+      prefelide_candarr = ^trefelide_candarr;
+
+      trefelide_symcount = record
+        sym    : tsym;
+        ntotal : longint;
+        nwrite : longint;   { loads flagged nf_write/nf_modify (defs / by-ref) }
+        naddr  : longint;   { loads flagged nf_address_taken }
+      end;
+      prefelide_symcount = ^trefelide_symcount;
+
+    function refelide_borrow_candidate(a: tassignmentnode; out asym,bsym: tsym): boolean;
+      var
+        ls,rs : tloadnode;
+      begin
+        result:=false;
+        asym:=nil; bsym:=nil;
+        if a.assigntype<>at_normal then exit;
+        if (a.left=nil) or (a.right=nil) then exit;
+        if (a.left.nodetype<>loadn) or (a.right.nodetype<>loadn) then exit;
+        ls:=tloadnode(a.left);
+        rs:=tloadnode(a.right);
+        if not assigned(ls.resultdef) or not assigned(rs.resultdef) then exit;
+        { first cut: plain ansistring only (same ABI, clearest soundness) }
+        if not is_ansistring(ls.resultdef) then exit;
+        if not is_ansistring(rs.resultdef) then exit;
+        if nf_isproperty in ls.flags then exit;
+        asym:=ls.symtableentry;
+        bsym:=rs.symtableentry;
+        if (asym=nil) or (bsym=nil) or (asym=bsym) then exit;
+        { destination must be a plain local (not the funcret, not a typed const) }
+        if asym.typ<>localvarsym then exit;
+        if (tabstractvarsym(asym).varoptions*[vo_is_funcret,vo_is_typed_const,vo_is_external])<>[] then exit;
+        { source must be a value-parameter or a local (both hold a real
+          reference for the whole scope); NOT a const/var/out parameter (a
+          const param is only borrowed from the caller and could be freed by an
+          aliasing store during the call) }
+        if not (bsym.typ in [localvarsym,paravarsym]) then exit;
+        if (bsym.typ=paravarsym) and (tparavarsym(bsym).varspez<>vs_value) then exit;
+        if (tabstractvarsym(bsym).varoptions*[vo_is_funcret,vo_is_typed_const,vo_is_external])<>[] then exit;
+        result:=true;
+      end;
+
+    function refelide_collect(var n: tnode; arg: pointer): foreachnoderesult;
+      var
+        ca : prefelide_candarr;
+        asym,bsym : tsym;
+        l : longint;
+      begin
+        result:=fen_false;
+        if n.nodetype<>assignn then exit;
+        if not refelide_borrow_candidate(tassignmentnode(n),asym,bsym) then exit;
+        ca:=arg;
+        l:=length(ca^);
+        setlength(ca^,l+1);
+        ca^[l].assign:=n;
+        ca^[l].asym:=asym;
+        ca^[l].bsym:=bsym;
+        ca^[l].accept:=false;
+      end;
+
+    function refelide_countcb(var n: tnode; arg: pointer): foreachnoderesult;
+      var
+        pc : prefelide_symcount;
+      begin
+        result:=fen_false;
+        pc:=arg;
+        if (n.nodetype=loadn) and (tloadnode(n).symtableentry=pc^.sym) then
+          begin
+            inc(pc^.ntotal);
+            if nf_address_taken in n.flags then
+              inc(pc^.naddr);
+            if ([nf_write,nf_modify]*n.flags)<>[] then
+              inc(pc^.nwrite);
+          end;
+      end;
+
+    function refelide_apply(var n: tnode; arg: pointer): foreachnoderesult;
+      var
+        ca : prefelide_candarr;
+        i : longint;
+        a : tassignmentnode;
+        ls,rs : tnode;
+        newn : tnode;
+        pptr : tdef;
+      begin
+        result:=fen_false;
+        if n.nodetype<>assignn then exit;
+        ca:=arg;
+        for i:=0 to high(ca^) do
+          if ca^[i].accept and (ca^[i].assign=n) then
+            begin
+              a:=tassignmentnode(n);
+              { detach the two ansistring loads and reuse them under a raw
+                pointer-sized reinterpret store: PPtrUInt(@a)^ := PPtrUInt(@b)^,
+                which the code generator emits as a plain move with no refcount
+                traffic }
+              ls:=a.left; rs:=a.right;
+              a.left:=nil; a.right:=nil;
+              pptr:=cpointerdef.getreusable(ptruinttype);
+              newn:=cassignmentnode.create(
+                cderefnode.create(ctypeconvnode.create_internal(caddrnode.create_internal_nomark(ls),pptr)),
+                cderefnode.create(ctypeconvnode.create_internal(caddrnode.create_internal_nomark(rs),pptr)));
+              typecheckpass(newn);
+              { a borrows -- it must never be finalized (it owns no reference) }
+              tabstractnormalvarsym(ca^[i].asym).refelide_noinitfinal:=true;
+              n.free;
+              n:=newn;
+              result:=fen_norecurse_false;
+              exit;
+            end;
+      end;
+
+    function OptimizeRefElide(node : tnode) : boolean;
+      var
+        cands : trefelide_candarr;
+        i,j : longint;
+        sc : trefelide_symcount;
+        inAset : boolean;
+      begin
+        result:=false;
+        setlength(cands,0);
+        foreachnodestatic(node,@refelide_collect,@cands);
+        if length(cands)=0 then
+          exit;
+        for i:=0 to high(cands) do
+          begin
+            { destination and source must never have their address taken and
+              never be captured by a nested routine }
+            if tabstractvarsym(cands[i].asym).addr_taken or
+               tabstractvarsym(cands[i].asym).different_scope or
+               tabstractvarsym(cands[i].bsym).addr_taken or
+               tabstractvarsym(cands[i].bsym).different_scope then
+              continue;
+            { no chaining: the source must not itself be a borrow destination
+              (which would not own a real reference) }
+            inAset:=false;
+            for j:=0 to high(cands) do
+              if cands[j].asym=cands[i].bsym then
+                begin
+                  inAset:=true;
+                  break;
+                end;
+            if inAset then
+              continue;
+            { destination a: written exactly once (this borrow) and never
+              address-taken/by-ref anywhere }
+            sc.sym:=cands[i].asym; sc.ntotal:=0; sc.nwrite:=0; sc.naddr:=0;
+            foreachnodestatic(node,@refelide_countcb,@sc);
+            if (sc.naddr<>0) or (sc.nwrite<>1) then
+              continue;
+            { source b: written at most once (so its buffer never changes) and
+              never address-taken/by-ref anywhere }
+            sc.sym:=cands[i].bsym; sc.ntotal:=0; sc.nwrite:=0; sc.naddr:=0;
+            foreachnodestatic(node,@refelide_countcb,@sc);
+            if (sc.naddr<>0) or (sc.nwrite>1) then
+              continue;
+            cands[i].accept:=true;
+            result:=true;
+          end;
+        if result then
+          foreachnodestatic(node,@refelide_apply,@cands);
       end;
 
 end.

@@ -389,6 +389,8 @@ implementation
     begin
       if (tsym(p).typ=localvarsym) and
          (tlocalvarsym(p).refs>0) and
+         { -OoREFELIDE borrowed locals never own a reference: skip finalization }
+         not(tlocalvarsym(p).refelide_noinitfinal) and
          not(vo_is_typed_const in tlocalvarsym(p).varoptions) and
          not(vo_is_external in tlocalvarsym(p).varoptions) and
          not(vo_is_funcret in tlocalvarsym(p).varoptions) and

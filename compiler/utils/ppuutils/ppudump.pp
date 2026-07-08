@@ -2576,7 +2576,8 @@ const
          'cs_opt_blockorder',
          'cs_opt_sink',
          'cs_opt_storemotion',
-         'cs_opt_vrp'
+         'cs_opt_vrp',
+         'cs_opt_refelide'
        );
     var
          globalswitch  : tglobalswitch;
