@@ -2560,7 +2560,8 @@ const
          'cs_opt_bitidiom',
          'cs_opt_rangecheckelim',
          'cs_opt_vectorize',
-         'cs_opt_jumpthread'
+         'cs_opt_jumpthread',
+         'cs_opt_loopdistpat'
        );
     var
          globalswitch  : tglobalswitch;

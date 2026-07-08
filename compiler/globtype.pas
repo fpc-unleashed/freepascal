@@ -400,7 +400,12 @@ interface
          { jump threading / nested re-test elimination: fold a nested if whose
            condition a dominating branch (or a value-range fact) already
            decided straight to the taken arm, deleting the redundant re-test }
-         cs_opt_jumpthread
+         cs_opt_jumpthread,
+         { loop-distribution pattern idiom recognition: rewrite a counted
+           for-loop whose whole body is a contiguous fill/zero/copy over an
+           array region into the FillChar/FillWord/FillDWord/FillQWord/Move
+           block primitive the RTL already tunes per target }
+         cs_opt_loopdistpat
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -475,7 +480,7 @@ interface
          'CONSTPROP',
          'DEADSTORE','FORCENOSTACKFRAME','USELOADMODIFYSTORE',
          'UNUSEDPARA','CONSTS','FORLOOP','LICM','LOOPUNSWITCH','BITIDIOM',
-         'RANGEELIM','VECTORIZE','JUMPTHREAD'
+         'RANGEELIM','VECTORIZE','JUMPTHREAD','LOOPDISTPAT'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
@@ -510,7 +515,7 @@ interface
        genericlevel3optimizerswitches = [cs_opt_level3,cs_opt_constant_propagate,cs_opt_nodedfa,cs_opt_loopstrength
                                          {$ifndef llvm},cs_opt_use_load_modify_store{$endif},
                                          cs_opt_loopunroll,cs_opt_forloop];
-       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread];
+       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat];
 
        { whole program optimizations whose information generation requires
          information from all loaded units

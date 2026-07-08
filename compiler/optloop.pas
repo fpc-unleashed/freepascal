@@ -41,6 +41,7 @@ unit optloop;
     function OptimizeRangeElim(node : tnode) : boolean;
     function OptimizeVectorize(node : tnode) : boolean;
     function OptimizeJumpThread(node : tnode) : boolean;
+    function OptimizeLoopDistPat(node : tnode) : boolean;
 
   implementation
 
@@ -53,7 +54,7 @@ unit optloop;
 {$endif i386}
       verbose,
       symbase,symconst,symdef,symsym,symtype,
-      defutil,
+      defutil,defcmp,
       nutils,
       nadd,nbas,nflw,ncon,ninl,ncal,nld,nmem,ncnv,nmat,
       ncgmem,
@@ -3298,6 +3299,505 @@ unit optloop;
         ctx.changed:=false;
         { postorder so nested (inner) loops are considered before their parents }
         foreachnodestatic(pm_postprocess,node,@vect_processloop_cb,@ctx);
+        Result:=ctx.changed;
+      end;
+
+
+{*****************************************************************************
+       Loop-distribution pattern idiom recognition (fill / zero / copy)
+*****************************************************************************}
+
+    { A node-level port of gcc's -ftree-loop-distribute-patterns.  It fires when
+      a counted, unit-stride, ascending for-loop's *entire* body is a single
+      store that walks a contiguous array region -- either filling every element
+      with a loop-invariant value or copying it element-wise from a second array
+      -- and lowers the whole loop to the RTL block primitive the C runtime
+      already tunes per target:
+
+        for i := lo to hi do a[i] := 0;          ->  FillChar(a[lo], n*sz, 0)
+        for i := lo to hi do a[i] := v;          ->  FillDWord(a[lo], n, v)  (sz=4)
+        for i := lo to hi do a[i] := b[i];       ->  Move(b[lo], a[lo], n*sz)
+
+      where n = hi-lo+1 (guarded by  if lo <= hi , since a for-loop runs zero
+      times when lo > hi and the byte count must not be computed from a negative
+      difference).
+
+      Soundness (a wrong lowering is a miscompile, so the recognizer is strict;
+      anything not matched compiles exactly as before):
+        * COUNTER is a simple, non-aliased, non-volatile, non-address-taken local
+          or value-parameter and a signed 32/64-bit integer, proven by DFA to be
+          unassigned in the body.  Only ascending unit-step loops are handled
+          (downto and non-unit step are declined).
+        * BODY is exactly one plain (:=) assignment; the single-statement shape
+          guarantees the counter and every base is never reassigned mid-loop.
+        * The destination is a[i] where the index is *exactly* a plain read of
+          the counter (unit stride, no offset) and a is a plain dynamic array or
+          a normal (non-open, non-bitpacked) static array whose base expression
+          is a side-effect-free, counter-independent (hence loop-invariant) l-
+          value -- so a[lo] can be evaluated once.  The element type must be an
+          unmanaged type (managed strings/interfaces/dynarray/variant elements
+          are declined) so a raw block operation preserves refcount semantics.
+        * FILL value is loop-invariant (a constant or a simple non-aliased
+          local/param the body never writes).  A constant zero (ordinal 0, nil,
+          or +0.0 -- never -0.0) lowers to FillChar over the byte span, which is
+          correct for every element size.  A non-zero fill of an ordinal/pointer
+          element of size 1/2/4/8 lowers to FillChar/FillWord/FillDWord/FillQWord
+          with the value reinterpreted to the matching unsigned width, which
+          writes the identical bytes the scalar store would.  Non-zero float
+          fills are declined (a float->integer cast would round, not reinterpret).
+        * COPY  a[i] := b[i]  lowers to Move only when *both* a and b are plain
+          dynamic arrays indexed by the same counter with identical element type
+          and no type conversion on the source.  Two dynamic-array references can
+          only fully alias (share the block at offset 0, after  a:=b ) or be
+          disjoint -- a shifted overlap is impossible -- so Move (which is memmove
+          safe) reproduces the forward element copy exactly in both cases; hence
+          no runtime distinctness guard is needed.  Static arrays / pointers can
+          shift-overlap and are declined for the copy case.
+        * Range/overflow checking (-Cr/-Co) disables the transform (the scalar
+          loop keeps its checks), gated on current_settings and by scanning the
+          body for per-region check localswitches.
+        * The byte/element count is computed in SizeInt so  n*sz  cannot wrap the
+          counter type, and the destination address plus count never exceed the
+          region the scalar loop's maximum index hi already reached.
+        * procs with labels are skipped at the call site in psub (like the other
+          loop passes); inline candidates are declined so no synthetic call is
+          streamed into inline info. }
+
+    type
+      tdistpatkind = (
+        dpk_fillchar_zero,   { FillChar over the byte span, value 0 }
+        dpk_fillchar,        { FillChar, 1-byte element, value byte }
+        dpk_fillword,        { FillWord,  2-byte element }
+        dpk_filldword,       { FillDWord, 4-byte element }
+        dpk_fillqword,       { FillQWord, 8-byte element }
+        dpk_move             { Move over the byte span }
+      );
+
+      tdistpat_basecheck = record
+        counter : tabstractvarsym;
+        bad : boolean;
+      end;
+      pdistpat_basecheck = ^tdistpat_basecheck;
+
+
+    function distpat_basecheck_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      { rejects an array-base subtree that is not a pure, counter-independent
+        read: any write/modify, any call (or as-cast, which can raise), or any
+        reference to the loop counter makes the base non-invariant / unsafe to
+        hoist to a single evaluation }
+      begin
+        result:=fen_false;
+        if ([nf_write,nf_modify]*n.flags)<>[] then
+          begin
+            pdistpat_basecheck(arg)^.bad:=true;
+            exit(fen_norecurse_true);
+          end;
+        case n.nodetype of
+          calln,asn:
+            begin
+              pdistpat_basecheck(arg)^.bad:=true;
+              result:=fen_norecurse_true;
+            end;
+          loadn:
+            if tloadnode(n).symtableentry=tsym(pdistpat_basecheck(arg)^.counter) then
+              begin
+                pdistpat_basecheck(arg)^.bad:=true;
+                result:=fen_norecurse_true;
+              end;
+          else
+            ;
+        end;
+      end;
+
+
+    function distpat_elem(n : tnode; counter : tabstractvarsym; out vec : tvecnode;
+                          out elemdef : tdef; out isdyn : boolean) : string;
+      { returns '' and fills vec/elemdef/isdyn when n (after peeling typeconv
+        wrappers) is  A[i]  over a contiguous array region: A a plain dynamic or
+        normal static array with an unmanaged element, indexed by exactly a plain
+        read of the loop counter, whose base is a side-effect-free counter-
+        independent l-value.  Otherwise returns a human-readable reason. }
+      var
+        vn, idx : tnode;
+        ad : tdef;
+        bc : tdistpat_basecheck;
+      begin
+        result:='';
+        vec:=nil;
+        elemdef:=nil;
+        isdyn:=false;
+        vn:=rangeelim_skip_typeconv(n);
+        if not assigned(vn) or (vn.nodetype<>vecn) then
+          exit('operand is not an array-element access');
+        if not assigned(tvecnode(vn).left) or not assigned(tvecnode(vn).left.resultdef) then
+          exit('array base has no known type');
+        ad:=tvecnode(vn).left.resultdef;
+        if is_dynamic_array(ad) then
+          isdyn:=true
+        else if is_normal_array(ad) and not is_packed_array(ad) then
+          isdyn:=false
+        else
+          exit('destination is not a plain dynamic or normal static array');
+        elemdef:=tarraydef(ad).elementdef;
+        if not assigned(elemdef) then
+          exit('array element type is unknown');
+        if is_managed_type(elemdef) then
+          exit('array element type is managed (string/interface/dynarray/variant)');
+        if elemdef.size=0 then
+          exit('array element has zero size');
+        { index must be exactly a plain read of the loop counter (unit stride) }
+        idx:=rangeelim_skip_typeconv(tvecnode(vn).right);
+        if not assigned(idx) or (idx.nodetype<>loadn) then
+          exit('array index is not a plain variable read (non-unit stride or offset)');
+        if ([nf_write,nf_modify]*idx.flags)<>[] then
+          exit('array index expression has side effects');
+        if tloadnode(idx).symtableentry<>tsym(counter) then
+          exit('array index is not the loop counter (non-unit stride or offset)');
+        { base must be side-effect free and independent of the counter }
+        bc.counter:=counter;
+        bc.bad:=false;
+        foreachnodestatic(pm_postprocess,tvecnode(vn).left,@distpat_basecheck_cb,@bc);
+        if bc.bad then
+          exit('array base is not a side-effect-free loop-invariant expression');
+        vec:=tvecnode(vn);
+      end;
+
+
+    function distpat_invariant_value_reason(n : tnode; counter : tabstractvarsym) : string;
+      { returns '' if n is a provably loop-invariant scalar fit for a fill value:
+        a constant, or a plain read of a simple non-aliased local/value-param the
+        single-statement body never writes (so it is loop-invariant), and not the
+        loop counter.  Otherwise returns a human-readable reason. }
+      var
+        root : tnode;
+      begin
+        result:='';
+        if not assigned(n) then
+          exit('fill value is missing');
+        if ([nf_write,nf_modify]*n.flags)<>[] then
+          exit('fill value has side effects');
+        root:=rangeelim_skip_typeconv(n);
+        if not assigned(root) then
+          exit('fill value is not a constant or a simple loop-invariant variable');
+        if root.nodetype in [ordconstn,realconstn,niln,pointerconstn] then
+          exit('');
+        if root.nodetype=loadn then
+          begin
+            if not assigned(rangeelim_simple_var(root)) then
+              exit('fill value is not a simple non-aliased local/parameter (a global, address-taken or volatile value is not proven loop-invariant)');
+            if tloadnode(root).symtableentry=tsym(counter) then
+              exit('fill value is the loop counter');
+            exit('');
+          end;
+        exit('fill value is not a constant or a simple loop-invariant variable');
+      end;
+
+
+    function distpat_const_is_zero(n : tnode) : boolean;
+      { true if n is a compile-time constant whose stored bytes are all zero:
+        an ordinal 0, nil, or *positive* floating-point zero.  Negative zero is
+        rejected (its sign bit is set, so FillChar 0 would not reproduce it). }
+      var
+        root : tnode;
+        d : double;
+      begin
+        result:=false;
+        root:=rangeelim_skip_typeconv(n);
+        if not assigned(root) then
+          exit;
+        case root.nodetype of
+          niln:
+            result:=true;
+          ordconstn:
+            result:=tordconstnode(root).value=0;
+          pointerconstn:
+            result:=tpointerconstnode(root).value=0;
+          realconstn:
+            begin
+              d:=trealconstnode(root).value_real;
+              { all-zero bytes <=> +0.0; PInt64 catches the -0.0 sign bit }
+              result:=(d=0.0) and (PInt64(@d)^=0);
+            end;
+          else
+            ;
+        end;
+      end;
+
+
+    type
+      tdistpatcontext = object
+        changed : boolean;
+        procedure processloop(var n : tnode);
+      end;
+
+
+    procedure tdistpatcontext.processloop(var n : tnode);
+      var
+        forn : tfornode;
+        counter : tabstractvarsym;
+        ctype : tdef;
+        stmt : tnode;
+        assign : tassignmentnode;
+        avec, bvec : tvecnode;
+        delemdef, selemdef : tdef;
+        disdyn, sisdyn : boolean;
+        kind : tdistpatkind;
+        fillvalue : tnode;
+        hascheck : boolean;
+        reason : string;
+        block : tnode;
+        stat : tstatementnode;
+        lotemp, hitemp : ttempcreatenode;
+        elemcount, bytecount, fillval, dstaddr, srcaddr, guardbody : tnode;
+        gstat : tstatementnode;
+        elemsize : asizeint;
+        fname : string;
+        unsigneddef : tdef;
+
+      { Recognizer: returns '' when the loop can be lowered (filling in counter,
+        ctype, avec, bvec, kind, fillvalue, delemdef, elemsize), else the reason
+        of the first failed check for the -OoLOOPDISTPAT diagnostic. }
+      function distpat_reason : string;
+        var
+          rawsrc : tnode;
+        begin
+          result:='';
+
+          if lnf_backward in forn.loopflags then
+            exit('descending (downto) loop');
+          if assigned(forn.loopstep) then
+            exit('non-unit loop step');
+
+          counter:=rangeelim_simple_var(forn.left);
+          if not assigned(counter) then
+            exit('loop counter is not a simple non-aliased variable');
+          ctype:=forn.left.resultdef;
+          if not assigned(ctype) or (ctype.typ<>orddef) then
+            exit('loop counter is not an ordinal type');
+          if not is_signed(ctype) or not(ctype.size in [4,8]) then
+            exit('loop counter is not a signed 32/64-bit integer');
+
+          if po_inline in current_procinfo.procdef.procoptions then
+            exit('enclosing routine is an inline candidate');
+
+          if ([cs_check_range,cs_check_overflow]*current_settings.localswitches)<>[] then
+            exit('range/overflow checking is enabled (-Cr/-Co)');
+
+          stmt:=vect_body_single_stmt(forn.t2);
+          if not assigned(stmt) then
+            exit('loop body is empty or has multiple statements');
+          if stmt.nodetype<>assignn then
+            exit('loop body is not a single assignment statement');
+          assign:=tassignmentnode(stmt);
+          if assign.assigntype<>at_normal then
+            exit('loop body assignment is not a plain assignment');
+
+          hascheck:=false;
+          foreachnodestatic(pm_postprocess,forn.t2,@vect_check_cb,@hascheck);
+          if hascheck then
+            exit('loop body contains range/overflow-checked code');
+
+          { destination a[i] }
+          result:=distpat_elem(assign.left,counter,avec,delemdef,disdyn);
+          if result<>'' then
+            exit('destination '+result);
+          elemsize:=delemdef.size;
+
+          { copy?  a[i] := b[i]  with no source type conversion }
+          rawsrc:=assign.right;
+          if (rawsrc.nodetype=vecn) and (distpat_elem(rawsrc,counter,bvec,selemdef,sisdyn)='') then
+            begin
+              if not disdyn or not sisdyn then
+                exit('copy source/destination is not a plain dynamic array (static/pointer overlap cannot be excluded)');
+              if not equal_defs(delemdef,selemdef) or (selemdef.size<>elemsize) then
+                exit('copy source and destination element types differ');
+              kind:=dpk_move;
+            end
+          else
+            begin
+              { fill: a[i] := <loop-invariant value> }
+              bvec:=nil;
+              result:=distpat_invariant_value_reason(assign.right,counter);
+              if result<>'' then
+                exit(result);
+              fillvalue:=assign.right;
+              if distpat_const_is_zero(fillvalue) then
+                kind:=dpk_fillchar_zero
+              else if is_fpu(delemdef) then
+                exit('non-zero floating-point fill (cannot reinterpret to an integer block primitive)')
+              else if not(is_ordinal(delemdef) or is_pointer(delemdef)) then
+                exit('non-zero fill of a non-ordinal element type')
+              else
+                case elemsize of
+                  1: kind:=dpk_fillchar;
+                  2: kind:=dpk_fillword;
+                  4: kind:=dpk_filldword;
+                  8: kind:=dpk_fillqword;
+                  else
+                    exit('element size is not 1, 2, 4 or 8 bytes for a non-zero fill');
+                end;
+            end;
+
+          { DFA: the counter must not be assigned in the body }
+          CalcDefSum(forn.t2);
+          if not assigned(forn.t2.optinfo) or not assigned(forn.left.optinfo) then
+            exit('data-flow information is unavailable for the loop body');
+          if DynSetIn(forn.t2.optinfo^.defsum,forn.left.optinfo^.index) then
+            exit('loop counter is modified inside the loop body');
+        end;
+
+      begin
+        forn:=tfornode(n);
+
+        { pre-initialize the recognizer outputs: a nested function assigning
+          parent locals defeats per-procedure DFA, which would otherwise warn
+          they are uninitialized on the read paths below (and -Sew turns that
+          into an error during an -O4 self-compile). They are always set on the
+          reason='' success path. }
+        counter:=nil;
+        ctype:=nil;
+        avec:=nil;
+        bvec:=nil;
+        delemdef:=nil;
+        selemdef:=nil;
+        disdyn:=false;
+        sisdyn:=false;
+        kind:=dpk_fillchar_zero;
+        fillvalue:=nil;
+        elemsize:=0;
+
+        reason:=distpat_reason;
+        if reason<>'' then
+          begin
+            MessagePos1(forn.fileinfo,cg_n_loop_not_lowered,reason);
+            exit;
+          end;
+
+        { ---- build the replacement block ---- }
+        block:=internalstatements(stat);
+
+        { lo/hi evaluated exactly once, as the original for-loop does }
+        lotemp:=ctempcreatenode.create(ctype,ctype.size,tt_persistent,true);
+        addstatement(stat,lotemp);
+        addstatement(stat,cassignmentnode.create(ctemprefnode.create(lotemp),forn.right.getcopy));
+        hitemp:=ctempcreatenode.create(ctype,ctype.size,tt_persistent,true);
+        addstatement(stat,hitemp);
+        addstatement(stat,cassignmentnode.create(ctemprefnode.create(hitemp),forn.t1.getcopy));
+
+        { destination base address a[lo] }
+        dstaddr:=cvecnode.create(avec.left.getcopy,ctemprefnode.create(lotemp));
+
+        { element count n = hi-lo+1, widened to SizeInt so n*sz cannot wrap; a
+          fresh copy is built per use so no node is shared between two parents }
+        elemcount:=nil; bytecount:=nil;
+
+        guardbody:=internalstatements(gstat);
+        case kind of
+          dpk_move:
+            begin
+              srcaddr:=cvecnode.create(bvec.left.getcopy,ctemprefnode.create(lotemp));
+              fname:='MOVE';
+              bytecount:=caddnode.create(muln,
+                ctypeconvnode.create_internal(
+                  caddnode.create(addn,
+                    caddnode.create(subn,ctemprefnode.create(hitemp),ctemprefnode.create(lotemp)),
+                    cordconstnode.create(1,ctype,false)),
+                  sizesinttype),
+                cordconstnode.create(elemsize,sizesinttype,false));
+              { Move(source, dest, count) : outer para is count }
+              addstatement(gstat,ccallnode.createintern('MOVE',
+                ccallparanode.create(bytecount,
+                  ccallparanode.create(dstaddr,
+                    ccallparanode.create(srcaddr,nil)))));
+            end;
+          dpk_fillchar_zero:
+            begin
+              fname:='FILLCHAR';
+              bytecount:=caddnode.create(muln,
+                ctypeconvnode.create_internal(
+                  caddnode.create(addn,
+                    caddnode.create(subn,ctemprefnode.create(hitemp),ctemprefnode.create(lotemp)),
+                    cordconstnode.create(1,ctype,false)),
+                  sizesinttype),
+                cordconstnode.create(elemsize,sizesinttype,false));
+              { FillChar(x, count, value) : outer para is value }
+              addstatement(gstat,ccallnode.createintern('FILLCHAR',
+                ccallparanode.create(cordconstnode.create(0,u8inttype,false),
+                  ccallparanode.create(bytecount,
+                    ccallparanode.create(dstaddr,nil)))));
+            end;
+          dpk_fillchar,dpk_fillword,dpk_filldword,dpk_fillqword:
+            begin
+              case kind of
+                dpk_fillchar:  begin fname:='FILLCHAR';  unsigneddef:=u8inttype;  end;
+                dpk_fillword:  begin fname:='FILLWORD';  unsigneddef:=u16inttype; end;
+                dpk_filldword: begin fname:='FILLDWORD'; unsigneddef:=u32inttype; end;
+                else           begin fname:='FILLQWORD'; unsigneddef:=u64inttype; end;
+              end;
+              { value = unsigned-of-elemsize(elementtype(v)); the double
+                create_internal first pins the exact bytes the scalar store would
+                write, then reinterprets them to the block primitive's width }
+              fillval:=ctypeconvnode.create_internal(
+                ctypeconvnode.create_internal(fillvalue.getcopy,delemdef),
+                unsigneddef);
+              { sized fills count elements, not bytes }
+              elemcount:=ctypeconvnode.create_internal(
+                caddnode.create(addn,
+                  caddnode.create(subn,ctemprefnode.create(hitemp),ctemprefnode.create(lotemp)),
+                  cordconstnode.create(1,ctype,false)),
+                sizesinttype);
+              addstatement(gstat,ccallnode.createintern(fname,
+                ccallparanode.create(fillval,
+                  ccallparanode.create(elemcount,
+                    ccallparanode.create(dstaddr,nil)))));
+            end;
+        end;
+
+        { the for-loop counter is language-undefined after the loop, but leave it
+          at the value a normal ascending for-loop leaves -- its last taken value
+          hi -- so later reads are unsurprised and DFA sees it defined }
+        addstatement(gstat,cassignmentnode.create(
+          cloadnode.create(tsym(counter),counter.owner),
+          ctemprefnode.create(hitemp)));
+
+        { the loop runs only for lo <= hi; a for-loop is a no-op otherwise, and
+          the byte count must not be built from a negative difference }
+        addstatement(stat,cifnode.create_internal(
+          caddnode.create(lten,ctemprefnode.create(lotemp),ctemprefnode.create(hitemp)),
+          guardbody,nil));
+
+        addstatement(stat,ctempdeletenode.create(lotemp));
+        addstatement(stat,ctempdeletenode.create(hitemp));
+
+        do_firstpass(block);
+        MessagePos1(forn.fileinfo,cg_n_loop_idiom_lowered,fname);
+        forn.free;
+        n:=block;
+        changed:=true;
+      end;
+
+
+    function distpat_processloop_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      begin
+        result:=fen_false;
+        if n.nodetype=forn then
+          begin
+            tdistpatcontext(arg^).processloop(n);
+            result:=fen_norecurse_false;
+          end;
+      end;
+
+
+    function OptimizeLoopDistPat(node : tnode) : boolean;
+      var
+        ctx : tdistpatcontext;
+      begin
+        Result:=false;
+        if not(pi_dfaavailable in current_procinfo.flags) then
+          exit;
+        ctx.changed:=false;
+        { postorder so nested (inner) loops are considered before their parents }
+        foreachnodestatic(pm_postprocess,node,@distpat_processloop_cb,@ctx);
         Result:=ctx.changed;
       end;
 
