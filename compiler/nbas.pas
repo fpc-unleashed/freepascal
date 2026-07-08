@@ -403,16 +403,24 @@ interface
          only where the VECTORIZE switch is supported, i.e. x86_64). Never
          streamed to a PPU: OptimizeVectorize refuses to run on inline-candidate
          procedures, so the node cannot leak into inline info. }
-       tvectoropkind = (vok_arr_arr, vok_arr_scalar, vok_copy, vok_broadcast);
+       tvectoropkind = (vok_arr_arr, vok_arr_scalar, vok_copy, vok_broadcast, vok_minmax);
        tvectoropnode = class(ttertiarynode)
           op : TOpCG;         { OP_ADD, OP_SUB or OP_IMUL (single-precision) }
           vecwidth : longint; { number of single lanes processed per iteration }
           kind : tvectoropkind;
           scalarleft : boolean; { vok_arr_scalar: true if s is the op's left operand (s op b[i]) }
+          ismax : boolean;      { vok_minmax: true for maxps (a[i]:=max(u,v)), false for minps }
           constructor create(a,b,c : tnode; _op : TOpCG; _vecwidth : longint);virtual;
           constructor create_scalar(a,b,splat : tnode; _op : TOpCG; _scalarleft : boolean; _vecwidth : longint);
           constructor create_copy(a,b : tnode; _vecwidth : longint);
           constructor create_broadcast(splat,scalar : tnode);
+          { vok_minmax: a[i..i+VL-1] := max/min(u, v) where u (opA, loaded into the
+            destination register) and v (opB, the second/NaN-preferred operand) are
+            each a 16-byte window -- an array-element access or a pre-broadcast
+            [s,s,s,s] splat slot. Operand order mirrors the scalar maxss/minss path
+            (NaN returns opB), so every lane is bit-identical to the if-converted
+            scalar min/max. }
+          constructor create_minmax(a,opa,opb : tnode; _ismax : boolean; _vecwidth : longint);
           function pass_typecheck : tnode;override;
           function pass_1 : tnode;override;
           function dogetcopy : tnode;override;
@@ -611,6 +619,17 @@ implementation
       end;
 
 
+    constructor tvectoropnode.create_minmax(a,opa,opb : tnode; _ismax : boolean; _vecwidth : longint);
+      begin
+        inherited create(vectoropn,a,opa,opb);
+        op:=OP_NONE;
+        vecwidth:=_vecwidth;
+        kind:=vok_minmax;
+        scalarleft:=false;
+        ismax:=_ismax;
+      end;
+
+
     function tvectoropnode.pass_typecheck : tnode;
       begin
         result:=nil;
@@ -645,6 +664,7 @@ implementation
         n.vecwidth:=vecwidth;
         n.kind:=kind;
         n.scalarleft:=scalarleft;
+        n.ismax:=ismax;
         result:=n;
       end;
 
@@ -655,7 +675,8 @@ implementation
                 (tvectoropnode(p).op=op) and
                 (tvectoropnode(p).vecwidth=vecwidth) and
                 (tvectoropnode(p).kind=kind) and
-                (tvectoropnode(p).scalarleft=scalarleft);
+                (tvectoropnode(p).scalarleft=scalarleft) and
+                (tvectoropnode(p).ismax=ismax);
       end;
 
 {*****************************************************************************

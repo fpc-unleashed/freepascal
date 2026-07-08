@@ -422,7 +422,14 @@ interface
            so an intermediate result stays in registers/cache instead of being
            written out by the first loop and re-streamed from memory by the
            second }
-         cs_opt_loopfuse
+         cs_opt_loopfuse,
+         { loop if-conversion (branch predication): recognize a counted
+           element-wise for-loop whose body FPC's -O2 if-conversion has already
+           lowered to a branch-free min/max activation (a[i]:=max(a[i],0) ReLU, a
+           one-sided clamp, an element-wise max/min of two arrays) and widen it
+           across SIMD lanes to a packed maxps/minps main loop plus a scalar tail,
+           so the data-dependent per-element branch disappears entirely }
+         cs_opt_ifconvert
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -498,7 +505,7 @@ interface
          'DEADSTORE','FORCENOSTACKFRAME','USELOADMODIFYSTORE',
          'UNUSEDPARA','CONSTS','FORLOOP','LICM','LOOPUNSWITCH','BITIDIOM',
          'RANGEELIM','VECTORIZE','JUMPTHREAD','LOOPDISTPAT',
-         'LOOPPEEL','LOOPSPLIT','LOOPFUSE'
+         'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
@@ -533,7 +540,7 @@ interface
        genericlevel3optimizerswitches = [cs_opt_level3,cs_opt_constant_propagate,cs_opt_nodedfa,cs_opt_loopstrength
                                          {$ifndef llvm},cs_opt_use_load_modify_store{$endif},
                                          cs_opt_loopunroll,cs_opt_forloop];
-       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse];
+       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert];
 
        { whole program optimizations whose information generation requires
          information from all loaded units
