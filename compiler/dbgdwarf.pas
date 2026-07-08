@@ -1609,6 +1609,11 @@ implementation
         delta_sleb_len, block_len : longint;
       begin
         flexcount:=nil;
+        { count_size and delta are set and used only under assigned(flexcount)
+          guards, but per-procedure DFA cannot correlate the two guards and flags
+          the later uses as possibly-uninitialized at -O4; initialize up front. }
+        count_size:=0;
+        delta:=0;
         if is_flexible_array(def) and assigned(def.flexcountfield) and
            (def.flexcountfield.typ=fieldvarsym) then
           begin

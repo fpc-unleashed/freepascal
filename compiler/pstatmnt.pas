@@ -4786,6 +4786,11 @@ implementation
                          consume(_LECKKLAMMER);
                          labsuffix:='';
                          labisstring:=false;
+                         { only assigned on the ordinal-constant path below, but
+                           always passed to get_or_create_indexed_labelsym (which
+                           ignores it for the string case); initialize so the
+                           value is well-defined and DFA does not flag it at -O4 }
+                         labidx:=0;
                          if current_scanner.token=_CSTRING then
                            begin
                              labsuffix:=upper(current_scanner.cstringpattern);

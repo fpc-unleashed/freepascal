@@ -2354,16 +2354,25 @@ implementation
         chain : tfplist;
         i, ci : longint;
         fs : tfieldvarsym;
+        { local accumulator: the running bit offset is kept in a plain local
+          rather than directly in the "out" parameter. Accumulating straight
+          into an out parameter from inside an inlined nested procedure trips a
+          DFA uninitialized-variable false positive at -O4 (the inlined read of
+          the out param is not seen as dominated by its initialization), which
+          -Sew turns into a build-breaking error during an -O4 self-compile.
+          Using a normal local sidesteps that and is written back to bit_total. }
+        total : asizeint;
 
       procedure add_field(f: tfieldvarsym); inline;
         begin
           if tabstractrecordsymtable(f.owner).is_packed then
-            bit_total:=bit_total+f.fieldoffset
+            total:=total+f.fieldoffset
           else
-            bit_total:=bit_total+f.fieldoffset*8;
+            total:=total+f.fieldoffset*8;
         end;
 
       begin
+        total:=0;
         bit_total:=0;
         last_field:=nil;
         fail_at:=-1;
@@ -2401,6 +2410,7 @@ implementation
             else
               cur_def:=nil;
           end;
+        bit_total:=total;
         result:=true;
       end;
 
