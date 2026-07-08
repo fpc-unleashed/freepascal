@@ -6,8 +6,47 @@
   <img width="128" alt="unleashed sign" src="unleashed/img/unleashed_sign_128.png" />
 </p>
 
+## Quick Start
+
+> [!TIP]
+> Always compile with `-O4`. The new optimization passes added by this fork (store merging, case clustering, cross-jumping, hot/cold block layout, code sinking, ...) only run at `-O4` - without it you get a stock-FPC level of optimization.
+
+### Compiling an existing Pascal program
+
+If you installed via the [official installer or fpcupdeluxe](#installation), the `fpc` in your install directory already is the Unleashed compiler - just make sure you invoke *that* one and not a system-wide FPC package that may also be installed:
+
+```bash
+/path/to/fpcunleashed/fpc/bin/x86_64-linux/fpc -O4 myprogram.pas
+```
+
+From a source checkout, after building (`make all` with a starting FPC 3.2.x on PATH, then `make rtl packages FPC=$PWD/compiler/ppcx64`), invoke the freshly built binary directly and point it at the units built in-tree:
+
+```bash
+compiler/ppcx64 -O4 -Furtl/units/x86_64-linux "-Fupackages/*/units/x86_64-linux" myprogram.pas
+```
+
+(The `*` in the unit path is expanded by the compiler itself, hence the quotes. On Windows the binary is `compiler\ppcx64.exe` and the unit directories end in `x86_64-win64`.)
+
+Verify you got the right compiler with `fpc -iV` / `ppcx64 -iV`: it must report **3.3.1**, not the 3.2.x of a distro package.
+
+### Compiling a Lazarus program
+
+Use [Lazarus Unleashed](https://github.com/fpc-unleashed/lazarus) built against this compiler (the [installer or fpcupdeluxe](#installation) set this up for you - the LCL must be compiled by the same compiler that builds your project):
+
+1. In the IDE, open **Project → Project Options → Compiler Options → Compilation and Linking** and set the optimization level to `-O4` (or add `-O4` under **Custom Options**).
+2. Build and run as usual - the IDE already invokes the Unleashed compiler.
+
+From the command line, build the project with `lazbuild`, pointing it at the Unleashed compiler explicitly:
+
+```bash
+/path/to/lazarus/lazbuild --compiler=/path/to/fpcunleashed/fpc/bin/x86_64-linux/fpc myproject.lpi
+```
+
+If the IDE should use a different compiler than the one it was installed with, set it under **Tools → Options → Environment → Files → Compiler executable**.
+
 ## Table of Contents
 
+- [Quick Start](#quick-start)
 - [Features](#features)
   - [Unleashed Mode](#unleashed-mode)
   - [Statement Expressions](#statement-expressions)
