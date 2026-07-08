@@ -48,6 +48,12 @@ From the command line, build the project with `lazbuild`, pointing it at the Unl
 /path/to/lazarus/lazbuild --compiler=/path/to/fpcunleashed/fpc/bin/x86_64-linux/fpc myproject.lpi
 ```
 
+From a source checkout, the `lazbuildu.sh` wrapper in the repository root does this using the in-tree compiler (via `fpcu.sh`) and the lazbuild of a sibling `../lazarus` checkout - override the latter with `LAZDIR=/path/to/lazarus`:
+
+```bash
+/path/to/checkout/lazbuildu.sh myproject.lpi
+```
+
 If the IDE should use a different compiler than the one it was installed with, set it under **Tools → Options → Environment → Files → Compiler executable**.
 
 ## Table of Contents
