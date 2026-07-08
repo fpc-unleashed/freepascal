@@ -2977,6 +2977,19 @@ cg_n_loop_not_predcommoned=06082_N_Loop not predictively commoned: $1
 % for-loop but did not common any cross-iteration re-load. The reason is given as
 % \var{$1}. This diagnostic is only emitted while the pass is enabled and is
 % shown at note verbosity (\var{-vn}).
+cg_n_case_switchtabled=06083_N_Case converted to $1 static lookup table(s) over $2 values
+% The switch-table pass (\var{-O4 -OoSWITCHTABLE}) recognized a fully-covered
+% case statement whose every arm only assigns compile-time constants to the same
+% set of simple ordinal variables and replaced the whole statement -- dispatch
+% and bodies -- with \var{$1} per-variable static const array(s) indexed by the
+% selector (spanning \var{$2} values) plus a single range guard, eliminating all
+% branching. This diagnostic is only emitted while the pass is enabled and is
+% shown at note verbosity (\var{-vn}).
+cg_n_case_not_switchtabled=06084_N_Case not converted to a lookup table: $1
+% The switch-table pass (\var{-O4 -OoSWITCHTABLE}) inspected a case statement but
+% left its dispatch in place. The reason it could not convert the case to static
+% lookup tables is given as \var{$1}. This diagnostic is only emitted while the
+% pass is enabled and is shown at note verbosity (\var{-vn}).
 %
 % \end{description}
 # EndOfTeX

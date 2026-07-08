@@ -52,19 +52,21 @@ unit optloop;
     function OptimizeStoreMotion(node : tnode) : boolean;
     function OptimizeVRP(node : tnode) : boolean;
     function OptimizeRefElide(node : tnode) : boolean;
+    function OptimizeSwitchTable(node : tnode) : boolean;
 
   implementation
 
     uses
       cclasses,cutils,compinnr,cdynset,
-      cgbase,
+      cgbase,aasmbase,aasmtai,aasmdata,aasmcnst,
       globtype,globals,constexp,
 {$ifdef i386}
       cpuinfo,
 {$endif i386}
       verbose,
-      symbase,symconst,symdef,symsym,symtype,
+      symbase,symconst,symdef,symsym,symtype,symtable,fmodule,
       defutil,defcmp,
+      nset,
       nutils,
       nadd,nbas,nflw,ncon,ninl,ncal,nld,nmem,ncnv,nmat,
       ncgmem,
@@ -8282,5 +8284,350 @@ unit optloop;
           foreachnodestatic(node,@refelide_apply,@cands);
       end;
 
-end.
 
+{*****************************************************************************
+                             OptimizeSwitchTable
+ *****************************************************************************}
+
+    { -OoSWITCHTABLE: switch-to-lookup-table conversion (gcc
+      -ftree-switch-conversion, the static-table half of
+      tree-switch-conversion.cc, complementing -OoCASECLUSTER which only
+      optimises the DISPATCH).  When every arm of a fully-covered (no-hole)
+      case over an ordinal selector merely assigns compile-time constants to
+      the SAME ordered set of simple ordinal variables, the whole statement --
+      dispatch AND bodies -- is replaced by, per assigned variable, a static
+      const array indexed by (selector-low) plus a single range guard jumping
+      to the else part.  This eliminates all branching for the classic
+      "map enum -> weight/flag" shape (which a jump table still pays an
+      indirect branch for).
+
+      SOUNDNESS.  The transform fires only when:
+        * the selector is ordinal and the labels are ltOrdinal;
+        * EVERY arm, flattened, is nothing but plain  V := <ordinal-const>
+          assignments to simple, writable, non-external, non-typed-const
+          local/static/value-or-var-parameter ordinal variables;
+        * every arm assigns exactly the SAME ordered sequence of target
+          variables (identical order, so replacing the arms with one fixed
+          store order is correct even if two targets alias);
+        * the label set fully and contiguously covers [low..high] with NO
+          holes, so the single range guard exactly partitions in-range (table)
+          from out-of-range (else) -- a hole would wrongly index the table
+          instead of taking the else path;
+        * the covered span is small enough to afford the tables.
+      The selector is evaluated once into a temp before any store (matching the
+      original "evaluate selector, dispatch, store" order), so a selector with
+      side effects, or a selector variable that is itself a store target, stays
+      correct. }
+
+
+    const
+      switchtable_max_span = 4096;
+
+    type
+      tswitchvals = array of tconstexprint;
+
+    var
+      switchtable_counter : longint = 0;
+
+    { flatten an (already firstpassed) arm body into an ordered list of plain
+      assignmentnodes; false on any other kind of statement }
+    function switchtable_collect(n: tnode; list: tfplist): boolean;
+      begin
+        result:=true;
+        if not assigned(n) then
+          exit;
+        case n.nodetype of
+          nothingn:
+            ;
+          blockn:
+            result:=switchtable_collect(tblocknode(n).left,list);
+          statementn:
+            result:=switchtable_collect(tstatementnode(n).left,list) and
+                    switchtable_collect(tstatementnode(n).right,list);
+          assignn:
+            list.add(n);
+          else
+            result:=false;
+        end;
+      end;
+
+    { recognise  V := <ordinal-const>  with V a simple writable ordinal var }
+    function switchtable_target(a: tassignmentnode; out sym: tsym; out val: tconstexprint): boolean;
+      var
+        l: tnode;
+      begin
+        result:=false;
+        sym:=nil;
+        if a.assigntype<>at_normal then exit;
+        if (a.left=nil) or (a.right=nil) then exit;
+        l:=a.left;
+        if l.nodetype<>loadn then exit;
+        if nf_isproperty in l.flags then exit;
+        if not assigned(l.resultdef) or not is_ordinal(l.resultdef) then exit;
+        sym:=tloadnode(l).symtableentry;
+        if not assigned(sym) then exit;
+        if not (sym.typ in [localvarsym,staticvarsym,paravarsym]) then exit;
+        if (tabstractvarsym(sym).varoptions*[vo_is_typed_const,vo_is_external,vo_is_funcret])<>[] then exit;
+        if (sym.typ=paravarsym) and (tparavarsym(sym).varspez in [vs_const,vs_constref]) then exit;
+        if a.right.nodetype<>ordconstn then exit;
+        val:=tordconstnode(a.right).value;
+        result:=true;
+      end;
+
+    { build a static const lookup array of elemdef holding vals, returning the
+      typed-const staticvarsym that a loadnode can index }
+    function switchtable_maketable(elemdef: tdef; const vals: array of tconstexprint): tstaticvarsym;
+      var
+        arrdef: tarraydef;
+        sym: tstaticvarsym;
+        tcb: ttai_typedconstbuilder;
+        asmsym: tasmsymbol;
+        k: longint;
+      begin
+        { carraydef.create already registers the def in symtablestack.top
+          (the current procedure's local symtable here); it must NOT be
+          inserted a second time, and the backing typed-const sym is placed in
+          that same table, exactly like an ordinary local  const x: T = (...) }
+        arrdef:=carraydef.create(0,high(vals),sinttype);
+        arrdef.elementdef:=elemdef;
+        inc(switchtable_counter);
+        sym:=cstaticvarsym.create('$switchtbl'+tostr(switchtable_counter),vs_const,arrdef,[vo_is_typed_const]);
+        sym.varstate:=vs_initialised;
+        sym.varregable:=vr_none;
+        symtablestack.top.insertsym(sym);
+        tcb:=ctai_typedconstbuilder.create([tcalo_make_dead_strippable,tcalo_apply_constalign]);
+        tcb.maybe_begin_aggregate(arrdef);
+        for k:=0 to high(vals) do
+          tcb.emit_ord_const(vals[k].svalue,elemdef);
+        tcb.maybe_end_aggregate(arrdef);
+        asmsym:=current_asmdata.DefineAsmSymbol(sym.mangledname,AB_LOCAL,AT_DATA,arrdef);
+        current_asmdata.asmlists[al_typedconsts].concatlist(
+          tcb.get_final_asmlist(asmsym,sym,arrdef,sec_rodata_norel,sym.mangledname,const_align(arrdef.alignment)));
+        tcb.free;
+        result:=sym;
+      end;
+
+    { try to convert a single case node in place; true if it was replaced }
+    function switchtable_try(var n: tnode): boolean;
+      var
+        cn: tcasenode;
+        seldef: tdef;
+        loc,hic,span: tconstexprint;
+        spanint: int64;
+        templatesyms,templatedefs,assignlist: tfplist;
+        blockvals: array of tswitchvals;
+        blockok: array of boolean;
+        nvars,blk,pos,i: longint;
+        a: tassignmentnode;
+        s: tsym;
+        v: tconstexprint;
+        covered: int64;
+        storepos: tfileposinfo;
+        newblock,loadblk: tblocknode;
+        stat,loadstat: tstatementnode;
+        seltemp: ttempcreatenode;
+        cond,ifn,idx,tabref: tnode;
+        tblsym: tstaticvarsym;
+        vals: tswitchvals;
+
+      { walk the label tree, filling table position `pos` for every value it
+        covers; also accumulate coverage in `covered` and validate blockids }
+      function fill_labels(p: pcaselabel): boolean;
+        var
+          base,cnt,j: int64;
+        begin
+          result:=false;
+          if p=nil then
+            exit(true);
+          if not fill_labels(p^.less) then exit;
+          if (p^.blockid<0) or (p^.blockid>=length(blockok)) or not blockok[p^.blockid] then exit;
+          base:=(p^._low-loc).svalue;
+          cnt:=(p^._high-p^._low).svalue+1;
+          inc(covered,cnt);
+          for j:=0 to cnt-1 do
+            vals[base+j]:=blockvals[p^.blockid][pos];
+          if not fill_labels(p^.greater) then exit;
+          result:=true;
+        end;
+
+      begin
+        result:=false;
+        cn:=tcasenode(n);
+        if not assigned(cn.left) or not assigned(cn.labels) then exit;
+        if cn.labels^.label_type<>ltOrdinal then exit;
+        seldef:=cn.left.resultdef;
+        if not assigned(seldef) or not is_ordinal(seldef) then exit;
+        if cn.blocks.count<2 then exit;
+
+        templatesyms:=tfplist.create;
+        templatedefs:=tfplist.create;
+        try
+          setlength(blockvals,cn.blocks.count);
+          setlength(blockok,cn.blocks.count);
+          for blk:=0 to cn.blocks.count-1 do
+            begin
+              blockok[blk]:=false;
+              if not assigned(cn.blocks[blk]) then
+                continue;
+              assignlist:=tfplist.create;
+              try
+                if not switchtable_collect(pcaseblock(cn.blocks[blk])^.statement,assignlist) then
+                  exit;
+                if assignlist.count=0 then
+                  exit;
+                if templatesyms.count=0 then
+                  begin
+                    for i:=0 to assignlist.count-1 do
+                      begin
+                        a:=tassignmentnode(assignlist[i]);
+                        if not switchtable_target(a,s,v) then
+                          exit;
+                        if templatesyms.indexof(s)>=0 then
+                          exit;
+                        templatesyms.add(s);
+                        templatedefs.add(a.left.resultdef);
+                      end;
+                  end;
+                if assignlist.count<>templatesyms.count then
+                  exit;
+                setlength(blockvals[blk],templatesyms.count);
+                for i:=0 to assignlist.count-1 do
+                  begin
+                    a:=tassignmentnode(assignlist[i]);
+                    if not switchtable_target(a,s,v) then
+                      exit;
+                    if s<>tsym(templatesyms[i]) then
+                      exit;
+                    blockvals[blk][i]:=v;
+                  end;
+                blockok[blk]:=true;
+              finally
+                assignlist.free;
+              end;
+            end;
+
+          nvars:=templatesyms.count;
+          if nvars=0 then
+            exit;
+
+          { past this gate the case is an all-constant map; from here a bail is
+            worth a diagnostic note }
+          loc:=case_get_min(cn.labels);
+          hic:=case_get_max(cn.labels);
+          if hic<loc then
+            exit;
+          span:=hic-loc;
+          if span>switchtable_max_span then
+            begin
+              MessagePos1(cn.fileinfo,cg_n_case_not_switchtabled,'label range too large/sparse for a lookup table');
+              exit;
+            end;
+          spanint:=span.svalue+1;
+
+          { require full, hole-free coverage of [loc..hic] }
+          covered:=0;
+          pos:=0;
+          setlength(vals,spanint);
+          if not fill_labels(cn.labels) then
+            exit;
+          if covered<>spanint then
+            begin
+              MessagePos1(cn.fileinfo,cg_n_case_not_switchtabled,'case labels do not fully cover the range (holes present)');
+              exit;
+            end;
+
+          { all checks passed: build the per-variable static tables and the
+            replacement statement }
+          storepos:=current_filepos;
+          current_filepos:=cn.fileinfo;
+
+          newblock:=internalstatements(stat);
+          seltemp:=ctempcreatenode.create(seldef,seldef.size,tt_persistent,true);
+          addstatement(stat,seltemp);
+          addstatement(stat,cassignmentnode.create(ctemprefnode.create(seltemp),cn.left));
+          cn.left:=nil;
+
+          loadblk:=internalstatements(loadstat);
+          for pos:=0 to nvars-1 do
+            begin
+              covered:=0;
+              setlength(vals,spanint);
+              fill_labels(cn.labels);
+              tblsym:=switchtable_maketable(tdef(templatedefs[pos]),vals);
+              idx:=caddnode.create(subn,
+                     ctypeconvnode.create_internal(ctemprefnode.create(seltemp),sinttype),
+                     cordconstnode.create(loc,sinttype,false));
+              tabref:=cloadnode.create(tblsym,tblsym.owner);
+              addstatement(loadstat,
+                cassignmentnode.create(
+                  cloadnode.create(tsym(templatesyms[pos]),tsym(templatesyms[pos]).owner),
+                  cvecnode.create(tabref,idx)));
+            end;
+
+          { single range guard, dropping halves the selector type makes
+            redundant }
+          cond:=nil;
+          if loc>get_min_value(seldef) then
+            cond:=caddnode.create(gten,ctemprefnode.create(seltemp),cordconstnode.create(loc,seldef,false));
+          if hic<get_max_value(seldef) then
+            begin
+              if assigned(cond) then
+                cond:=caddnode.create(andn,cond,
+                        caddnode.create(lten,ctemprefnode.create(seltemp),cordconstnode.create(hic,seldef,false)))
+              else
+                cond:=caddnode.create(lten,ctemprefnode.create(seltemp),cordconstnode.create(hic,seldef,false));
+            end;
+
+          if cond=nil then
+            begin
+              { full type coverage: the else part is unreachable }
+              addstatement(stat,loadblk);
+              if assigned(cn.elseblock) then
+                begin
+                  cn.elseblock.free;
+                  cn.elseblock:=nil;
+                end;
+            end
+          else
+            begin
+              ifn:=cifnode.create(cond,loadblk,cn.elseblock);
+              cn.elseblock:=nil;
+              addstatement(stat,ifn);
+            end;
+          addstatement(stat,ctempdeletenode.create(seltemp));
+
+          firstpass(tnode(newblock));
+
+          MessagePos2(cn.fileinfo,cg_n_case_switchtabled,tostr(nvars),tostr(spanint));
+
+          current_filepos:=storepos;
+          n.free;
+          n:=newblock;
+          result:=true;
+        finally
+          templatesyms.free;
+          templatedefs.free;
+        end;
+      end;
+
+    function switchtable_walk(var n: tnode; arg: pointer): foreachnoderesult;
+      begin
+        result:=fen_false;
+        if n.nodetype=casen then
+          if switchtable_try(n) then
+            begin
+              pboolean(arg)^:=true;
+              result:=fen_norecurse_false;
+            end;
+      end;
+
+    function OptimizeSwitchTable(node : tnode) : boolean;
+      var
+        changed: boolean;
+      begin
+        changed:=false;
+        foreachnodestatic(node,@switchtable_walk,@changed);
+        result:=changed;
+      end;
+
+end.

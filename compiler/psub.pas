@@ -1529,6 +1529,27 @@ implementation
                RedoDFA:=false;
              end;
 
+           { switch-to-lookup-table conversion (gcc -ftree-switch-conversion,
+             the static-table half, complementing -OoCASECLUSTER which only
+             optimises the dispatch): when every arm of a fully-covered (no-hole)
+             case over an ordinal only assigns compile-time constants to the same
+             ordered set of simple ordinal variables, replace the whole statement
+             -- dispatch and bodies -- with per-variable static const arrays
+             indexed by (selector-low) plus a single range guard jumping to the
+             else part, eliminating all branching. The selector is evaluated once
+             into a temp before any store, so it stays correct even with side
+             effects or a selector that is itself a store target. Removes
+             branches, so refresh DFA afterwards. Case arms cannot be entered by
+             a goto, so it is safe in the presence of labels. }
+           if (cs_opt_switchtable in current_settings.optimizerswitches) then
+             RedoDFA:=OptimizeSwitchTable(code) or RedoDFA;
+
+           if RedoDFA then
+             begin
+               dfabuilder.redodfainfo(code);
+               RedoDFA:=false;
+             end;
+
            if cs_opt_forloop in current_settings.optimizerswitches then
              RedoDFA:=OptimizeForLoop(code);
 
