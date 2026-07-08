@@ -271,6 +271,13 @@ unit aoptx86;
         function ExtAlreadyGuaranteed(ExtIns: taicpu): Boolean;
         procedure DoRedundantExtElim;
 
+        { Shrink-wrapping (gcc shrink-wrapping.cc / -fshrink-wrap): sink a
+          push-only prologue below an initial volatile-register-only guard clause
+          so an early-exit fast path returns prologue-free, never saving or
+          clobbering a callee-saved register.  Strict whitelist; bails on anything
+          it does not fully model (a wrong prologue move is a miscompile). }
+        procedure DoShrinkWrap;
+
         procedure PostPeepHoleOpts; override;
 
         procedure ConvertJumpToRET(const p: tai; const ret_p: tai);
@@ -19261,6 +19268,336 @@ unit aoptx86;
       end;
 
 
+    { Shrink-wrapping (gcc shrink-wrapping.cc / -fshrink-wrap).  Sink a push-only
+      prologue below an initial guard clause so the early-exit fast path returns
+      without ever saving -- or having to restore -- a callee-saved register.
+
+      Only the following strictly-modelled shape is transformed:
+
+        proc:
+            push cs_reg_1 ... push cs_reg_k    <- prologue: nothing but pushes
+            <guard region>                     <- straight-line, volatile-only,
+            jcc  Lexit                            no memory, no call, no label
+            ...slow path...
+          Lexit:
+            pop  cs_reg_k ... pop cs_reg_1     <- epilogue: matching pops + ret
+            ret
+
+      becomes
+
+        proc:
+            <guard region>
+            jcc  Lfast
+            push cs_reg_1 ... push cs_reg_k    <- prologue now heads the slow path
+            ...slow path...
+          Lexit:
+            pop  cs_reg_k ... pop cs_reg_1
+            ret
+          Lfast:
+            ret                                <- bare fast-path return
+
+      Correctness: the guard region provably touches no callee-saved register (it
+      is verified volatile-only), so moving the pushes below it saves exactly the
+      same incoming values; the fast path executes neither the pushes nor the pops
+      and returns with every callee-saved register still holding its caller value;
+      the slow path runs the identical instruction stream.  A wrong move here is a
+      miscompile, so anything not matching this shape -- a stack-allocating or
+      frame-pointer prologue, CFI/SEH unwind data, exceptions, an assembler block,
+      an interior label, a memory reference, a call, or an epilogue that is not the
+      matching pops+ret -- makes the pass bail. }
+    procedure TX86AsmOptimizer.DoShrinkWrap;
+      const
+        MaxPushRegs = 8;
+        { The frame writer often encodes the first prologue CFA advance as a
+          single-byte DWARF advance_loc1; after the move that delta grows to span
+          the whole guard region, so cap the guard instruction count well below the
+          point where the worst-case encoded size could exceed 255 bytes. }
+        MaxGuardLen = 15;
+      var
+        pushregs: array[0..MaxPushRegs-1] of TRegister;
+        npush: Integer;
+
+        { The block reached from label L must be exactly the matching epilogue:
+          the pushed registers popped in reverse order followed by RET, with only
+          disposable bookkeeping in between and no interior label (which would be
+          a foreign entry we do not model).  Returns the terminating RET. }
+        function EpilogueMatches(L: TAsmLabel; out RetIns: tai): Boolean;
+          var
+            q: tai;
+            k: Integer;
+
+          { Advance to the next real instruction.  The frame writer interleaves
+            alt_dbgframe CFA position labels between the pops and the ret; those
+            are inert here and skipped.  A jump-target label, by contrast, is a
+            foreign entry into the epilogue we do not model -> bail (nil). }
+          function NextInstrNoLabel(from: tai): tai;
+            var
+              r: tai;
+            begin
+              r := tai(from.Next);
+              while Assigned(r) and (r <> BlockEnd) and (r.typ <> ait_instruction) do
+                begin
+                  if (r.typ = ait_label) and
+                     (tai_label(r).labsym.labeltype <> alt_dbgframe) then
+                    begin
+                      NextInstrNoLabel := nil;
+                      Exit;
+                    end;
+                  r := tai(r.Next);
+                end;
+              if not Assigned(r) or (r = BlockEnd) then
+                r := nil;
+              NextInstrNoLabel := r;
+            end;
+
+          begin
+            EpilogueMatches := False;
+            RetIns := nil;
+            q := BlockStart;
+            while Assigned(q) and (q <> BlockEnd) do
+              begin
+                if (q.typ = ait_label) and (tai_label(q).labsym = L) then
+                  Break;
+                q := tai(q.Next);
+              end;
+            if not Assigned(q) or (q = BlockEnd) then
+              Exit;
+            { pops in reverse order of the pushes }
+            for k := npush - 1 downto 0 do
+              begin
+                q := NextInstrNoLabel(q);
+                if not Assigned(q) or (taicpu(q).opcode <> A_POP) or
+                   (taicpu(q).ops <> 1) or (taicpu(q).oper[0]^.typ <> top_reg) or
+                   not SuperRegistersEqual(taicpu(q).oper[0]^.reg, pushregs[k]) then
+                  Exit;
+              end;
+            { the terminating ret }
+            q := NextInstrNoLabel(q);
+            if not Assigned(q) or (taicpu(q).opcode <> A_RET) then
+              Exit;
+            RetIns := q;
+            EpilogueMatches := True;
+          end;
+
+        { A guard-region instruction must be volatile-only: no call, no memory
+          reference (so it cannot fault/raise or touch the stack), and it must not
+          modify the stack pointer, the frame pointer, or any register whose save
+          we are moving. }
+        function GuardInsnOK(ins: taicpu): Boolean;
+          var
+            k, o: Integer;
+          begin
+            GuardInsnOK := False;
+            if ins.opcode = A_CALL then
+              Exit;
+            for o := 0 to ins.ops - 1 do
+              if ins.oper[o]^.typ = top_ref then
+                Exit;
+            if RegModifiedByInstruction(NR_STACK_POINTER_REG, ins) then
+              Exit;
+            if (current_procinfo.framepointer <> NR_NO) and
+               (current_procinfo.framepointer <> NR_STACK_POINTER_REG) and
+               RegModifiedByInstruction(current_procinfo.framepointer, ins) then
+              Exit;
+            for k := 0 to npush - 1 do
+              if RegModifiedByInstruction(pushregs[k], ins) then
+                Exit;
+            GuardInsnOK := True;
+          end;
+
+      var
+        p, q, firstpush, blocklast, guardstart, guardbranch: tai;
+        L, Lfast: TAsmLabel;
+        retins, cur, nextcur, insafter: tai;
+        steps: Integer;
+        lbl: tai_label;
+        newret: taicpu;
+        reachedEnd: Boolean;
+      begin
+        if not CanDoJumpOpts then
+          Exit;
+
+        { conservative environment bails: an assembler block, exceptions or an
+          implicit finally frame all interact with prologue/frame layout }
+        if (current_procinfo.flags * [pi_is_assembler, pi_has_assembler_block,
+            pi_uses_exceptions, pi_needs_implicit_finally]) <> [] then
+          Exit;
+        { win64/nativent attach SEH unwind data pinned to the prologue layout }
+        if target_info.system in systems_x86_64_ms_abi then
+          Exit;
+
+        { Inline CFI / SEH directives sitting in the proc code (win64, or a hand
+          -written .cfi block) pin unwind data to current instruction addresses --
+          moving the prologue past them would corrupt it.  (The default ELF DWARF
+          .debug_frame is NOT such a directive: it lives in a separate asmlist and
+          only references the alt_dbgframe position labels that appear here; those
+          labels travel with the pushes below, so the FDE stays correct.) }
+        q := BlockStart;
+        while Assigned(q) and (q <> BlockEnd) do
+          begin
+            if q.typ in [ait_cfi, ait_seh_directive] then
+              Exit;
+            q := tai(q.Next);
+          end;
+
+        { 1. Prologue: after the entry symbol/labels/bookkeeping the first real
+          instruction must be a callee-saved register push.  Collect the contiguous
+          prologue block, which is nothing but pushes plus the alt_dbgframe CFA
+          position labels the frame writer interleaves after each push and disposable
+          bookkeeping; the whole block is relocated as a unit so those labels keep
+          marking the exact push that changes the CFA.  Anything else -- a stack
+          allocation, a frame-pointer setup, a foreign (jump) label -- ends the
+          block and, being part of the guard region, trips the checks below or bails. }
+        p := BlockStart;
+        while Assigned(p) and (p <> BlockEnd) and (p.typ <> ait_instruction) do
+          p := tai(p.Next);
+        if not Assigned(p) or (p = BlockEnd) then
+          Exit;
+        if (taicpu(p).opcode <> A_PUSH) then
+          Exit;
+
+        npush := 0;
+        firstpush := p;
+        blocklast := p;
+        guardstart := nil;
+        q := p;
+        while Assigned(q) and (q <> BlockEnd) do
+          begin
+            case q.typ of
+              ait_instruction:
+                if (taicpu(q).opcode = A_PUSH) and (taicpu(q).ops = 1) and
+                   (taicpu(q).oper[0]^.typ = top_reg) and
+                   (getregtype(taicpu(q).oper[0]^.reg) = R_INTREGISTER) then
+                  begin
+                    if npush >= MaxPushRegs then
+                      Exit;
+                    pushregs[npush] := taicpu(q).oper[0]^.reg;
+                    Inc(npush);
+                    blocklast := q;
+                  end
+                else
+                  begin
+                    { first non-push instruction: the guard region starts here }
+                    guardstart := q;
+                    Break;
+                  end;
+              ait_label:
+                { only frame-position labels may live inside the prologue and be
+                  moved with it; a jump target here means a foreign entry -> bail }
+                if tai_label(q).labsym.labeltype = alt_dbgframe then
+                  blocklast := q
+                else
+                  Exit;
+              ait_regalloc, ait_tempalloc, ait_comment, ait_varloc,
+              ait_stab, ait_force_line, ait_align:
+                blocklast := q;
+              else
+                Exit;
+            end;
+            q := tai(q.Next);
+          end;
+        if (npush = 0) or not Assigned(guardstart) then
+          Exit;
+
+        { 2. Guard region: a maximal straight-line run of volatile-only
+          instructions immediately after the pushes, terminated by a conditional
+          jump to an epilogue that is exactly our matching pops + ret. }
+        guardbranch := nil;
+        L := nil;
+        retins := nil;
+        steps := 0;
+        q := guardstart;
+        while Assigned(q) and (q <> BlockEnd) do
+          begin
+            case q.typ of
+              ait_instruction:
+                begin
+                  Inc(steps);
+                  if steps > MaxGuardLen then
+                    Exit;
+                  if is_calljmp(taicpu(q).opcode) then
+                    begin
+                      if (taicpu(q).opcode = A_CALL) or
+                         (taicpu(q).opcode = A_RET) or
+                         (taicpu(q).condition = C_None) or
+                         not IsJumpToLabel(taicpu(q)) then
+                        Exit;
+                      L := TAsmLabel(JumpTargetOp(taicpu(q))^.ref^.symbol);
+                      if EpilogueMatches(L, retins) then
+                        begin
+                          guardbranch := q;
+                          Break;
+                        end
+                      else
+                        Exit;
+                    end
+                  else if not GuardInsnOK(taicpu(q)) then
+                    Exit;
+                end;
+              ait_label:
+                { a referenced label is a control-flow join / foreign entry into
+                  the guard region -> bail.  A dead label (no references left, e.g.
+                  a short-circuit-OR target the peephole already folded away) has
+                  no predecessors, so the region stays straight-line: skip it. }
+                if tai_label(q).labsym.getrefs <> 0 then
+                  Exit;
+              ait_regalloc, ait_tempalloc, ait_comment, ait_varloc,
+              ait_stab, ait_force_line, ait_align:
+                ;
+              else
+                { cfi, marker, const, ... -- bail }
+                Exit;
+            end;
+            q := tai(q.Next);
+          end;
+
+        if not Assigned(guardbranch) or not Assigned(retins) then
+          Exit;
+
+        { 3. Transform.  A fresh bare-ret landing pad is placed right after the
+          epilogue's ret (unreachable by fall-through, still inside the FDE address
+          range so the last -- fully-restored -- CFA row applies to it) and becomes
+          the fast-path target; the guard branch is retargeted to it; the whole
+          prologue block (pushes + their alt_dbgframe CFA markers + bookkeeping) is
+          relocated to head the slow path, right after the guard branch, preserving
+          order.  Because each CFA marker still immediately follows the push that
+          changes the CFA, the label-relative advance_loc deltas of the separately
+          emitted FDE recompute to the correct new offsets, so unwind data stays
+          valid on both paths.  The fast-path ret replicates the epilogue's ret
+          exactly so a callee-cleanup `ret $n' still pops its parameters. }
+        current_asmdata.getjumplabel(Lfast);
+        lbl := tai_label.Create(Lfast);
+        InsertLLItem(retins, tai(retins.Next), lbl);
+        if (taicpu(retins).ops = 1) and (taicpu(retins).oper[0]^.typ = top_const) then
+          newret := taicpu.op_const(A_RET, taicpu(retins).opsize, taicpu(retins).oper[0]^.val)
+        else
+          newret := taicpu.op_none(A_RET, S_NO);
+        InsertLLItem(lbl, tai(lbl.Next), newret);
+
+        L.decrefs;
+        JumpTargetOp(taicpu(guardbranch))^.ref^.symbol := Lfast;
+        Lfast.increfs;
+
+        insafter := guardbranch;
+        cur := firstpush;
+        while Assigned(cur) do
+          begin
+            nextcur := tai(cur.Next);
+            reachedEnd := (cur = blocklast);
+            AsmL.Remove(cur);
+            InsertLLItem(insafter, tai(insafter.Next), cur);
+            insafter := cur;
+            if reachedEnd then
+              Break;
+            cur := nextcur;
+          end;
+
+        DebugMsg(SPeepholeOptimization + 'ShrinkWrap: sunk ' + tostr(npush) +
+          '-register push-only prologue below guard clause; fast path returns prologue-free',
+          guardbranch);
+      end;
+
+
     procedure TX86AsmOptimizer.PostPeepHoleOpts;
       begin
         inherited PostPeepHoleOpts;
@@ -19270,6 +19607,8 @@ unit aoptx86;
           DoBlockOrder;
         if (cs_opt_ree in current_settings.optimizerswitches) then
           DoRedundantExtElim;
+        if (cs_opt_shrinkwrap in current_settings.optimizerswitches) then
+          DoShrinkWrap;
       end;
 
 

@@ -2579,7 +2579,8 @@ const
          'cs_opt_vrp',
          'cs_opt_refelide',
          'cs_opt_switchtable',
-         'cs_opt_ree'
+         'cs_opt_ree',
+         'cs_opt_shrinkwrap'
        );
     var
          globalswitch  : tglobalswitch;

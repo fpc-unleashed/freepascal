@@ -556,7 +556,23 @@ interface
            longer pays for the redundant extension each iteration. Conservative:
            only deletes a same-super-register extension that is provably a no-op
            (a wrong deletion is a miscompile) }
-         cs_opt_ree
+         cs_opt_ree,
+         { shrink-wrapping (gcc shrink-wrapping.cc, the pass behind -fshrink-wrap,
+           default-on at -O2 there): instead of executing the callee-saved-register
+           saves at function entry unconditionally, sink them below an initial
+           guard clause so an early-exit fast path (nil/zero/cache-hit checks) runs
+           prologue-free and returns without ever touching -- or having to restore
+           -- any callee-saved register. Implemented as a strict x86 asm-level
+           transform: fires only on a push-only prologue (no stack allocation, no
+           frame pointer, no CFI/SEH, no exceptions, no asm block) whose entry is
+           immediately followed by a straight-line volatile-register-only guard
+           region ending in a conditional jump to an epilogue that is exactly the
+           matching pops + ret; that guard branch is retargeted to a fresh bare ret
+           and the pushes are moved to the start of the slow path. The fast path
+           then provably preserves every callee-saved register because it neither
+           saves nor clobbers one; the slow path is byte-identical. Opt-in
+           (-OoSHRINKWRAP): a wrong prologue move is a miscompile }
+         cs_opt_shrinkwrap
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -634,7 +650,8 @@ interface
          'RANGEELIM','VECTORIZE','JUMPTHREAD','LOOPDISTPAT',
          'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC','UNROLLJAM',
          'PREDCOM','SRA','STOREMERGE','CASECLUSTER','CROSSJUMP','BLOCKORDER',
-         'SINK','STOREMOTION','VRP','REFELIDE','SWITCHTABLE','REE'
+         'SINK','STOREMOTION','VRP','REFELIDE','SWITCHTABLE','REE',
+         'SHRINKWRAP'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
