@@ -2908,6 +2908,48 @@ unit optloop;
       end;
 
 
+    function vect_invariant_scalar_reason(n : tnode; counter : tabstractvarsym) : string;
+      { returns '' if n is a provably loop-invariant single-precision scalar that
+        can be broadcast once before the vector loop -- either a constant literal
+        or a plain read of a simple non-aliased (non-global, non-address-taken,
+        non-volatile) local/value-param that the single-statement body never
+        writes -- and n's *own* type is single so the packed op keeps the scalar
+        loop's exact precision. Otherwise returns a human-readable reason for the
+        -OoVECTORIZE diagnostic. }
+      var
+        root : tnode;
+      begin
+        result:='';
+        if not assigned(n) or not assigned(n.resultdef) then
+          exit('is missing or untyped');
+        { the operand must itself be single: a double/integer scalar would make
+          the scalar loop compute in a wider precision, so the packed single op
+          would not be bit-identical }
+        if not is_single(n.resultdef) then
+          exit('is not a single-precision value (mixed precision would change the result)');
+        if ([nf_write,nf_modify]*n.flags)<>[] then
+          exit('has side effects');
+        root:=rangeelim_skip_typeconv(n);
+        if not assigned(root) then
+          exit('is not a constant or a simple loop-invariant variable');
+        { a constant literal is trivially loop-invariant }
+        if root.nodetype in [ordconstn,realconstn] then
+          exit('');
+        { or a simple non-aliased local/param: the single-statement body's only
+          write is to the destination array element, so such a scalar is never
+          assigned in the loop and is provably loop-invariant }
+        if root.nodetype=loadn then
+          begin
+            if not assigned(rangeelim_simple_var(root)) then
+              exit('is not a simple non-aliased local/parameter (a global, address-taken or volatile scalar is not proven loop-invariant)');
+            if tloadnode(root).symtableentry=tsym(counter) then
+              exit('is the loop counter');
+            exit('');
+          end;
+        exit('is not a constant or a simple loop-invariant variable');
+      end;
+
+
     function vect_body_single_stmt(body : tnode) : tnode;
       { peel block/statement wrappers and return the single meaningful statement
         of a loop body, or nil if there is not exactly one }
@@ -2971,11 +3013,15 @@ unit optloop;
         assign : tassignmentnode;
         avec, bvec, cvec : tvecnode;
         vecop : TOpCG;
+        vshape : tvectoropkind;
+        scalarnode : tnode;
+        scalarleft : boolean;
         hascheck : boolean;
         block, vecbody, scalbody : tnode;
         stat, vstat, sstat : tstatementnode;
-        lotemp, hitemp : ttempcreatenode;
+        lotemp, hitemp, splattemp : ttempcreatenode;
         reason : string;
+        leftreason, rightreason : string;
 
       { Runs the full OptimizeVectorize recognizer over the current for-loop and
         returns '' when the loop can be vectorized (also filling in counter,
@@ -3036,25 +3082,72 @@ unit optloop;
           if result<>'' then
             exit('destination '+result);
 
-          { RHS:  b[i] op c[i]  with op in + - * }
-          rhs:=rangeelim_skip_typeconv(assign.right);
-          if not assigned(rhs) or not(rhs.nodetype in [addn,subn,muln]) then
-            exit('right-hand side is not a +, - or * of two array elements (unsupported reduction/expression)');
-          if ([nf_write,nf_modify]*rhs.flags)<>[] then
-            exit('right-hand side has side effects');
-          result:=vect_elem_reason(taddnode(rhs).left,counter,bvec);
-          if result<>'' then
-            exit('first source '+result);
-          result:=vect_elem_reason(taddnode(rhs).right,counter,cvec);
-          if result<>'' then
-            exit('second source '+result);
-          case rhs.nodetype of
-            addn: vecop:=OP_ADD;
-            subn: vecop:=OP_SUB;
-            muln: vecop:=OP_IMUL;
-            else
-              exit('unsupported arithmetic operator');
-          end;
+          { RHS: one of the recognized element-wise shapes.  Defaults for the
+            fields the builder reads: }
+          bvec:=nil; cvec:=nil; scalarnode:=nil; scalarleft:=false;
+          vecop:=OP_NONE;
+
+          { plain copy:  a[i] := b[i] }
+          if vect_elem_reason(assign.right,counter,bvec)='' then
+            begin
+              vshape:=vok_copy;
+            end
+          else
+            begin
+              { arithmetic:  b[i] op c[i] ,  b[i] op s ,  or  s op b[i]  (op in + - *) }
+              rhs:=rangeelim_skip_typeconv(assign.right);
+              if not assigned(rhs) or not(rhs.nodetype in [addn,subn,muln]) then
+                exit('right-hand side is not an array element, a copy, or a +, - or * of an array element with an array element or loop-invariant single scalar');
+              if ([nf_write,nf_modify]*rhs.flags)<>[] then
+                exit('right-hand side has side effects');
+              if not assigned(rhs.resultdef) or not is_single(rhs.resultdef) then
+                exit('right-hand side is not computed in single precision');
+              case rhs.nodetype of
+                addn: vecop:=OP_ADD;
+                subn: vecop:=OP_SUB;
+                muln: vecop:=OP_IMUL;
+                else
+                  exit('unsupported arithmetic operator');
+              end;
+
+              { classify each operand as an array element of the loop counter }
+              leftreason:=vect_elem_reason(taddnode(rhs).left,counter,bvec);
+              rightreason:=vect_elem_reason(taddnode(rhs).right,counter,cvec);
+
+              if (leftreason='') and (rightreason='') then
+                { array op array }
+                vshape:=vok_arr_arr
+              else if leftreason='' then
+                begin
+                  { b[i] op s : the right operand must be a loop-invariant single
+                    scalar (broadcast once and applied per lane). bvec is already
+                    the left array element. }
+                  result:=vect_invariant_scalar_reason(taddnode(rhs).right,counter);
+                  if result<>'' then
+                    exit('second operand is not an array element or provably loop-invariant single scalar (it '+result+')');
+                  scalarnode:=taddnode(rhs).right;
+                  scalarleft:=false;
+                  cvec:=nil;
+                  vshape:=vok_arr_scalar;
+                end
+              else if rightreason='' then
+                begin
+                  { s op b[i] : the left operand must be a loop-invariant single
+                    scalar; move the (right) array element into bvec. Non-
+                    commutative subtraction stays  s - b[i]  via scalarleft. }
+                  result:=vect_invariant_scalar_reason(taddnode(rhs).left,counter);
+                  if result<>'' then
+                    exit('first operand is not an array element or provably loop-invariant single scalar (it '+result+')');
+                  scalarnode:=taddnode(rhs).left;
+                  scalarleft:=true;
+                  bvec:=cvec;
+                  cvec:=nil;
+                  vshape:=vok_arr_scalar;
+                end
+              else
+                { neither operand is a usable array element of the loop counter }
+                exit('first source '+leftreason);
+            end;
 
           { DFA: the counter must not be assigned anywhere in the body (on top of
             the single-assignment shape, which already implies it) }
@@ -3094,9 +3187,35 @@ unit optloop;
           cloadnode.create(tsym(counter),counter.owner),
           ctemprefnode.create(lotemp)));
 
+        { scalar-broadcast shape: allocate a 16-byte slot and fill it ONCE with
+          [s,s,s,s] before the vector loop (hoisted), so the packed op reads the
+          identical scalar bit pattern in every lane on every iteration }
+        splattemp:=nil;
+        if vshape=vok_arr_scalar then
+          begin
+            { allowreg=false: the slot must be memory-backed so the hoisted
+              broadcast can movups-store it and the loop body movups-load it }
+            splattemp:=ctempcreatenode.create(
+              tarraydef.getreusable_vector(s32floattype,vect_vecwidth),
+              vect_vecwidth*s32floattype.size,tt_persistent,false);
+            addstatement(stat,splattemp);
+            addstatement(stat,cvectoropnode.create_broadcast(
+              ctemprefnode.create(splattemp),scalarnode.getcopy));
+          end;
+
         { vector loop:  while i <= hi-(VL-1) do begin <packed body>; i := i+VL end }
         vecbody:=internalstatements(vstat);
-        addstatement(vstat,cvectoropnode.create(avec.getcopy,bvec.getcopy,cvec.getcopy,vecop,vect_vecwidth));
+        case vshape of
+          vok_arr_arr:
+            addstatement(vstat,cvectoropnode.create(avec.getcopy,bvec.getcopy,cvec.getcopy,vecop,vect_vecwidth));
+          vok_arr_scalar:
+            addstatement(vstat,cvectoropnode.create_scalar(avec.getcopy,bvec.getcopy,
+              ctemprefnode.create(splattemp),vecop,scalarleft,vect_vecwidth));
+          vok_copy:
+            addstatement(vstat,cvectoropnode.create_copy(avec.getcopy,bvec.getcopy,vect_vecwidth));
+          else
+            internalerror(2026070706);
+        end;
         addstatement(vstat,cassignmentnode.create(
           cloadnode.create(tsym(counter),counter.owner),
           caddnode.create(addn,cloadnode.create(tsym(counter),counter.owner),
@@ -3122,6 +3241,8 @@ unit optloop;
         { release the bound temps after their last use }
         addstatement(stat,ctempdeletenode.create(lotemp));
         addstatement(stat,ctempdeletenode.create(hitemp));
+        if assigned(splattemp) then
+          addstatement(stat,ctempdeletenode.create(splattemp));
 
         do_firstpass(block);
         MessagePos1(forn.fileinfo,cg_n_loop_vectorized,tostr(vect_vecwidth));

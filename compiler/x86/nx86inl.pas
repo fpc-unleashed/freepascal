@@ -116,22 +116,32 @@ implementation
 *****************************************************************************}
 
     procedure tx86vectoropnode.pass_generate_code;
-      { Emit one packed 128-bit single-precision element-wise step:
-          movups  regb, [b+i]      ; load VL (=4) singles of b at element i
-          movups  regc, [c+i]      ; load VL singles of c at element i
-          <op>ps  regb, regc       ; regb := regb op regc  (add/sub/mul, packed)
-          movups  [a+i], regb      ; store VL results to a at element i
+      { Emit one packed 128-bit single-precision element-wise step. The exact
+        instructions depend on `kind`:
+
+          vok_arr_arr     a[i..i+3] := b[i..i+3] op c[i..i+3]
+            movups regb,[b+i]; movups regc,[c+i]; <op>ps regb,regc; movups [a+i],regb
+          vok_arr_scalar  a[i..i+3] := b[i..i+3] op s   (or s op b, scalarleft)
+            movups regb,[b+i]; movups regc,[splat]; <op>ps ...; movups [a+i],res
+          vok_copy        a[i..i+3] := b[i..i+3]
+            movups regb,[b+i]; movups [a+i],regb
+          vok_broadcast   splat := [s,s,s,s]   (runs ONCE, hoisted before the loop)
+            movss regs,s; shufps regs,regs,$00; movups [splat],regs
+
         Under an AVX fputype the VEX v-forms are used. Reuses the ordinary vecn
         secondpass to compute the element-i address of each array, then reads a
         full 128-bit window (elements i..i+3) from it; the surrounding vector
-        loop only advances the counter to i where i+3 is still in range.
-        FP semantics are identical to the scalar path: each lane computes exactly
-        b[i+k] op c[i+k] in the same order, so results (incl. NaN/Inf and
-        negative zero) are bit-identical -- no reassociation, no fast-math gate. }
+        loop only advances the counter to i where i+3 is still in range. FP
+        semantics are identical to the scalar path: each lane computes exactly
+        the scalar op in the same order (the broadcast puts the identical bit
+        pattern of s in every lane), so results (incl. NaN/Inf and negative zero)
+        are bit-identical -- no reassociation, no fast-math gate. For SUBPS the
+        AT&T operand order gives  b - c  (scalarleft=false) or  s - b
+        (scalarleft=true), matching the source's non-commutative order. }
       var
-        regb, regc : tregister;
+        regb, regc, regs, resreg : tregister;
         opps, movop : tasmop;
-        refb, refc, refa : treference;
+        refb, refc, refa, refsplat : treference;
         avx : boolean;
       begin
         avx:=UseAVX;
@@ -139,18 +149,31 @@ implementation
           movop:=A_VMOVUPS
         else
           movop:=A_MOVUPS;
-        case op of
-          OP_ADD:
-            if avx then opps:=A_VADDPS else opps:=A_ADDPS;
-          OP_SUB:
-            if avx then opps:=A_VSUBPS else opps:=A_SUBPS;
-          OP_MUL,OP_IMUL:
-            if avx then opps:=A_VMULPS else opps:=A_MULPS;
-          else
-            internalerror(2026070701);
-        end;
 
-        { load b[i..i+3] into regb }
+        { --- broadcast: fill the 16-byte splat slot with [s,s,s,s] once --- }
+        if kind=vok_broadcast then
+          begin
+            secondpass(right);   { the loop-invariant scalar single s }
+            regs:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
+            { load s into the low lane (movss / vmovss) }
+            cg.a_loadmm_loc_reg(current_asmdata.CurrAsmList,OS_F32,right.location,regs,mms_movescalar);
+            { splat lane 0 across all four lanes with one shuffle }
+            if avx then
+              current_asmdata.CurrAsmList.concat(taicpu.op_const_reg_reg_reg(A_VSHUFPS,S_NO,$00,regs,regs,regs))
+            else
+              current_asmdata.CurrAsmList.concat(taicpu.op_const_reg_reg(A_SHUFPS,S_NO,$00,regs,regs));
+            { store the packed splat to the slot (left = tempref to it) }
+            secondpass(left);
+            if not (left.location.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
+              internalerror(2026070705);
+            refsplat:=left.location.reference;
+            tcgx86(cg).make_simple_ref(current_asmdata.CurrAsmList,refsplat);
+            current_asmdata.CurrAsmList.concat(taicpu.op_reg_ref(movop,S_NO,regs,refsplat));
+            location_reset(location,LOC_VOID,OS_NO);
+            exit;
+          end;
+
+        { load b[i..i+3] into regb (the source array, common to all body kinds) }
         secondpass(right);
         if not (right.location.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
           internalerror(2026070702);
@@ -159,30 +182,59 @@ implementation
         regb:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
         current_asmdata.CurrAsmList.concat(taicpu.op_ref_reg(movop,S_NO,refb,regb));
 
-        { load c[i..i+3] into regc }
-        secondpass(third);
-        if not (third.location.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
-          internalerror(2026070703);
-        refc:=third.location.reference;
-        tcgx86(cg).make_simple_ref(current_asmdata.CurrAsmList,refc);
-        regc:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
-        current_asmdata.CurrAsmList.concat(taicpu.op_ref_reg(movop,S_NO,refc,regc));
-
-        { regb := regb op regc  (packed single). For SUBPS the AT&T operand
-          order gives  regb := regb - regc  in both the 2-op (SSE) and 3-op
-          (AVX) encodings, matching b - c. }
-        if avx then
-          current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(opps,S_NO,regc,regb,regb))
+        if kind=vok_copy then
+          resreg:=regb
         else
-          current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(opps,S_NO,regc,regb));
+          begin
+            { second packed operand into regc: the c[i..i+3] window (vok_arr_arr)
+              or the pre-broadcast [s,s,s,s] slot (vok_arr_scalar) -- both are
+              plain 16-byte references loaded identically }
+            case op of
+              OP_ADD:
+                if avx then opps:=A_VADDPS else opps:=A_ADDPS;
+              OP_SUB:
+                if avx then opps:=A_VSUBPS else opps:=A_SUBPS;
+              OP_MUL,OP_IMUL:
+                if avx then opps:=A_VMULPS else opps:=A_MULPS;
+              else
+                internalerror(2026070701);
+            end;
 
-        { store regb to a[i..i+3] }
+            secondpass(third);
+            if not (third.location.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
+              internalerror(2026070703);
+            refc:=third.location.reference;
+            tcgx86(cg).make_simple_ref(current_asmdata.CurrAsmList,refc);
+            regc:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
+            current_asmdata.CurrAsmList.concat(taicpu.op_ref_reg(movop,S_NO,refc,regc));
+
+            if (kind=vok_arr_scalar) and scalarleft then
+              begin
+                { result := regc op regb  ( s op b );  keep it in regc }
+                if avx then
+                  current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(opps,S_NO,regb,regc,regc))
+                else
+                  current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(opps,S_NO,regb,regc));
+                resreg:=regc;
+              end
+            else
+              begin
+                { result := regb op regc  ( b op c  or  b op s );  keep it in regb }
+                if avx then
+                  current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(opps,S_NO,regc,regb,regb))
+                else
+                  current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(opps,S_NO,regc,regb));
+                resreg:=regb;
+              end;
+          end;
+
+        { store resreg to a[i..i+3] }
         secondpass(left);
         if not (left.location.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
           internalerror(2026070704);
         refa:=left.location.reference;
         tcgx86(cg).make_simple_ref(current_asmdata.CurrAsmList,refa);
-        current_asmdata.CurrAsmList.concat(taicpu.op_reg_ref(movop,S_NO,regb,refa));
+        current_asmdata.CurrAsmList.concat(taicpu.op_reg_ref(movop,S_NO,resreg,refa));
 
         location_reset(location,LOC_VOID,OS_NO);
       end;
