@@ -146,9 +146,9 @@ implementation
         AT&T operand order gives  b - c  (scalarleft=false) or  s - b
         (scalarleft=true), matching the source's non-commutative order. }
       var
-        regb, regc, regs, resreg : tregister;
+        regb, regc, regs, resreg, regacc, regt : tregister;
         opps, movop : tasmop;
-        refb, refc, refa, refsplat : treference;
+        refb, refc, refa, refsplat, refacc : treference;
         avx : boolean;
       begin
         avx:=UseAVX;
@@ -156,6 +156,124 @@ implementation
           movop:=A_VMOVUPS
         else
           movop:=A_MOVUPS;
+
+        { --- reduction accumulator init: acc slot := [s,0,0,0] (runs once) --- }
+        if kind=vok_reduce_init then
+          begin
+            { load the incoming scalar s into lane 0 of regs (upper lanes are
+              don't-care here) }
+            secondpass(right);   { the incoming scalar single s }
+            regs:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
+            cg.a_loadmm_loc_reg(current_asmdata.CurrAsmList,OS_F32,right.location,regs,mms_movescalar);
+            { regacc := [0,0,0,0], then merge s into lane 0 with a scalar move so
+              the upper three lanes stay exactly zero (the register-source path of
+              a_loadmm_*_reg would movaps a full 128 bits and clobber them, so the
+              merge must be an explicit MOVSS/VMOVSS reg,reg here) }
+            regacc:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
+            if avx then
+              begin
+                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(A_VXORPS,S_NO,regacc,regacc,regacc));
+                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(A_VMOVSS,S_NO,regs,regacc,regacc));
+              end
+            else
+              begin
+                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(A_XORPS,S_NO,regacc,regacc));
+                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(A_MOVSS,S_NO,regs,regacc));
+              end;
+            secondpass(left);
+            if not (left.location.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
+              internalerror(2026070810);
+            refacc:=left.location.reference;
+            tcgx86(cg).make_simple_ref(current_asmdata.CurrAsmList,refacc);
+            current_asmdata.CurrAsmList.concat(taicpu.op_reg_ref(movop,S_NO,regacc,refacc));
+            location_reset(location,LOC_VOID,OS_NO);
+            exit;
+          end;
+
+        { --- reduction body: acc := acc + b[i..i+3] (+ *c[i..i+3] for dot) --- }
+        if kind in [vok_reduce_sum,vok_reduce_dot] then
+          begin
+            { load the packed accumulator from its slot (left = tempref) }
+            secondpass(left);
+            if not (left.location.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
+              internalerror(2026070811);
+            refacc:=left.location.reference;
+            tcgx86(cg).make_simple_ref(current_asmdata.CurrAsmList,refacc);
+            regacc:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
+            current_asmdata.CurrAsmList.concat(taicpu.op_ref_reg(movop,S_NO,refacc,regacc));
+            { load the b[i..i+3] window }
+            secondpass(right);
+            if not (right.location.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
+              internalerror(2026070812);
+            refb:=right.location.reference;
+            tcgx86(cg).make_simple_ref(current_asmdata.CurrAsmList,refb);
+            regb:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
+            current_asmdata.CurrAsmList.concat(taicpu.op_ref_reg(movop,S_NO,refb,regb));
+            if kind=vok_reduce_dot then
+              begin
+                { regb := b[i..i+3] * c[i..i+3] }
+                secondpass(third);
+                if not (third.location.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
+                  internalerror(2026070813);
+                refc:=third.location.reference;
+                tcgx86(cg).make_simple_ref(current_asmdata.CurrAsmList,refc);
+                regc:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
+                current_asmdata.CurrAsmList.concat(taicpu.op_ref_reg(movop,S_NO,refc,regc));
+                if avx then
+                  current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(A_VMULPS,S_NO,regc,regb,regb))
+                else
+                  current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(A_MULPS,S_NO,regc,regb));
+              end;
+            { acc := acc + regb }
+            if avx then
+              current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(A_VADDPS,S_NO,regb,regacc,regacc))
+            else
+              current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(A_ADDPS,S_NO,regb,regacc));
+            { store the packed accumulator back to its slot }
+            current_asmdata.CurrAsmList.concat(taicpu.op_reg_ref(movop,S_NO,regacc,refacc));
+            location_reset(location,LOC_VOID,OS_NO);
+            exit;
+          end;
+
+        { --- reduction finish: s := p0+p1+p2+p3 (horizontal sum, runs once) --- }
+        if kind=vok_reduce_finish then
+          begin
+            { load the packed accumulator [p0,p1,p2,p3] from its slot (right) }
+            secondpass(right);
+            if not (right.location.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
+              internalerror(2026070814);
+            refacc:=right.location.reference;
+            tcgx86(cg).make_simple_ref(current_asmdata.CurrAsmList,refacc);
+            regacc:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
+            current_asmdata.CurrAsmList.concat(taicpu.op_ref_reg(movop,S_NO,refacc,regacc));
+            regt:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
+            { SSE2-only horizontal sum via shufps+addps (no SSE3 haddps needed):
+                regt   := [p2,p3,p2,p3]
+                regacc := regacc + regt   -> lane0=p0+p2, lane1=p1+p3
+                regt   := broadcast lane1 (p1+p3)
+                regacc := regacc + regt   (scalar) -> lane0 = p0+p2+p1+p3 }
+            if avx then
+              begin
+                current_asmdata.CurrAsmList.concat(taicpu.op_const_reg_reg_reg(A_VSHUFPS,S_NO,$EE,regacc,regacc,regt));
+                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(A_VADDPS,S_NO,regt,regacc,regacc));
+                current_asmdata.CurrAsmList.concat(taicpu.op_const_reg_reg_reg(A_VSHUFPS,S_NO,$55,regacc,regacc,regt));
+                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(A_VADDSS,S_NO,regt,regacc,regacc));
+              end
+            else
+              begin
+                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(A_MOVAPS,S_NO,regacc,regt));
+                current_asmdata.CurrAsmList.concat(taicpu.op_const_reg_reg(A_SHUFPS,S_NO,$EE,regacc,regt));
+                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(A_ADDPS,S_NO,regt,regacc));
+                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(A_MOVAPS,S_NO,regacc,regt));
+                current_asmdata.CurrAsmList.concat(taicpu.op_const_reg_reg(A_SHUFPS,S_NO,$55,regacc,regt));
+                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(A_ADDSS,S_NO,regt,regacc));
+              end;
+            { store the low lane back into the scalar accumulator s (left) }
+            secondpass(left);
+            cg.a_loadmm_reg_loc(current_asmdata.CurrAsmList,OS_F32,regacc,left.location,mms_movescalar);
+            location_reset(location,LOC_VOID,OS_NO);
+            exit;
+          end;
 
         { --- broadcast: fill the 16-byte splat slot with [s,s,s,s] once --- }
         if kind=vok_broadcast then

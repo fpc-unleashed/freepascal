@@ -2879,7 +2879,23 @@ unit optloop;
           propagate exactly). Double precision is out of scope (follow-up).
         * The proc must not be an inline candidate (the synthetic node is never
           streamed to a PPU), and -- like the neighbouring loop passes -- procs
-          with labels are skipped at the call site in psub. }
+          with labels are skipped at the call site in psub.
+
+      A second, opt-in family this recognizer also drives is single-precision
+      REDUCTION vectorization -- a sum  s:=s+a[i]  or dot product  s:=s+a[i]*b[i]
+      (also the FMA-contracted  s:=fma(a[i],b[i],s)  fast-math produces on
+      FMA-capable targets) accumulated four lanes at a time into a packed
+      accumulator slot (lane 0 seeded with the incoming s), horizontally summed
+      after the loop, with the same scalar tail.  A partial-sum reduction
+      reassociates the FP adds, so -- exactly like -OoREASSOC, whose gating it
+      mirrors -- it fires ONLY under fast-math (and only when -OoVECTORIZE is on).
+      Because OptimizeVectorize runs before OptimizeReassoc in psub and replaces
+      the whole for-node with a block when it fires, REASSOC never re-splits a
+      reduction the vectorizer took (its scalar tail is a while-loop REASSOC
+      ignores): the vectorizer wins with no pass-ordering change.  The accumulator
+      is memory-backed (the node-per-iteration body cannot hold a register across
+      the loop back-edge), so its win is compute-bound; a register accumulator and
+      AVX-256 width / double precision remain follow-ups. }
 
     const
       vect_vecwidth = 4;   { single lanes per 128-bit SSE packed op }
@@ -3040,7 +3056,10 @@ unit optloop;
         hascheck : boolean;
         block, vecbody, scalbody : tnode;
         stat, vstat, sstat : tstatementnode;
-        lotemp, hitemp, splattemp : ttempcreatenode;
+        lotemp, hitemp, splattemp, acctemp : ttempcreatenode;
+        { reduction (single-precision sum / dot product) recognizer outputs }
+        accsym : tabstractvarsym;
+        redlhs, redla, redra, redexpr, redprod : tnode;
         reason : string;
         leftreason, rightreason : string;
         { if-conversion (min/max) recognizer outputs: opA is loaded into the
@@ -3053,6 +3072,17 @@ unit optloop;
         mminl : tinlinenode;
         splata, splatb : ttempcreatenode;
         windowa, windowb : tnode;
+        redp1, redp2, redp3 : tcallparanode;
+
+      { true if x, after peeling typeconv wrappers, is a plain read of the
+        reduction accumulator (used to spot the addend of an FMA-contracted dot) }
+      function red_is_acc(x : tnode) : boolean;
+        var s : tnode;
+        begin
+          s:=rangeelim_skip_typeconv(x);
+          red_is_acc:=assigned(s) and (s.nodetype=loadn) and
+                      (tloadnode(s).symtableentry=tsym(accsym));
+        end;
 
       { Runs the full OptimizeVectorize recognizer over the current for-loop and
         returns '' when the loop can be vectorized (also filling in counter,
@@ -3108,18 +3138,133 @@ unit optloop;
           if hascheck then
             exit('loop body contains range/overflow-checked code');
 
-          { LHS: a single-precision dynamic-array element  a[i] }
-          result:=vect_elem_reason(assign.left,counter,avec);
-          if result<>'' then
-            exit('destination '+result);
-
-          { RHS: one of the recognized element-wise shapes.  Defaults for the
-            fields the builder reads: }
+          { Defaults for the fields the builder reads: }
           bvec:=nil; cvec:=nil; scalarnode:=nil; scalarleft:=false;
           vecop:=OP_NONE;
           mmA_vec:=nil; mmB_vec:=nil; mmA_scalar:=nil; mmB_scalar:=nil;
           ismaxop:=false;
 
+          { REDUCTION shape:  s := s + b[i]  (sum)  or  s := s + b[i]*c[i]  (dot
+            product), recognized before the element-wise store shapes because its
+            LHS is a plain scalar, not an array element.  A packed partial-sum
+            reduction reassociates the floating-point additions (four lanes summed
+            independently, horizontally combined after the loop), so -- exactly
+            like the -OoREASSOC pass it mirrors -- it may only fire under fast-math.
+            Since OptimizeVectorize runs before OptimizeReassoc in psub and, when it
+            fires, replaces the whole for-node with a block, REASSOC never sees a
+            reduction the vectorizer took: the vectorizer wins with no ordering
+            change (and the scalar tail is a while-loop, which REASSOC ignores). }
+          redlhs:=rangeelim_skip_typeconv(assign.left);
+          if assigned(redlhs) and (redlhs.nodetype=loadn) and
+             assigned(redlhs.resultdef) and is_single(redlhs.resultdef) then
+            begin
+              { the accumulator must be a simple non-aliased (non-global, non-
+                address-taken, non-volatile) local/value-param single scalar }
+              accsym:=rangeelim_simple_var(redlhs);
+              if not assigned(accsym) then
+                exit('reduction accumulator is not a simple non-aliased local single scalar');
+              if tloadnode(redlhs).symtableentry=tsym(counter) then
+                exit('reduction accumulator is the loop counter');
+              { reassociation gate, identical to -OoREASSOC for an FP accumulator }
+              if not(cs_opt_fastmath in current_settings.optimizerswitches) then
+                exit('single-precision reduction needs fast-math (-OoFASTMATH) to vectorize into a partial-sum accumulator');
+              rhs:=rangeelim_skip_typeconv(assign.right);
+              if not assigned(rhs) then
+                exit('reduction right-hand side is missing');
+              if (rhs.nodetype=inlinen) and (tinlinenode(rhs).inlinenumber=in_fma_single) then
+                begin
+                  { FMA-contracted dot product:  s := fma(x,y,z) = x*y + z, produced
+                    by -OoFASTMATH's a*b+c -> fma() contraction on FMA-capable
+                    targets.  Exactly one of the three operands must be a read of the
+                    accumulator (the addend z); the other two must be array elements
+                    b[i], c[i] of the loop counter.  fastmath already licenses the
+                    contraction's single-vs-double-rounding difference, so emitting
+                    the packed reduction as mulps+addps is within the same license. }
+                  redp1:=tcallparanode(tinlinenode(rhs).left);
+                  if not assigned(redp1) or (redp1.nodetype<>callparan) then
+                    exit('FMA reduction operand list is malformed');
+                  redp2:=tcallparanode(redp1.nextpara);
+                  if not assigned(redp2) or (redp2.nodetype<>callparan) then
+                    exit('FMA reduction operand list is malformed');
+                  redp3:=tcallparanode(redp2.nextpara);
+                  if not assigned(redp3) or (redp3.nodetype<>callparan) or assigned(redp3.nextpara) then
+                    exit('FMA reduction is not a plain three-operand fma');
+                  bvec:=nil; cvec:=nil;
+                  if red_is_acc(redp1.paravalue) then
+                    begin
+                      leftreason:=vect_elem_reason(redp2.paravalue,counter,bvec);
+                      rightreason:=vect_elem_reason(redp3.paravalue,counter,cvec);
+                    end
+                  else if red_is_acc(redp2.paravalue) then
+                    begin
+                      leftreason:=vect_elem_reason(redp1.paravalue,counter,bvec);
+                      rightreason:=vect_elem_reason(redp3.paravalue,counter,cvec);
+                    end
+                  else if red_is_acc(redp3.paravalue) then
+                    begin
+                      leftreason:=vect_elem_reason(redp1.paravalue,counter,bvec);
+                      rightreason:=vect_elem_reason(redp2.paravalue,counter,cvec);
+                    end
+                  else
+                    exit('FMA reduction has no accumulator operand (addend)');
+                  if leftreason<>'' then
+                    exit('FMA dot-product factor '+leftreason);
+                  if rightreason<>'' then
+                    exit('FMA dot-product factor '+rightreason);
+                  vshape:=vok_reduce_dot;
+                end
+              else
+                begin
+                  { RHS must be  s + expr  or  expr + s }
+                  if rhs.nodetype<>addn then
+                    exit('reduction right-hand side is not an addition or fma into the accumulator');
+                  redla:=rangeelim_skip_typeconv(taddnode(rhs).left);
+                  redra:=rangeelim_skip_typeconv(taddnode(rhs).right);
+                  if assigned(redla) and (redla.nodetype=loadn) and (tloadnode(redla).symtableentry=tsym(accsym)) then
+                    redexpr:=taddnode(rhs).right
+                  else if assigned(redra) and (redra.nodetype=loadn) and (tloadnode(redra).symtableentry=tsym(accsym)) then
+                    redexpr:=taddnode(rhs).left
+                  else
+                    exit('the reduction addition does not have the accumulator as one operand');
+                  { the addend must be computed in single precision so the packed op
+                    keeps the scalar loop's exact per-element precision }
+                  if not assigned(redexpr.resultdef) or not is_single(redexpr.resultdef) then
+                    exit('reduction addend is not computed in single precision');
+                  redprod:=rangeelim_skip_typeconv(redexpr);
+                  if vect_elem_reason(redexpr,counter,bvec)='' then
+                    { s := s + b[i] }
+                    vshape:=vok_reduce_sum
+                  else if assigned(redprod) and (redprod.nodetype=muln) then
+                    begin
+                      { s := s + b[i]*c[i] : both factors array elements of i }
+                      leftreason:=vect_elem_reason(taddnode(redprod).left,counter,bvec);
+                      rightreason:=vect_elem_reason(taddnode(redprod).right,counter,cvec);
+                      if (leftreason<>'') then
+                        exit('dot-product first factor '+leftreason);
+                      if (rightreason<>'') then
+                        exit('dot-product second factor '+rightreason);
+                      vshape:=vok_reduce_dot;
+                    end
+                  else
+                    exit('reduction addend is neither an array element nor a product of two array elements of the loop counter');
+                end;
+              { leave provably tiny constant-trip loops to the scalar path }
+              { (matches REASSOC: below 2*VL there is no packed win) }
+              { DFA counter check below is shared with the store shapes. }
+              CalcDefSum(forn.t2);
+              if not assigned(forn.t2.optinfo) or not assigned(forn.left.optinfo) then
+                exit('data-flow information is unavailable for the loop body');
+              if DynSetIn(forn.t2.optinfo^.defsum,forn.left.optinfo^.index) then
+                exit('loop counter is modified inside the loop body');
+              exit('');
+            end;
+
+          { LHS: a single-precision dynamic-array element  a[i] }
+          result:=vect_elem_reason(assign.left,counter,avec);
+          if result<>'' then
+            exit('destination '+result);
+
+          { RHS: one of the recognized element-wise shapes. }
           rhs:=rangeelim_skip_typeconv(assign.right);
 
           { if-conversion shape (-OoIFCONVERT):  a[i] := max/min(u,v)  where FPC's
@@ -3262,6 +3407,12 @@ unit optloop;
         mmB_scalar:=nil;
         ismaxop:=false;
         mminl:=nil;
+        accsym:=nil;
+        redlhs:=nil;
+        redla:=nil;
+        redra:=nil;
+        redexpr:=nil;
+        redprod:=nil;
 
         { recognize; on failure report the reason and leave codegen untouched }
         reason:=vectorize_reason;
@@ -3288,6 +3439,82 @@ unit optloop;
         addstatement(stat,cassignmentnode.create(
           cloadnode.create(tsym(counter),counter.owner),
           ctemprefnode.create(lotemp)));
+
+        { ---- REDUCTION build (sum / dot product) ---- }
+        if vshape in [vok_reduce_sum,vok_reduce_dot] then
+          begin
+            { 16-byte packed accumulator slot; allowreg=false so the body can
+              movups-load/store it each iteration (a register cannot persist
+              across the node-per-iteration vector loop) }
+            acctemp:=ctempcreatenode.create(
+              tarraydef.getreusable_vector(s32floattype,vect_vecwidth),
+              vect_vecwidth*s32floattype.size,tt_persistent,false);
+            addstatement(stat,acctemp);
+
+            { acc := [s,0,0,0]   (lane 0 keeps the incoming scalar value of s) }
+            addstatement(stat,cvectoropnode.create_reduce_init(
+              ctemprefnode.create(acctemp),
+              cloadnode.create(tsym(accsym),accsym.owner)));
+
+            { vector loop:  while i<=hi-(VL-1) do begin acc:=acc+window; i:=i+VL end }
+            vecbody:=internalstatements(vstat);
+            if vshape=vok_reduce_dot then
+              addstatement(vstat,cvectoropnode.create_reduce(
+                ctemprefnode.create(acctemp),bvec.getcopy,cvec.getcopy,true,vect_vecwidth))
+            else
+              addstatement(vstat,cvectoropnode.create_reduce(
+                ctemprefnode.create(acctemp),bvec.getcopy,nil,false,vect_vecwidth));
+            addstatement(vstat,cassignmentnode.create(
+              cloadnode.create(tsym(counter),counter.owner),
+              caddnode.create(addn,cloadnode.create(tsym(counter),counter.owner),
+                cordconstnode.create(vect_vecwidth,ctype,false))));
+            addstatement(stat,cwhilerepeatnode.create(
+              caddnode.create(lten,cloadnode.create(tsym(counter),counter.owner),
+                caddnode.create(subn,ctemprefnode.create(hitemp),
+                  cordconstnode.create(vect_vecwidth-1,ctype,false))),
+              vecbody,true,false));
+
+            { finish:  s := p0+p1+p2+p3  (horizontal sum of the packed acc).
+              The horizontal sum is stored into a memory-backed single temp and
+              then written to s with an ordinary assignment: a backend node's
+              store is not modelled by DFA / the register allocator, so -- like the
+              broadcast/splat slot -- it must target a memory temp, and the real
+              def of s stays a plain assignment the allocator understands. }
+            splattemp:=ctempcreatenode.create(s32floattype,s32floattype.size,tt_persistent,false);
+            addstatement(stat,splattemp);
+            addstatement(stat,cvectoropnode.create_reduce_finish(
+              ctemprefnode.create(splattemp),
+              ctemprefnode.create(acctemp),vect_vecwidth));
+            addstatement(stat,cassignmentnode.create(
+              cloadnode.create(tsym(accsym),accsym.owner),
+              ctemprefnode.create(splattemp)));
+
+            { scalar remainder:  while i<=hi do begin <original body>; i:=i+1 end,
+              which continues accumulating into s from the horizontally-summed
+              partial value }
+            scalbody:=internalstatements(sstat);
+            addstatement(sstat,forn.t2.getcopy);
+            addstatement(sstat,cassignmentnode.create(
+              cloadnode.create(tsym(counter),counter.owner),
+              caddnode.create(addn,cloadnode.create(tsym(counter),counter.owner),
+                cordconstnode.create(1,ctype,false))));
+            addstatement(stat,cwhilerepeatnode.create(
+              caddnode.create(lten,cloadnode.create(tsym(counter),counter.owner),
+                ctemprefnode.create(hitemp)),
+              scalbody,true,false));
+
+            addstatement(stat,ctempdeletenode.create(lotemp));
+            addstatement(stat,ctempdeletenode.create(hitemp));
+            addstatement(stat,ctempdeletenode.create(acctemp));
+            addstatement(stat,ctempdeletenode.create(splattemp));
+
+            do_firstpass(block);
+            MessagePos1(forn.fileinfo,cg_n_loop_reduction_vectorized,tostr(vect_vecwidth));
+            forn.free;
+            n:=block;
+            changed:=true;
+            exit;
+          end;
 
         { scalar-broadcast shape: allocate a 16-byte slot and fill it ONCE with
           [s,s,s,s] before the vector loop (hoisted), so the packed op reads the
