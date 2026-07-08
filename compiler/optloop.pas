@@ -5023,6 +5023,26 @@ unit optloop;
       end;
 
 
+    function reassoc_reset_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      { Force a full re-typecheck + firstpass of every node in a substituted body
+        copy.  reassoc_subst_cb replaces a counter read  i  with  (i+delta)  inside
+        an expression copied wholesale from the already-firstpassed loop body; every
+        ANCESTOR of that read (e.g. the muln of  i*2 ) still carries a cached
+        resultdef and the tnf_pass1_done transient flag copied from the original.
+        firstpass() short-circuits on tnf_pass1_done and typecheck short-circuits on
+        a non-nil resultdef, so those ancestors would keep codegen/type decisions
+        keyed to the OLD child -- dropping the +delta (i*2 stayed i*2) or, when the
+        multiply is not a power of two, tripping an operand-size internalerror.
+        Clearing resultdef + the pass1/error flags on the whole subtree makes the
+        enclosing block's do_firstpass rebuild it consistently. }
+      begin
+        result:=fen_false;
+        n.resultdef:=nil;
+        exclude(n.transientflags,tnf_pass1_done);
+        exclude(n.transientflags,tnf_error);
+      end;
+
+
     type
       treassoccontext = object
         changed : boolean;
@@ -5185,6 +5205,12 @@ unit optloop;
                 subst.delta:=j;
                 subst.ctype:=ctype;
                 foreachnodestatic(pm_postprocess,exprk,@reassoc_subst_cb,@subst);
+                { the copy was firstpassed as part of the original body; after
+                  splicing (i+delta) into it the enclosing operator nodes hold
+                  stale cached resultdefs/pass1 state -- reset the whole expression
+                  so do_firstpass(block) below rebuilds it consistently (see
+                  reassoc_reset_cb) }
+                foreachnodestatic(exprk,@reassoc_reset_cb,nil);
               end;
             addstatement(mstat,cassignmentnode.create(accref,
               caddnode.create(addn,accref.getcopy,exprk)));
