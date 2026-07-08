@@ -160,6 +160,7 @@ implementation
        opttail,
        optcse,
        optloop,
+       optsra,
        optconstprop,
        optdeadstore,
        optloadmodifystore,
@@ -1192,6 +1193,18 @@ implementation
        if (cs_opt_tailrecursion in current_settings.optimizerswitches) and
          (pi_is_recursive in flags) then
          do_opttail(code,procdef);
+
+       { scalar replacement of aggregates: split a non-escaping local record
+         variable into one scalar temporary per field and rewrite every
+         rec.field access to its temp, so the fields become plain scalar locals
+         the passes below (constant propagation, DFA, dead-store elimination)
+         handle in registers instead of through the stack frame. Run first so
+         those passes see the synthesized scalar temps; needs no DFA (its checks
+         are a structural escape walk). Skipped for routines with inline
+         assembler (the record's storage may be referenced opaquely). }
+       if (cs_opt_sra in current_settings.optimizerswitches) and
+         ((flags*[pi_has_assembler_block,pi_is_assembler])=[]) then
+         OptimizeSRA(code,procdef);
 
        if cs_opt_constant_propagate in current_settings.optimizerswitches then
          begin

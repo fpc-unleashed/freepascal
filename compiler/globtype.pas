@@ -451,7 +451,14 @@ interface
            carry the window in a rotating set of scalar temporaries and load only
            the leading edge B[i+maxoff] each iteration instead of re-loading every
            offset (the classic stencil / 1-D convolution sliding window) }
-         cs_opt_predcom
+         cs_opt_predcom,
+         { scalar replacement of aggregates (gcc -ftree-sra): split a local
+           record variable whose address never escapes into one independent
+           scalar temporary per field and rewrite every rec.field access to its
+           temp, so the fields live in registers and feed constant propagation,
+           DFA and dead-store elimination instead of round-tripping through the
+           stack frame }
+         cs_opt_sra
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -528,7 +535,7 @@ interface
          'UNUSEDPARA','CONSTS','FORLOOP','LICM','LOOPUNSWITCH','BITIDIOM',
          'RANGEELIM','VECTORIZE','JUMPTHREAD','LOOPDISTPAT',
          'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC','UNROLLJAM',
-         'PREDCOM'
+         'PREDCOM','SRA'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
@@ -563,7 +570,7 @@ interface
        genericlevel3optimizerswitches = [cs_opt_level3,cs_opt_constant_propagate,cs_opt_nodedfa,cs_opt_loopstrength
                                          {$ifndef llvm},cs_opt_use_load_modify_store{$endif},
                                          cs_opt_loopunroll,cs_opt_forloop];
-       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert,cs_opt_reassoc,cs_opt_unrolljam,cs_opt_predcom];
+       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert,cs_opt_reassoc,cs_opt_unrolljam,cs_opt_predcom,cs_opt_sra];
 
        { whole program optimizations whose information generation requires
          information from all loaded units
