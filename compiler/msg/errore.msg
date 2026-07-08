@@ -3052,6 +3052,19 @@ cg_n_loop_not_ifconverted=06076_N_Loop not if-converted: $1
 % did not widen its min/max activation body. The reason is given as \var{$1}. This
 % diagnostic is only emitted while the pass is enabled and is shown at note
 % verbosity (\var{-vn}).
+cg_n_loop_reassociated=06077_N_Reduction loop split into $1 partial accumulators
+% The reduction-reassociation pass (\var{-O4 -OoREASSOC}) recognized a sum / dot-
+% product reduction loop and split its single serial accumulator into \var{$1}
+% independent partial accumulators combined after the loop, breaking the loop-
+% carried dependency chain. For a floating-point accumulator this only fires under
+% fast-math (\var{-OoFASTMATH}); integer reductions are always exact. This
+% diagnostic is only emitted while the pass is enabled and is shown at note
+% verbosity (\var{-vn}).
+cg_n_loop_not_reassociated=06078_N_Reduction loop not reassociated: $1
+% The reduction-reassociation pass (\var{-O4 -OoREASSOC}) inspected a counted
+% for-loop but did not split it. The reason is given as \var{$1}. This diagnostic
+% is only emitted while the pass is enabled and is shown at note verbosity
+% (\var{-vn}).
 %
 % \end{description}
 # EndOfTeX

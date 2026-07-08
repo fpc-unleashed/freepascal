@@ -429,7 +429,15 @@ interface
            one-sided clamp, an element-wise max/min of two arrays) and widen it
            across SIMD lanes to a packed maxps/minps main loop plus a scalar tail,
            so the data-dependent per-element branch disappears entirely }
-         cs_opt_ifconvert
+         cs_opt_ifconvert,
+         { floating-point reduction reassociation (gcc -freassoc / LLVM reduction
+           reassociation): split the single serial accumulator of a sum / dot-
+           product reduction loop into several independent partial accumulators
+           combined after the loop, breaking the loop-carried dependency chain so
+           the per-iteration adds pipeline. Only acts on FP accumulators when
+           fast-math is active (reassociating FP rounding otherwise is wrong);
+           integer reductions are always exact }
+         cs_opt_reassoc
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -505,7 +513,7 @@ interface
          'DEADSTORE','FORCENOSTACKFRAME','USELOADMODIFYSTORE',
          'UNUSEDPARA','CONSTS','FORLOOP','LICM','LOOPUNSWITCH','BITIDIOM',
          'RANGEELIM','VECTORIZE','JUMPTHREAD','LOOPDISTPAT',
-         'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT'
+         'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
@@ -540,7 +548,7 @@ interface
        genericlevel3optimizerswitches = [cs_opt_level3,cs_opt_constant_propagate,cs_opt_nodedfa,cs_opt_loopstrength
                                          {$ifndef llvm},cs_opt_use_load_modify_store{$endif},
                                          cs_opt_loopunroll,cs_opt_forloop];
-       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert];
+       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert,cs_opt_reassoc];
 
        { whole program optimizations whose information generation requires
          information from all loaded units
