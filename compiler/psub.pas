@@ -1286,6 +1286,19 @@ implementation
              and not(pi_has_label in flags) then
              RedoDFA:=OptimizeVectorize(code) or RedoDFA;
 
+           { loop-distribution pattern idiom recognition: lower a counted
+             for-loop whose whole body is a contiguous fill/zero/copy over an
+             array region into a FillChar/FillWord/FillDWord/FillQWord/Move block
+             primitive. Run before strength reduction (which would rewrite the
+             a[i] index nodes into pointer walks the recognizer can't match) and
+             before the for->while lowering below (it matches on for-nodes).
+             Needs valid DFA to prove the counter is not modified in the body;
+             skips procedures with labels like the loop passes here so control
+             cannot enter the rewritten loop mid-stream. }
+           if (cs_opt_loopdistpat in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizeLoopDistPat(code) or RedoDFA;
+
            if RedoDFA then
              begin
                dfabuilder.redodfainfo(code);

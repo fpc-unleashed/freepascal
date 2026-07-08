@@ -2809,7 +2809,7 @@ sym_e_wasm_ref_types_cannot_be_used_in_records=05101_E_WebAssembly reference typ
 #
 # Codegenerator
 #
-# 06066 is the last used one
+# 06068 is the last used one
 #
 % \section{Code generator messages}
 % This section lists all messages that can be displayed if the code
@@ -2993,6 +2993,18 @@ cg_n_loop_not_vectorized=06066_N_Loop not autovectorized: $1
 % for-loop but fell back to scalar code. The reason it could not vectorize the
 % loop is given as \var{$1}. This diagnostic is only emitted while the
 % vectorize pass is enabled and is shown at note verbosity (\var{-vn}).
+cg_n_loop_idiom_lowered=06067_N_Loop lowered to block memory primitive ($1)
+% The loop-distribution pattern pass (\var{-O4 -OoLOOPDISTPAT}) recognized this
+% for-loop as a contiguous fill/zero/copy over an array region and replaced its
+% per-element scalar body with the block primitive named in \var{$1}
+% (\var{FillChar}/\var{FillWord}/\var{FillDWord}/\var{FillQWord}/\var{Move}).
+% This diagnostic is only emitted while the pass is enabled and is shown at note
+% verbosity (\var{-vn}).
+cg_n_loop_not_lowered=06068_N_Loop not lowered to a block memory primitive: $1
+% The loop-distribution pattern pass (\var{-O4 -OoLOOPDISTPAT}) inspected this
+% for-loop but left its scalar body in place. The reason it could not lower the
+% loop is given as \var{$1}. This diagnostic is only emitted while the pass is
+% enabled and is shown at note verbosity (\var{-vn}).
 %
 % \end{description}
 # EndOfTeX
