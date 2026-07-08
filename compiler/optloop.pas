@@ -43,6 +43,7 @@ unit optloop;
     function OptimizeJumpThread(node : tnode) : boolean;
     function OptimizeLoopDistPat(node : tnode) : boolean;
     function OptimizeLoopPeel(node : tnode) : boolean;
+    function OptimizeLoopSplit(node : tnode) : boolean;
 
   implementation
 
@@ -3999,6 +4000,339 @@ unit optloop;
         { postorder so an inner loop is peeled before its enclosing loop's body
           is duplicated (the inner peel shrinks/enlarges the copies consistently) }
         foreachnodestatic(pm_postprocess,node,@looppeel_processloop_cb,@ctx);
+        Result:=ctx.changed;
+      end;
+
+
+{*****************************************************************************
+                                Loop splitting
+*****************************************************************************}
+
+    { A node-tree port of gcc's -fsplit-loops.  When the whole body of a counted
+      for-loop is a single conditional whose predicate compares the induction
+      variable against a loop-invariant bound m -- if i < m then A else B and its
+      relatives -- the truth value flips exactly once as i sweeps the range, so
+      the iteration space splits cleanly at the crossover:
+
+          for i := lo to hi do          -->   c := clamp(crossover, lo, hi+1);
+            if i < m then A else B             for i := lo    to c-1 do A;
+                                               for i := c     to hi  do B;
+
+      Both resulting bodies are branch-free (the per-iteration compare is gone),
+      the interior loop -- the overwhelming majority of iterations, e.g. the
+      non-border rows of a padded convolution -- becomes a uniform kernel a later
+      pass can vectorize, and only the short border loop keeps the boundary work.
+
+      This is distinct from loop unswitching (whose condition is invariant in
+      *both* operands and never changes across iterations): here the IV side
+      *crosses* the bound exactly once, so unswitching cannot fire.
+
+      Soundness (a wrong split is a miscompile):
+        * ascending unit-step loop, both bounds present; the counter is a simple
+          non-aliased signed 32-bit local / value param, DFA-proven unmodified in
+          the body (32-bit so the widened int64 crossover math -- m+-1, hi+1 --
+          cannot overflow);
+        * the body is exactly one if-statement whose condition is i <rel> m with
+          rel in < <= > >= (monotone in i; = and <> are rejected) and m either an
+          ordinal constant or a simple non-aliased ordinal (<=32-bit) local /
+          value param DFA-proven unmodified in the body (so evaluating it once
+          before the loops equals evaluating it each iteration, and it cannot
+          trap);
+        * neither branch contains break/continue/goto/label/exit/raise: a break
+          in one sub-loop would leave the other sub-loop still running, so such
+          shapes are declined;
+        * not TP/Mac mode, not an inline candidate, not -Os, and range/overflow
+          checking off (kept conservative; the branch bodies keep their own
+          checks in the copies).
+
+      The crossover is clamped into [lo, hi+1] in a widened int64 domain and each
+      sub-loop is emitted under an `if lo<=c-1` / `if c<=hi` guard, which both
+      skips the statically-empty sub-range and keeps the narrowing of c back to
+      the 32-bit counter type in range.  Because the two loops tile [lo, hi]
+      contiguously, the counter is left with exactly the value a single for-loop
+      would leave (hi when the loop ran, unchanged when it did not). }
+
+    const
+      loopsplit_body_max = 200;   { weighted-node cap on the body we restructure }
+
+    type
+      tloopsplitcontext = object
+        changed : boolean;
+        procedure processloop(var n : tnode);
+      end;
+
+
+    { swap a relational operator for the case  m <op> i  ==  i <swap> m }
+    function loopsplit_swap_relop(o : tnodetype) : tnodetype;
+      begin
+        case o of
+          ltn:  result:=gtn;
+          lten: result:=gten;
+          gtn:  result:=ltn;
+          gten: result:=lten;
+          else  result:=o;
+        end;
+      end;
+
+
+    { True if m is a valid loop-invariant bound for the split: an ordinal
+      constant, or a simple non-aliased ordinal (<=32-bit) local/value-param load
+      that is neither the counter nor assigned anywhere in the loop body. }
+    function loopsplit_invariant_bound(m : tnode; counter : tabstractvarsym; body : tnode) : boolean;
+      var
+        root : tnode;
+        sym : tabstractvarsym;
+      begin
+        result:=false;
+        root:=rangeelim_skip_typeconv(m);
+        if not assigned(root) then
+          exit;
+        if root.nodetype=ordconstn then
+          exit(true);
+        sym:=rangeelim_simple_var(root);
+        if not assigned(sym) or (sym=counter) then
+          exit;
+        if not assigned(root.resultdef) or not is_ordinal(root.resultdef) or (root.resultdef.size>4) then
+          exit;
+        { DFA: m must not be assigned in the loop body }
+        if not assigned(body.optinfo) or not assigned(root.optinfo) then
+          exit;
+        if DynSetIn(body.optinfo^.defsum,root.optinfo^.index) then
+          exit;
+        result:=true;
+      end;
+
+
+    procedure tloopsplitcontext.processloop(var n : tnode);
+      var
+        forn : tfornode;
+        counter : tabstractvarsym;
+        ctype : tdef;
+        reason : string;
+        stmt : tnode;
+        theif : tifnode;
+        cond : tnode;
+        op : tnodetype;
+        mexpr : tnode;
+        lowthen : boolean;   { low sub-range runs the then-branch }
+        crossplus : longint; { crossover = m + crossplus }
+        thenb, elseb, lowbody, highbody : tnode;
+        block : tnode;
+        stat : tstatementnode;
+        lotemp, hitemp : ttempcreatenode;
+        crosstemp : ttempcreatenode;
+        loop1, loop2 : tnode;
+
+      { Recognizer: '' when the loop can be split (filling counter, ctype, theif,
+        op, mexpr, lowthen, crossplus), else the first failed check's reason. }
+      function loopsplit_reason : string;
+        var
+          l, r : tnode;
+        begin
+          result:='';
+
+          if cs_opt_size in current_settings.optimizerswitches then
+            exit('optimizing for size (-Os)');
+          if po_inline in current_procinfo.procdef.procoptions then
+            exit('enclosing routine is an inline candidate');
+          if [m_tp7,m_mac]*current_settings.modeswitches<>[] then
+            exit('TP/Mac mode allows assignment to the loop variable');
+          if ([cs_check_range,cs_check_overflow]*current_settings.localswitches)<>[] then
+            exit('range/overflow checking is enabled (-Cr/-Co)');
+
+          if lnf_backward in forn.loopflags then
+            exit('descending (downto) loop');
+          if assigned(forn.loopstep) then
+            exit('non-unit loop step');
+
+          counter:=rangeelim_simple_var(forn.left);
+          if not assigned(counter) then
+            exit('loop counter is not a simple non-aliased variable');
+          ctype:=forn.left.resultdef;
+          if not assigned(ctype) or (ctype.typ<>orddef) then
+            exit('loop counter is not an ordinal type');
+          if not is_signed(ctype) or (ctype.size<>4) then
+            exit('loop counter is not a signed 32-bit integer');
+
+          stmt:=vect_body_single_stmt(forn.t2);
+          if not assigned(stmt) then
+            exit('loop body is empty or has multiple statements');
+          if stmt.nodetype<>ifn then
+            exit('loop body is not a single if-statement');
+          theif:=tifnode(stmt);
+          if not assigned(theif.right) and not assigned(theif.t1) then
+            exit('if-statement has no branches');
+
+          if foreachnodestatic(forn.t2,@checkcontrollflowstatements,nil) then
+            exit('loop body contains break/continue/goto/label/exit/raise');
+
+          { the condition must be  i <rel> m  or  m <rel> i, rel monotone in i }
+          cond:=theif.left;
+          if not assigned(cond) or not(cond.nodetype in [ltn,lten,gtn,gten]) then
+            exit('if condition is not a monotone <,<=,>,>= comparison');
+          if ([nf_write,nf_modify]*cond.flags)<>[] then
+            exit('if condition has side effects');
+          l:=taddnode(cond).left;
+          r:=taddnode(cond).right;
+
+          { data-flow for the invariance test below }
+          CalcDefSum(forn.t2);
+          if not assigned(forn.t2.optinfo) or not assigned(forn.left.optinfo) then
+            exit('data-flow information is unavailable for the loop body');
+          if DynSetIn(forn.t2.optinfo^.defsum,forn.left.optinfo^.index) then
+            exit('loop counter is modified inside the loop body');
+
+          if (rangeelim_simple_var(rangeelim_skip_typeconv(l))=counter) and
+             loopsplit_invariant_bound(r,counter,forn.t2) then
+            begin
+              op:=cond.nodetype;   { i <op> m }
+              mexpr:=r;
+            end
+          else if (rangeelim_simple_var(rangeelim_skip_typeconv(r))=counter) and
+                  loopsplit_invariant_bound(l,counter,forn.t2) then
+            begin
+              op:=loopsplit_swap_relop(cond.nodetype);   { m <op0> i  ==  i <swap> m }
+              mexpr:=l;
+            end
+          else
+            exit('condition is not induction-variable vs loop-invariant bound');
+
+          { crossover = m (+1 for <= / >) ; low sub-range runs the then-branch
+            for the "true for small i" relations (< , <=) }
+          case op of
+            ltn:  begin lowthen:=true;  crossplus:=0; end;
+            lten: begin lowthen:=true;  crossplus:=1; end;
+            gtn:  begin lowthen:=false; crossplus:=1; end;
+            gten: begin lowthen:=false; crossplus:=0; end;
+            else
+              exit('condition is not a monotone comparison');
+          end;
+
+          if node_count_weighted(forn.t2,loopsplit_body_max+1)>loopsplit_body_max then
+            exit('loop body is too large to split');
+        end;
+
+      { widen a counter-domain expression to the signed pointer int the crossover
+        arithmetic runs in }
+      function widen(nn : tnode) : tnode;
+        begin
+          result:=ctypeconvnode.create_internal(nn,sizesinttype);
+        end;
+
+      begin
+        forn:=tfornode(n);
+
+        { pre-initialize recognizer outputs (nested-function DFA, see the note in
+          tdistpatcontext.processloop) }
+        counter:=nil;
+        ctype:=nil;
+        theif:=nil;
+        op:=ltn;
+        mexpr:=nil;
+        lowthen:=true;
+        crossplus:=0;
+
+        reason:=loopsplit_reason;
+        if reason<>'' then
+          begin
+            MessagePos1(forn.fileinfo,cg_n_loop_not_split,reason);
+            exit;
+          end;
+
+        { steal the two branches; the emptied if is freed with the for-node }
+        thenb:=theif.right; theif.right:=nil;
+        elseb:=theif.t1;    theif.t1:=nil;
+        if lowthen then
+          begin lowbody:=thenb; highbody:=elseb; end
+        else
+          begin lowbody:=elseb; highbody:=thenb; end;
+        if not assigned(lowbody)  then lowbody:=cnothingnode.create;
+        if not assigned(highbody) then highbody:=cnothingnode.create;
+
+        { ---- build the replacement block ---- }
+        block:=internalstatements(stat);
+
+        { lo / hi evaluated exactly once, as the original for-loop does }
+        lotemp:=ctempcreatenode.create(ctype,ctype.size,tt_persistent,true);
+        addstatement(stat,lotemp);
+        addstatement(stat,cassignmentnode.create(ctemprefnode.create(lotemp),forn.right.getcopy));
+        hitemp:=ctempcreatenode.create(ctype,ctype.size,tt_persistent,true);
+        addstatement(stat,hitemp);
+        addstatement(stat,cassignmentnode.create(ctemprefnode.create(hitemp),forn.t1.getcopy));
+
+        { crossover in a widened int64 domain: c := m [+ crossplus] }
+        crosstemp:=ctempcreatenode.create(sizesinttype,sizesinttype.size,tt_persistent,true);
+        addstatement(stat,crosstemp);
+        addstatement(stat,cassignmentnode.create(ctemprefnode.create(crosstemp),
+          caddnode.create(addn,widen(mexpr.getcopy),
+            cordconstnode.create(crossplus,sizesinttype,false))));
+
+        { clamp c into [lo, hi+1] so both narrowings below stay in range }
+        addstatement(stat,cifnode.create_internal(
+          caddnode.create(ltn,ctemprefnode.create(crosstemp),widen(ctemprefnode.create(lotemp))),
+          cassignmentnode.create(ctemprefnode.create(crosstemp),widen(ctemprefnode.create(lotemp))),
+          nil));
+        addstatement(stat,cifnode.create_internal(
+          caddnode.create(gtn,ctemprefnode.create(crosstemp),
+            caddnode.create(addn,widen(ctemprefnode.create(hitemp)),cordconstnode.create(1,sizesinttype,false))),
+          cassignmentnode.create(ctemprefnode.create(crosstemp),
+            caddnode.create(addn,widen(ctemprefnode.create(hitemp)),cordconstnode.create(1,sizesinttype,false))),
+          nil));
+
+        { low loop:  if lo <= c-1 then for i := lo to (c-1) do lowbody }
+        loop1:=cfornode.create(forn.left.getcopy,
+          ctemprefnode.create(lotemp),
+          ctypeconvnode.create_internal(
+            caddnode.create(subn,ctemprefnode.create(crosstemp),cordconstnode.create(1,sizesinttype,false)),
+            ctype),
+          lowbody,false);
+        addstatement(stat,cifnode.create_internal(
+          caddnode.create(lten,widen(ctemprefnode.create(lotemp)),
+            caddnode.create(subn,ctemprefnode.create(crosstemp),cordconstnode.create(1,sizesinttype,false))),
+          loop1,nil));
+
+        { high loop:  if c <= hi then for i := c to hi do highbody }
+        loop2:=cfornode.create(forn.left.getcopy,
+          ctypeconvnode.create_internal(ctemprefnode.create(crosstemp),ctype),
+          ctemprefnode.create(hitemp),
+          highbody,false);
+        addstatement(stat,cifnode.create_internal(
+          caddnode.create(lten,ctemprefnode.create(crosstemp),widen(ctemprefnode.create(hitemp))),
+          loop2,nil));
+
+        addstatement(stat,ctempdeletenode.create(lotemp));
+        addstatement(stat,ctempdeletenode.create(hitemp));
+        addstatement(stat,ctempdeletenode.create(crosstemp));
+
+        do_firstpass(block);
+        MessagePos1(forn.fileinfo,cg_n_loop_split,'');
+        forn.free;
+        n:=block;
+        changed:=true;
+      end;
+
+
+    function loopsplit_processloop_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      begin
+        result:=fen_false;
+        if n.nodetype=forn then
+          begin
+            tloopsplitcontext(arg^).processloop(n);
+            result:=fen_norecurse_false;
+          end;
+      end;
+
+
+    function OptimizeLoopSplit(node : tnode) : boolean;
+      var
+        ctx : tloopsplitcontext;
+      begin
+        Result:=false;
+        if not(pi_dfaavailable in current_procinfo.flags) then
+          exit;
+        ctx.changed:=false;
+        { postorder so an inner loop is split before its enclosing loop is }
+        foreachnodestatic(pm_postprocess,node,@loopsplit_processloop_cb,@ctx);
         Result:=ctx.changed;
       end;
 
