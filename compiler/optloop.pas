@@ -48,6 +48,7 @@ unit optloop;
     function OptimizeReassoc(node : tnode) : boolean;
     function OptimizeUnrollJam(node : tnode) : boolean;
     function OptimizePredCom(node : tnode) : boolean;
+    function OptimizeCodeSink(node : tnode) : boolean;
 
   implementation
 
@@ -7080,6 +7081,225 @@ unit optloop;
         setlength(emptyfacts,0);
         jt_walk(node,emptyfacts,@changed);
         Result:=changed;
+      end;
+
+
+{*****************************************************************************
+                              Code sinking
+*****************************************************************************}
+
+    { Code sinking (gcc's -ftree-sink), the symmetric counterpart of LICM: a
+      pure, side-effect-free assignment  V := <expr>  that immediately precedes
+      an if statement and whose value V is consumed on only ONE arm of that if
+      (and is dead on the fall-through after it) is moved down into that single
+      arm, so every path that never uses V stops computing it -- partially dead
+      code elimination.  Example (the size-check preamble shape):
+
+          d := a*b + c;              if guard then       // then-arm: no use of d
+          if guard then      -->       exit;
+            exit;                    d := a*b + c;        // sunk: only reached
+          use(d);                    use(d);             //   when guard is false
+
+      SOUNDNESS (a wrong sink is a miscompile; the recognizer is strict and
+      anything not matched compiles exactly as before):
+        * V is a plain local/parameter of an unmanaged 8/16/32/64-bit ordinal,
+          enum, float or pointer type whose ADDRESS IS NEVER TAKEN (no alias can
+          observe the store's new position), non-volatile, non-threadvar, same
+          scope -- so delaying (or skipping) the store to V is invisible to
+          everything but a direct read of V, and those we account for below.
+        * The right-hand side is built only from constants, plain reads of such
+          non-addr-taken locals/params and non-trapping unchecked integer /
+          pointer arithmetic (add / sub / mul / unary-minus / value-preserving
+          conversion) -- NO call, memory deref, indexing, division, checked
+          arithmetic or managed operator -- so it cannot raise, allocate, call
+          or write through an alias, and evaluating it later or not at all is
+          invisible.  Because every RHS operand is a non-addr-taken local/param,
+          nothing the if condition evaluates (even a call) can redefine an
+          operand between the original and the new evaluation point.
+        * The if condition does not read V, exactly one arm reads V, the other
+          arm does not, and V is not live on the fall-through after the if (its
+          DFA index is absent from the if-successor's life set) -- so V's only
+          remaining consumer is the arm we sink into, and no path that skips
+          that arm needs V.
+      Adjacency (the assignment is the immediately preceding statement) makes
+      the "operands not redefined in between" test trivial: only the if
+      condition runs between the two points, and it cannot touch the operands. }
+
+    type
+      tsinkrefctx = record
+        sym : tsym;
+        found : boolean;
+      end;
+      psinkrefctx = ^tsinkrefctx;
+
+    function sink_refs_sym_cb(var n: tnode; arg: pointer): foreachnoderesult;
+      begin
+        result:=fen_false;
+        if (n.nodetype=loadn) and
+           (tloadnode(n).symtableentry=psinkrefctx(arg)^.sym) then
+          begin
+            psinkrefctx(arg)^.found:=true;
+            result:=fen_norecurse_true;
+          end;
+      end;
+
+    { true if subtree n contains any load of symbol sym }
+    function sink_refs_sym(n : tnode; sym : tsym) : boolean;
+      var
+        ctx : tsinkrefctx;
+      begin
+        result:=false;
+        if not assigned(n) then
+          exit;
+        ctx.sym:=sym;
+        ctx.found:=false;
+        foreachnodestatic(pm_postprocess,n,@sink_refs_sym_cb,@ctx);
+        result:=ctx.found;
+      end;
+
+    { returns the var-sym of a load of a plain, non-aliasable, unmanaged simple
+      local/parameter, or nil }
+    function sink_simple_var(n : tnode) : tabstractvarsym;
+      var
+        sym : tabstractvarsym;
+      begin
+        result:=nil;
+        if (n.nodetype<>loadn) or
+           not(tloadnode(n).symtableentry is tabstractvarsym) then
+          exit;
+        if not licm_simple_type(n.resultdef) then
+          exit;
+        sym:=tabstractvarsym(tloadnode(n).symtableentry);
+        if (sym.typ in [localvarsym,paravarsym]) and
+           not(sym.addr_taken) and
+           not(sym.different_scope) and
+           not(vo_volatile in sym.varoptions) and
+           not(vo_is_thread_var in sym.varoptions) then
+          result:=sym;
+      end;
+
+    { true if expr is a pure, non-trapping, alias-free value safe to move }
+    function sink_movable_rhs(expr : tnode) : boolean;
+      begin
+        result:=false;
+        case expr.nodetype of
+          ordconstn,realconstn,pointerconstn,niln:
+            result:=true;
+          loadn:
+            result:=(([nf_write,nf_modify]*expr.flags)=[]) and
+                    (sink_simple_var(expr)<>nil);
+          typeconvn:
+            { a range-checked conversion may raise -> not safe to speculate }
+            result:=not(cs_check_range in expr.localswitches) and
+                    sink_movable_rhs(ttypeconvnode(expr).left);
+          addn,subn,muln:
+            { checked arithmetic may raise under -Cr/-Co; the numeric-result
+              guard keeps string "+" (concatenation) etc. out }
+            result:=licm_simple_type(expr.resultdef) and
+                    (([cs_check_overflow,cs_check_range]*expr.localswitches)=[]) and
+                    sink_movable_rhs(taddnode(expr).left) and
+                    sink_movable_rhs(taddnode(expr).right);
+          unaryminusn:
+            result:=licm_simple_type(expr.resultdef) and
+                    (([cs_check_overflow,cs_check_range]*expr.localswitches)=[]) and
+                    sink_movable_rhs(tunarynode(expr).left);
+          else
+            ;
+        end;
+      end;
+
+    { attempt to sink the assignment held by statement node sn into the single
+      arm of the following if that consumes it; returns true if it did }
+    function sink_try(sn : tstatementnode) : boolean;
+      var
+        assign : tassignmentnode;
+        ifstmt : tifnode;
+        sym : tabstractvarsym;
+        idx : integer;
+        usesthen,useselse : boolean;
+        newblock,oldbranch,succ : tnode;
+        newstatements : tstatementnode;
+      begin
+        result:=false;
+        { statement must be a plain assignment ... }
+        if not assigned(sn.statement) or (sn.statement.nodetype<>assignn) then
+          exit;
+        { ... immediately followed by an if statement }
+        if not assigned(sn.next) or not(sn.next is tstatementnode) then
+          exit;
+        if not assigned(tstatementnode(sn.next).statement) or
+           (tstatementnode(sn.next).statement.nodetype<>ifn) then
+          exit;
+        assign:=tassignmentnode(sn.statement);
+        ifstmt:=tifnode(tstatementnode(sn.next).statement);
+
+        { LHS must be a plain, non-aliasable simple local/param with DFA index }
+        sym:=sink_simple_var(assign.left);
+        if not assigned(sym) then
+          exit;
+        if not assigned(assign.left.optinfo) then
+          exit;
+        idx:=assign.left.optinfo^.index;
+
+        { RHS must be pure, non-trapping and movable }
+        if not sink_movable_rhs(assign.right) then
+          exit;
+
+        { the condition must not read V }
+        if sink_refs_sym(ifstmt.left,sym) then
+          exit;
+
+        { V must be dead on the fall-through after the if }
+        succ:=ifstmt.successor;
+        if not assigned(succ) or not assigned(succ.optinfo) then
+          exit;
+        if DynSetIn(succ.optinfo^.life,idx) then
+          exit;
+
+        { exactly one arm consumes V }
+        usesthen:=sink_refs_sym(ifstmt.right,sym);
+        useselse:=sink_refs_sym(ifstmt.t1,sym);
+        if usesthen=useselse then
+          exit;
+
+        { relocate: prepend the assignment to the consuming arm, and replace the
+          original statement with a no-op (keeps the list links intact) }
+        if usesthen then
+          oldbranch:=ifstmt.right
+        else
+          oldbranch:=ifstmt.t1;
+        newblock:=internalstatements(newstatements);
+        addstatement(newstatements,assign);
+        if assigned(oldbranch) then
+          addstatement(newstatements,oldbranch);
+        if usesthen then
+          ifstmt.right:=newblock
+        else
+          ifstmt.t1:=newblock;
+
+        sn.statement:=cnothingnode.create;
+        do_firstpass(sn.left);
+        do_firstpass(newblock);
+        result:=true;
+      end;
+
+    function sink_stmt_cb(var n: tnode; arg: pointer): foreachnoderesult;
+      begin
+        result:=fen_false;
+        if (n.nodetype=statementn) and sink_try(tstatementnode(n)) then
+          pboolean(arg)^:=true;
+      end;
+
+    function OptimizeCodeSink(node : tnode) : boolean;
+      var
+        changed : boolean;
+      begin
+        result:=false;
+        if not(pi_dfaavailable in current_procinfo.flags) then
+          exit;
+        changed:=false;
+        foreachnodestatic(pm_preprocess,node,@sink_stmt_cb,@changed);
+        result:=changed;
       end;
 
 end.
