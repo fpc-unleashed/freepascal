@@ -2572,7 +2572,8 @@ const
          'cs_opt_sra',
          'cs_opt_storemerge',
          'cs_opt_casecluster',
-         'cs_opt_crossjump'
+         'cs_opt_crossjump',
+         'cs_opt_blockorder'
        );
     var
          globalswitch  : tglobalswitch;

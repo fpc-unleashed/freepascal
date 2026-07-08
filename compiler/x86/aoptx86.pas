@@ -256,6 +256,14 @@ unit aoptx86;
           successor. }
         function InstructionsEqualExact(p1, p2: taicpu): Boolean;
         procedure DoCrossJump;
+
+        { Static-heuristic basic-block layout (gcc -freorder-blocks family):
+          sink cold error/raise regions guarded by a conditional jump out of the
+          straight-line hot path to the end of the routine. }
+        function IsErrorHelperCall(ins: taicpu): Boolean;
+        function IsNoReturnHelperCall(ins: taicpu): Boolean;
+        procedure DoBlockOrder;
+
         procedure PostPeepHoleOpts; override;
 
         procedure ConvertJumpToRET(const p: tai; const ret_p: tai);
@@ -18784,11 +18792,288 @@ unit aoptx86;
       end;
 
 
+    { True when ins is a call to a runtime helper that raises an exception or
+      an OS/runtime error -- the mark of a cold error region. }
+    function TX86AsmOptimizer.IsErrorHelperCall(ins: taicpu): Boolean;
+      var
+        s: string;
+      begin
+        Result := False;
+        if (ins.opcode <> A_CALL) or (ins.ops < 1) or
+           (ins.oper[0]^.typ <> top_ref) or
+           not Assigned(ins.oper[0]^.ref^.symbol) then
+          Exit;
+        s := upcase(ins.oper[0]^.ref^.symbol.Name);
+        Result :=
+          (pos('FPC_RAISEEXCEPTION', s) > 0) or
+          (pos('FPC_RERAISE', s) > 0) or
+          (pos('FPC_HANDLEERROR', s) > 0) or
+          (pos('FPC_ASSERT', s) > 0) or
+          (pos('RUNERROR', s) > 0) or
+          (pos('FPC_RANGEERROR', s) > 0) or
+          (pos('FPC_OVERFLOW', s) > 0) or
+          (pos('FPC_INTOVERFLOW', s) > 0) or
+          (pos('FPC_DIVBYZERO', s) > 0) or
+          (pos('FPC_INVALIDCAST', s) > 0) or
+          (pos('FPC_CHECK_OBJECT', s) > 0) or
+          (pos('FPC_OBJECT', s) > 0);
+      end;
+
+
+    { True only for helpers that provably never return, so a sunk cold region
+      ending in such a call needs no rejoin jump to the hot path. }
+    function TX86AsmOptimizer.IsNoReturnHelperCall(ins: taicpu): Boolean;
+      var
+        s: string;
+      begin
+        Result := False;
+        if (ins.opcode <> A_CALL) or (ins.ops < 1) or
+           (ins.oper[0]^.typ <> top_ref) or
+           not Assigned(ins.oper[0]^.ref^.symbol) then
+          Exit;
+        s := upcase(ins.oper[0]^.ref^.symbol.Name);
+        Result :=
+          (pos('FPC_RAISEEXCEPTION', s) > 0) or
+          (pos('FPC_RERAISE', s) > 0) or
+          (pos('FPC_HANDLEERROR', s) > 0) or
+          (pos('RUNERROR', s) > 0);
+      end;
+
+
+    procedure TX86AsmOptimizer.DoBlockOrder;
+      const
+        { Cap the forward scan of a candidate cold region and the number of
+          transforms per routine so pathological input can't blow up. }
+        MaxRegionLen = 400;
+        MaxTransforms = 500;
+      var
+        anchor: tai;
+        transforms: Integer;
+
+        { Is q one of the disposable/attached bookkeeping tais that may travel
+          together with the instructions of a moved region? }
+        function IsMovableCompanion(q: tai): Boolean;
+          begin
+            case q.typ of
+              ait_regalloc, ait_tempalloc, ait_comment,
+              ait_stab, ait_force_line, ait_varloc, ait_align:
+                Result := True;
+              ait_marker:
+                Result := not (tai_marker(q).Kind in [mark_AsmBlockStart, mark_AsmBlockEnd]);
+              else
+                Result := False;
+            end;
+          end;
+
+        { The last top-level unconditional control transfer of the routine --
+          RET, an unconditional JMP, or a provably-noreturn helper call.  The
+          sunk cold regions are placed immediately after it: still inside the
+          function's CFI/size bracket, yet unreachable by fall-through. }
+        procedure FindAnchor;
+          var
+            q: tai;
+          begin
+            anchor := nil;
+            q := BlockStart;
+            while Assigned(q) and (q <> BlockEnd) do
+              begin
+                if (q.typ = ait_instruction) and
+                   ((taicpu(q).opcode = A_RET) or
+                    IsJumpToLabelUncond(taicpu(q)) or
+                    IsNoReturnHelperCall(taicpu(q))) then
+                  anchor := q;
+                q := tai(q.Next);
+              end;
+          end;
+
+        { Try to sink the cold region guarded by the conditional jump p.
+          Returns True (and mutates the list) on success. }
+        function TrySinkAt(p: tai): Boolean;
+          var
+            L: TAsmLabel;
+            q, coldstart, coldend, lastreal, ins: tai;
+            steps: Integer;
+            foundRaise, needjmp: Boolean;
+            Lcold: TAsmLabel;
+            lbl: tai_label;
+            newjmp: taicpu;
+            insertafter, cur, nextcur: tai;
+            reachedEnd: Boolean;
+          begin
+            Result := False;
+
+            if (p.typ <> ait_instruction) or
+               not IsJumpToLabel(taicpu(p)) or
+               (taicpu(p).condition = C_None) then
+              Exit;
+
+            L := TAsmLabel(JumpTargetOp(taicpu(p))^.ref^.symbol);
+
+            { The cold region opens right after the guard and is closed by the
+              guard's own target label L, which the guard jumps over to reach
+              the hot successor. }
+            coldstart := tai(p.Next);
+            if not Assigned(coldstart) or (coldstart = BlockEnd) then
+              Exit;
+
+            coldend := nil;
+            lastreal := nil;
+            foundRaise := False;
+            steps := 0;
+            q := coldstart;
+            while Assigned(q) and (q <> BlockEnd) do
+              begin
+                Inc(steps);
+                if steps > MaxRegionLen then
+                  Exit;
+                case q.typ of
+                  ait_label:
+                    begin
+                      { The guard's own target ends the region (it jumps over
+                        the cold code to the hot successor). }
+                      if tai_label(q).labsym = L then
+                        Break;
+                      { A plain jump label inside the region may be moved with
+                        it: the region has exactly one exit (to L or a noreturn
+                        call), which is preserved, so any external entry that
+                        lands on such a label still reaches the same successor.
+                        Refuse other label kinds (CFI/debug-range labels whose
+                        address is used by unwind/line tables). }
+                      if tai_label(q).labsym.labeltype <> alt_jump then
+                        Exit;
+                      coldend := q;
+                    end;
+                  ait_instruction:
+                    begin
+                      ins := q;
+                      { The region must be straight-line: no interior branch or
+                        return.  A CALL is allowed (it is how the raise fires). }
+                      if (taicpu(ins).opcode = A_RET) or
+                         ((taicpu(ins).opcode <> A_CALL) and
+                          is_calljmp(taicpu(ins).opcode)) then
+                        Exit;
+                      if IsErrorHelperCall(taicpu(ins)) then
+                        foundRaise := True;
+                      lastreal := ins;
+                      coldend := q;
+                    end;
+                  else
+                    if not IsMovableCompanion(q) then
+                      Exit
+                    else
+                      coldend := q;
+                end;
+                q := tai(q.Next);
+              end;
+
+            { We must have stopped on the guard's target label with a non-empty
+              region that actually raises/errors. }
+            if not Assigned(q) or (q = BlockEnd) or (q.typ <> ait_label) or
+               (tai_label(q).labsym <> L) then
+              Exit;
+            if not foundRaise or not Assigned(coldend) or not Assigned(lastreal) then
+              Exit;
+
+            { An anchor is required and it must lie outside the region we move
+              (it belongs to the hot code that ends in a transfer). }
+            if not Assigned(anchor) then
+              Exit;
+
+            { Refuse if the anchor happens to sit inside the region (defensive:
+              would corrupt the list). }
+            cur := coldstart;
+            while Assigned(cur) do
+              begin
+                if cur = anchor then
+                  Exit;
+                if cur = coldend then
+                  Break;
+                cur := tai(cur.Next);
+              end;
+
+            needjmp := not IsNoReturnHelperCall(taicpu(lastreal));
+
+            { Materialise the out-of-line landing label. }
+            current_asmdata.getjumplabel(Lcold);
+            lbl := tai_label.Create(Lcold);
+            insertafter := anchor;
+            InsertLLItem(insertafter, tai(insertafter.Next), lbl);
+            insertafter := lbl;
+
+            { Relocate [coldstart..coldend] after the new label, preserving
+              order and any attached bookkeeping. }
+            cur := coldstart;
+            repeat
+              reachedEnd := (cur = coldend);
+              nextcur := tai(cur.Next);
+              AsmL.Remove(cur);
+              InsertLLItem(insertafter, tai(insertafter.Next), cur);
+              insertafter := cur;
+              cur := nextcur;
+            until reachedEnd or not Assigned(cur);
+
+            { A region whose terminal helper can return must rejoin the hot
+              path; a noreturn one falls off the end harmlessly. }
+            if needjmp then
+              begin
+                newjmp := taicpu.op_sym(A_JMP, S_NO, L);
+                newjmp.is_jmp := True;
+                L.increfs;
+                InsertLLItem(insertafter, tai(insertafter.Next), newjmp);
+                insertafter := newjmp;
+              end;
+
+            { Invert the guard and retarget it at the sunk region, so the hot
+              successor is now the fall-through. }
+            L.decrefs;
+            JumpTargetOp(taicpu(p))^.ref^.symbol := Lcold;
+            Lcold.increfs;
+            taicpu(p).condition := inverse_cond(taicpu(p).condition);
+
+            DebugMsg(SPeepholeOptimization + 'BlockOrder: sunk cold error region out of line', p);
+            Result := True;
+          end;
+
+      var
+        p: tai;
+        restart: Boolean;
+      begin
+        if not CanDoJumpOpts then
+          Exit;
+
+        transforms := 0;
+        restart := True;
+        while restart do
+          begin
+            restart := False;
+            FindAnchor;
+            if not Assigned(anchor) then
+              Exit;
+            p := BlockStart;
+            while Assigned(p) and (p <> BlockEnd) do
+              begin
+                if (p <> anchor) and TrySinkAt(p) then
+                  begin
+                    Inc(transforms);
+                    if transforms >= MaxTransforms then
+                      Exit;
+                    { The list and the anchor changed; rescan from the top. }
+                    restart := True;
+                    Break;
+                  end;
+                p := tai(p.Next);
+              end;
+          end;
+      end;
+
+
     procedure TX86AsmOptimizer.PostPeepHoleOpts;
       begin
         inherited PostPeepHoleOpts;
         if (cs_opt_crossjump in current_settings.optimizerswitches) then
           DoCrossJump;
+        if (cs_opt_blockorder in current_settings.optimizerswitches) then
+          DoBlockOrder;
       end;
 
 
