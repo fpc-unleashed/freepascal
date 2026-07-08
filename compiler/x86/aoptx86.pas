@@ -233,6 +233,12 @@ unit aoptx86;
         function PostPeepholeOptCmp(var p : tai) : Boolean;
         function PostPeepholeOptTestOr(var p : tai) : Boolean;
         function PostPeepholeOptCall(var p : tai) : Boolean;
+{$ifdef x86_64}
+        { True when the current routine may soundly reuse its own (pure rsp)
+          stack frame for a sibling tail call, i.e. tear the frame down before
+          the call and jump instead of call/return. }
+        function CurrentProcAllowsSiblingTailFrameReuse : Boolean;
+{$endif x86_64}
         function PostPeepholeOptLea(var p : tai) : Boolean;
         function PostPeepholeOptPush(var p: tai): Boolean;
         function PostPeepholeOptShr(var p : tai) : boolean;
@@ -293,7 +299,7 @@ unit aoptx86;
       paramgr,
       aasmbase,
       aoptbase,aoptutils,
-      symconst,symsym,
+      symconst,symbase,symtype,symsym,symdef,
       cgx86,
       itcpugas;
 
@@ -18085,11 +18091,64 @@ unit aoptx86;
       end;
 
 
+{$ifdef x86_64}
+    function TX86AsmOptimizer.CurrentProcAllowsSiblingTailFrameReuse : Boolean;
+
+      function symtable_has_addrtaken(st : TSymtable) : Boolean;
+        var
+          i : integer;
+          sym : tsym;
+        begin
+          Result:=false;
+          if not assigned(st) then
+            exit;
+          for i:=0 to st.SymList.Count-1 do
+            begin
+              sym:=tsym(st.SymList[i]);
+              if (sym.typ in [localvarsym,paravarsym,staticvarsym]) and
+                 tabstractvarsym(sym).addr_taken then
+                exit(true);
+            end;
+        end;
+
+      begin
+        Result:=false;
+        if not assigned(current_procinfo) or not assigned(current_procinfo.procdef) then
+          exit;
+        { An assembler routine manages its own stack; do not touch it. }
+        if (po_assembler in current_procinfo.procdef.procoptions) then
+          exit;
+        { No implicit try..finally / exception frame / managed-type cleanup and
+          no dynamic stack allocation: in these cases teardown is not a plain
+          rsp release and/or there is pending work that must run after the call. }
+        if (current_procinfo.flags *
+            [pi_uses_exceptions,pi_needs_implicit_finally,pi_has_implicit_finally,
+             pi_has_stack_allocs]) <> [] then
+          exit;
+        { A nested routine captures the address of our frame; releasing the frame
+          before jumping would invalidate the parent-frame pointer it receives. }
+        if assigned(current_procinfo.procdef.parentfpstruct) then
+          exit;
+        { If the address of any local or parameter is taken, a pointer into the
+          frame we are about to release could be passed to the callee (dangling
+          reference). Gate hard on this: no address-taken locals/parameters. }
+        if symtable_has_addrtaken(current_procinfo.procdef.localst) or
+           symtable_has_addrtaken(current_procinfo.procdef.parast) then
+          exit;
+        Result:=true;
+      end;
+{$endif x86_64}
+
+
     function TX86AsmOptimizer.PostPeepholeOptCall(var p : tai) : Boolean;
       var
         hp1,hp3 : tai;
 {$ifndef x86_64}
         hp2 : taicpu;
+{$else x86_64}
+        hpteardown,hpret,hpnew : tai;
+        crossed_label,teardown_ok : Boolean;
+        teardown_count : integer;
 {$endif x86_64}
       begin
         Result:=false;
@@ -18154,6 +18213,153 @@ unit aoptx86;
               end;
             Result:=true;
           end;
+
+{$ifdef x86_64}
+        { Sibling-call frame reuse for a caller that has its own stack frame.
+          When a tail call is made from a routine whose frame teardown is a plain
+          stack release ("leaq N(%rsp),%rsp" / "addq $N,%rsp") optionally followed
+          by pops of callee-saved registers, that teardown sits between the call
+          and the ret:
+
+              call   X
+           L: leaq   N(%rsp),%rsp      (frame release, N greater than 0)
+              popq   %rbx              (optional callee-saved restores)
+              ret
+
+          which prevents CallRet2Jmp from firing.  Hoist a copy of the teardown
+          above the call and turn the call into a jump:
+
+              leaq   N(%rsp),%rsp
+              popq   %rbx
+              jmp    X
+
+          The original teardown+ret is left in place: label L may be the merge
+          point of other (non-call) exit paths (base cases), so it must remain a
+          valid return sequence for them.
+
+          Soundness:
+            * The teardown only releases rsp and pops callee-saved registers.
+              Callee-saved registers are, by definition, never argument registers,
+              so hoisting the pops above the (now) jump cannot clobber an outgoing
+              argument of X.
+            * The teardown restores rsp exactly to routine entry, hence the jump
+              enters X with the ABI-mandated alignment regardless of stackalign.
+            * CurrentProcAllowsSiblingTailFrameReuse rejects routines with
+              address-taken locals/parameters (a pointer into the released frame
+              could be an argument), nested routines capturing the frame,
+              implicit finally / exception frames and dynamic stack allocation.
+            * Because only labels/directives may sit between the call and the
+              teardown, nothing touches the callee's result before the ret, so
+              the callee's return value is returned unchanged (true tail call).
+
+          A result routed through a callee-saved register (mov %rax,%rbx right
+          after the call) breaks the "nothing between call and teardown" rule and
+          is deliberately not handled here; that is a result-forwarding problem
+          orthogonal to frame teardown. }
+        if (not Result) and
+          (cs_opt_level4 in current_settings.optimizerswitches) and
+          CurrentProcAllowsSiblingTailFrameReuse then
+          begin
+            { walk the epilogue: a non-empty run of stack-release / callee-saved
+              pop instructions terminated by a bare ret, crossing only labels and
+              directives (a crossed label means the teardown is shared with other
+              exit paths, so the originals must be kept). }
+            crossed_label:=false;
+            teardown_ok:=true;
+            teardown_count:=0;
+            hpret:=tai(p.Next);
+            while assigned(hpret) and teardown_ok do
+              begin
+                if hpret.typ<>ait_instruction then
+                  begin
+                    if hpret.typ=ait_label then
+                      crossed_label:=true;
+                    hpret:=tai(hpret.Next);
+                    continue;
+                  end;
+                if MatchInstruction(hpret,A_RET,[S_NO]) and (taicpu(hpret).ops=0) then
+                  break;
+                { stack release via lea }
+                if MatchInstruction(hpret,A_LEA,[S_Q]) and
+                  (taicpu(hpret).oper[1]^.typ=top_reg) and
+                  (taicpu(hpret).oper[1]^.reg=NR_STACK_POINTER_REG) and
+                  (taicpu(hpret).oper[0]^.typ=top_ref) and
+                  (taicpu(hpret).oper[0]^.ref^.base=NR_STACK_POINTER_REG) and
+                  (taicpu(hpret).oper[0]^.ref^.index=NR_NO) and
+                  (taicpu(hpret).oper[0]^.ref^.offset>0) and
+                  (taicpu(hpret).oper[0]^.ref^.symbol=nil) and
+                  (taicpu(hpret).oper[0]^.ref^.relsymbol=nil) then
+                  inc(teardown_count)
+                { stack release via add const }
+                else if MatchInstruction(hpret,A_ADD,[S_Q]) and
+                  (taicpu(hpret).oper[0]^.typ=top_const) and
+                  (taicpu(hpret).oper[0]^.val>0) and
+                  (taicpu(hpret).oper[1]^.typ=top_reg) and
+                  (taicpu(hpret).oper[1]^.reg=NR_STACK_POINTER_REG) then
+                  inc(teardown_count)
+                { pop of a callee-saved integer register }
+                else if MatchInstruction(hpret,A_POP,[S_Q]) and
+                  (taicpu(hpret).oper[0]^.typ=top_reg) and
+                  (getregtype(taicpu(hpret).oper[0]^.reg)=R_INTREGISTER) and
+                  not(getsupreg(taicpu(hpret).oper[0]^.reg) in
+                      paramanager.get_volatile_registers_int(current_procinfo.procdef.proccalloption)) then
+                  inc(teardown_count)
+                else
+                  teardown_ok:=false;
+                if teardown_ok then
+                  hpret:=tai(hpret.Next);
+              end;
+
+            if teardown_ok and (teardown_count>0) and
+              assigned(hpret) and (hpret.typ=ait_instruction) and
+              MatchInstruction(hpret,A_RET,[S_NO]) and (taicpu(hpret).ops=0) then
+              begin
+                { duplicate the teardown instructions verbatim, in order, right
+                  before the call }
+                hpteardown:=tai(p.Next);
+                while hpteardown<>hpret do
+                  begin
+                    if hpteardown.typ=ait_instruction then
+                      begin
+                        case taicpu(hpteardown).opcode of
+                          A_LEA:
+                            hpnew:=taicpu.op_ref_reg(A_LEA,S_Q,
+                              taicpu(hpteardown).oper[0]^.ref^,NR_STACK_POINTER_REG);
+                          A_ADD:
+                            hpnew:=taicpu.op_const_reg(A_ADD,S_Q,
+                              taicpu(hpteardown).oper[0]^.val,NR_STACK_POINTER_REG);
+                          else {A_POP}
+                            hpnew:=taicpu.op_reg(A_POP,S_Q,taicpu(hpteardown).oper[0]^.reg);
+                        end;
+                        taicpu(hpnew).fileinfo:=taicpu(p).fileinfo;
+                        InsertLLItem(p.previous,p,hpnew);
+                      end;
+                    hpteardown:=tai(hpteardown.Next);
+                  end;
+
+                { turn the call into a jump }
+                taicpu(p).opcode:=A_JMP;
+                taicpu(p).is_jmp:=true;
+                DebugMsg(SPeepholeOptimization + 'CallFrameRet2Jmp done (sibling tail-call frame reuse)',p);
+
+                { if the teardown/ret is reached only from this call path (no
+                  intervening used label), the originals are now dead - drop them }
+                if not crossed_label then
+                  begin
+                    hpteardown:=tai(p.Next);
+                    while hpteardown<>hpret do
+                      begin
+                        hpnew:=tai(hpteardown.Next);
+                        if hpteardown.typ=ait_instruction then
+                          RemoveInstruction(hpteardown);
+                        hpteardown:=hpnew;
+                      end;
+                    RemoveInstruction(hpret);
+                  end;
+                Result:=true;
+              end;
+          end;
+{$endif x86_64}
       end;
 
 
