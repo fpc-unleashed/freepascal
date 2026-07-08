@@ -541,7 +541,22 @@ interface
            indirect branch for). Bails on any side effect, non-constant or
            non-assignment arm, on a sparse/hole-containing label range, or on a
            too-large table }
-         cs_opt_switchtable
+         cs_opt_switchtable,
+         { redundant sign/zero-extension elimination (gcc ree.cc, the pass behind
+           -free, default-on at -O2 there): delete a movzx/movsx whose source
+           register is already correctly extended on every reaching definition --
+           definitions that were themselves extending loads (movzx/movsx), an AND
+           with a mask that clears the high bits, a zeroing xor / small mov-const,
+           or (for the implicit x86-64 rule) a 32-bit-destination result whose
+           upper half is guaranteed zero. Goes beyond the adjacent-instruction
+           Movzx* peepholes in aoptx86 by tracking the nearest reaching definition
+           back through a straight-line region (bailing at labels with unknown
+           predecessors, calls and instructions it does not model), so a
+           byte/word-at-a-time loop body that re-extends the same register no
+           longer pays for the redundant extension each iteration. Conservative:
+           only deletes a same-super-register extension that is provably a no-op
+           (a wrong deletion is a miscompile) }
+         cs_opt_ree
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -619,7 +634,7 @@ interface
          'RANGEELIM','VECTORIZE','JUMPTHREAD','LOOPDISTPAT',
          'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC','UNROLLJAM',
          'PREDCOM','SRA','STOREMERGE','CASECLUSTER','CROSSJUMP','BLOCKORDER',
-         'SINK','STOREMOTION','VRP','REFELIDE','SWITCHTABLE'
+         'SINK','STOREMOTION','VRP','REFELIDE','SWITCHTABLE','REE'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
@@ -654,7 +669,7 @@ interface
        genericlevel3optimizerswitches = [cs_opt_level3,cs_opt_constant_propagate,cs_opt_nodedfa,cs_opt_loopstrength
                                          {$ifndef llvm},cs_opt_use_load_modify_store{$endif},
                                          cs_opt_loopunroll,cs_opt_forloop];
-       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert,cs_opt_reassoc,cs_opt_unrolljam,cs_opt_predcom,cs_opt_sra,cs_opt_storemerge,cs_opt_casecluster,cs_opt_crossjump,cs_opt_blockorder,cs_opt_sink,cs_opt_storemotion,cs_opt_vrp,cs_opt_switchtable];
+       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert,cs_opt_reassoc,cs_opt_unrolljam,cs_opt_predcom,cs_opt_sra,cs_opt_storemerge,cs_opt_casecluster,cs_opt_crossjump,cs_opt_blockorder,cs_opt_sink,cs_opt_storemotion,cs_opt_vrp,cs_opt_switchtable,cs_opt_ree];
 
        { whole program optimizations whose information generation requires
          information from all loaded units

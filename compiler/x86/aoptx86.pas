@@ -264,6 +264,13 @@ unit aoptx86;
         function IsNoReturnHelperCall(ins: taicpu): Boolean;
         procedure DoBlockOrder;
 
+        { Redundant sign/zero-extension elimination (gcc ree.cc / -free): delete a
+          same-super-register movzx/movsx whose nearest reaching definition,
+          reached back through a straight-line region, already guarantees the
+          required extension across the full destination width. }
+        function ExtAlreadyGuaranteed(ExtIns: taicpu): Boolean;
+        procedure DoRedundantExtElim;
+
         procedure PostPeepHoleOpts; override;
 
         procedure ConvertJumpToRET(const p: tai; const ret_p: tai);
@@ -19105,6 +19112,193 @@ unit aoptx86;
       end;
 
 
+    { True when ExtIns (a reg->reg movzx/movsx into the same super-register) is a
+      no-op because the value already carries the required extension: the nearest
+      reaching definition, found by walking back over a straight-line region,
+      itself produces at least that extension across the destination width. A
+      wrong "yes" is a miscompile, so the recognizer is strict and defaults to
+      "no" for anything it does not model. }
+    function TX86AsmOptimizer.ExtAlreadyGuaranteed(ExtIns: taicpu): Boolean;
+      const
+        MaxScan = 200;
+      var
+        SrcReg, DstReg: TRegister;
+        IsSigned: Boolean;
+        SrcW, DstW: Integer;   { extension source width (8/16/32) and dest width (32/64) }
+        q, prev: tai;
+        scan: Integer;
+
+      { source/destination width in bits of an extension opsize (0 = not an
+        extension opsize) }
+      function ExtSrcWidth(sz: topsize): Integer;
+        begin
+          case sz of
+            S_BW, S_BL, S_BQ: ExtSrcWidth := 8;
+            S_WL, S_WQ:       ExtSrcWidth := 16;
+            S_LQ:             ExtSrcWidth := 32;
+            else              ExtSrcWidth := 0;
+          end;
+        end;
+
+      function ExtDstWidth(sz: topsize): Integer;
+        begin
+          case sz of
+            S_BW:             ExtDstWidth := 16;
+            S_BL, S_WL:       ExtDstWidth := 32;
+            S_BQ, S_WQ, S_LQ: ExtDstWidth := 64;
+            else              ExtDstWidth := 0;
+          end;
+        end;
+
+      { Does definition d -- known to write DstReg's super-register -- guarantee,
+        by itself, that the value is the required (zero or sign) extension of its
+        low SrcW bits across at least DstW bits? }
+      function DefGuarantees(d: taicpu): Boolean;
+        var
+          v, dw: Integer;
+          imm: TCGInt;
+        begin
+          DefGuarantees := False;
+          case d.opcode of
+            A_MOVZX:
+              if (not IsSigned) and (d.ops = 2) and
+                 (d.oper[1]^.typ = top_reg) and
+                 SuperRegistersEqual(d.oper[1]^.reg, DstReg) then
+                begin
+                  v := ExtSrcWidth(d.opsize);
+                  dw := ExtDstWidth(d.opsize);
+                  { a 32-bit destination also zeroes bits 32..63 implicitly }
+                  if dw = 32 then
+                    dw := 64;
+                  { zero-extends bits v..(dw-1); redundant with our zext if it
+                    clears at least bits SrcW..(DstW-1) }
+                  DefGuarantees := (v > 0) and (v <= SrcW) and (dw >= DstW);
+                end;
+            A_MOVSX:
+              if IsSigned and (d.ops = 2) and
+                 (d.oper[1]^.typ = top_reg) and
+                 SuperRegistersEqual(d.oper[1]^.reg, DstReg) then
+                begin
+                  v := ExtSrcWidth(d.opsize);
+                  dw := ExtDstWidth(d.opsize);
+                  { unlike zero-extension, a 32-bit-destination movsx does NOT
+                    sign-fill bits 32..63 (it zero-extends the 32-bit result), so
+                    dw must not be widened here }
+                  DefGuarantees := (v > 0) and (v <= SrcW) and (dw >= DstW);
+                end;
+            A_AND:
+              { andl/andq $mask,reg with a mask that clears every bit at or above
+                SrcW leaves exactly a zero-extended low SrcW-bit value (a 32-bit
+                AND also zeroes bits 32..63) }
+              if (not IsSigned) and (d.ops = 2) and
+                 (d.oper[0]^.typ = top_const) and
+                 (d.oper[1]^.typ = top_reg) and
+                 (d.opsize in [S_L, S_Q]) and
+                 SuperRegistersEqual(d.oper[1]^.reg, DstReg) then
+                begin
+                  imm := d.oper[0]^.val;
+                  DefGuarantees := (imm >= 0) and (imm < (TCGInt(1) shl SrcW));
+                  { bits up to 63 are guaranteed zero for both S_L and S_Q, so
+                    any DstW (32 or 64) is covered }
+                end;
+            A_XOR:
+              { xorl/xorq reg,reg zeroes the whole register }
+              if (not IsSigned) and (d.ops = 2) and
+                 (d.oper[0]^.typ = top_reg) and (d.oper[1]^.typ = top_reg) and
+                 (d.opsize in [S_L, S_Q]) and
+                 SuperRegistersEqual(d.oper[0]^.reg, DstReg) and
+                 (getsupreg(d.oper[0]^.reg) = getsupreg(d.oper[1]^.reg)) then
+                DefGuarantees := True;
+            A_MOV:
+              { movl/movq $small,reg -- a non-negative immediate below 2^SrcW is
+                already its own zero-extension (a 32-bit mov zeroes bits 32..63) }
+              if (not IsSigned) and (d.ops = 2) and
+                 (d.oper[0]^.typ = top_const) and
+                 (d.oper[1]^.typ = top_reg) and
+                 (d.opsize in [S_L, S_Q]) and
+                 SuperRegistersEqual(d.oper[1]^.reg, DstReg) then
+                begin
+                  imm := d.oper[0]^.val;
+                  DefGuarantees := (imm >= 0) and (imm < (TCGInt(1) shl SrcW));
+                end;
+            else
+              ;
+          end;
+        end;
+
+      begin
+        Result := False;
+        if (ExtIns.opcode <> A_MOVZX) and (ExtIns.opcode <> A_MOVSX) then
+          Exit;
+        IsSigned := ExtIns.opcode = A_MOVSX;
+        if (ExtIns.ops <> 2) or
+           (ExtIns.oper[0]^.typ <> top_reg) or (ExtIns.oper[1]^.typ <> top_reg) then
+          Exit;
+        SrcReg := ExtIns.oper[0]^.reg;
+        DstReg := ExtIns.oper[1]^.reg;
+        if (getregtype(SrcReg) <> R_INTREGISTER) or (getregtype(DstReg) <> R_INTREGISTER) then
+          Exit;
+        { Only delete when source and destination share a super-register, so the
+          extension is a pure no-op and removing it cannot drop a write to a
+          distinct destination. }
+        if not SuperRegistersEqual(SrcReg, DstReg) then
+          Exit;
+        SrcW := ExtSrcWidth(ExtIns.opsize);
+        DstW := ExtDstWidth(ExtIns.opsize);
+        if (SrcW = 0) or (DstW = 0) then
+          Exit;
+
+        { Walk back to the nearest definition of the register.
+          GetLastInstruction stops (returns False) at a referenced label or a
+          block boundary -- exactly the points where predecessors we cannot
+          enumerate join -- so reaching such a point makes us bail conservatively. }
+        q := ExtIns;
+        scan := 0;
+        while GetLastInstruction(q, prev) do
+          begin
+            Inc(scan);
+            if scan > MaxScan then
+              Exit;
+            if prev.typ <> ait_instruction then
+              Exit;
+            if RegModifiedByInstruction(DstReg, prev) then
+              begin
+                { Nearest reaching definition: it alone must guarantee the
+                  extension.  A partial write (e.g. movb %al) leaves the high bits
+                  to some earlier definition we are not inspecting, so it does not
+                  qualify and we bail. }
+                Result := DefGuarantees(taicpu(prev));
+                Exit;
+              end;
+            q := prev;
+          end;
+        { Fell off the region without finding a definition: the value comes from
+          predecessors / procedure entry we cannot enumerate -> bail. }
+      end;
+
+
+    procedure TX86AsmOptimizer.DoRedundantExtElim;
+      var
+        p, nextp: tai;
+      begin
+        p := BlockStart;
+        while Assigned(p) and (p <> BlockEnd) do
+          begin
+            nextp := tai(p.Next);
+            if (p.typ = ait_instruction) and
+               ((taicpu(p).opcode = A_MOVZX) or (taicpu(p).opcode = A_MOVSX)) and
+               ExtAlreadyGuaranteed(taicpu(p)) then
+              begin
+                DebugMsg(SPeepholeOptimization + 'Redundant extension removed - source already ' +
+                  { movzx -> zero, movsx -> sign }
+                  ' extended on every reaching definition (RedundantExtElim)', p);
+                RemoveInstruction(p);
+              end;
+            p := nextp;
+          end;
+      end;
+
+
     procedure TX86AsmOptimizer.PostPeepHoleOpts;
       begin
         inherited PostPeepHoleOpts;
@@ -19112,6 +19306,8 @@ unit aoptx86;
           DoCrossJump;
         if (cs_opt_blockorder in current_settings.optimizerswitches) then
           DoBlockOrder;
+        if (cs_opt_ree in current_settings.optimizerswitches) then
+          DoRedundantExtElim;
       end;
 
 
