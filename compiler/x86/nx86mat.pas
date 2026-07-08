@@ -929,6 +929,57 @@ interface
             emit_reg_reg(A_SUB,opsize,hreg2,hreg1);
             location.register:=hreg1;
           end
+        else if (nodetype=modn) and (right.nodetype=ordconstn) and (is_signed(left.resultdef)) and
+                ((resultdef.size=4){$ifdef x86_64} or (resultdef.size=8){$endif x86_64}) then
+          begin
+            { Signed modulus by a general (non-power-of-two) constant.
+              Compute the quotient q := left div right using the same
+              magic-number sequence as signed division, then derive the
+              remainder as  left - q*right.  This avoids a hardware idiv. }
+            e:=tordconstnode(right).value.svalue;
+            { Preserve the original dividend; the division sequence below may
+              overwrite hreg1 (when e<0), and it is needed for the final SUB. }
+            hreg2:=cg.getintregister(current_asmdata.CurrAsmList,cgsize);
+            emit_reg_reg(A_MOV,opsize,hreg1,hreg2);
+            calc_divconst_magic_signed(resultdef.size*8,e,sm,s);
+            cg.getcpuregister(current_asmdata.CurrAsmList,rega);
+            emit_const_reg(A_MOV,opsize,sm,rega);
+            cg.getcpuregister(current_asmdata.CurrAsmList,regd);
+            emit_reg(A_IMUL,opsize,hreg1);
+            { only the high half of result is used }
+            cg.ungetcpuregister(current_asmdata.CurrAsmList,rega);
+            { add or subtract dividend }
+            if (e>0) and (sm<0) then
+              emit_reg_reg(A_ADD,opsize,hreg1,regd)
+            else if (e<0) and (sm>0) then
+              emit_reg_reg(A_SUB,opsize,hreg1,regd);
+            { shift if necessary }
+            if (s<>0) then
+              emit_const_reg(A_SAR,opsize,s,regd);
+            { extract and add the sign bit to finish the truncated quotient }
+            if (e<0) then
+              emit_reg_reg(A_MOV,opsize,regd,hreg1);
+            { if e>=0, hreg1 still contains the dividend }
+            emit_const_reg(A_SHR,opsize,left.resultdef.size*8-1,hreg1);
+            emit_reg_reg(A_ADD,opsize,hreg1,regd);
+            { regd now holds q = left div right; move it out of EDX }
+            cg.ungetcpuregister(current_asmdata.CurrAsmList,regd);
+            hreg3:=cg.getintregister(current_asmdata.CurrAsmList,cgsize);
+            cg.a_load_reg_reg(current_asmdata.CurrAsmList,cgsize,cgsize,regd,hreg3);
+            { remainder := left - q*right }
+{$ifdef x86_64}
+            if (cgsize in [OS_64,OS_S64]) and ((e>aint(high(longint))) or (e<aint(low(longint)))) then
+              begin { Cannot use 64-bit constants in IMUL }
+                hreg4:=cg.getintregister(current_asmdata.CurrAsmList,cgsize);
+                emit_const_reg(A_MOV,opsize,aint(e),hreg4);
+                emit_reg_reg(A_IMUL,opsize,hreg4,hreg3);
+              end
+            else
+{$endif x86_64}
+              emit_const_reg(A_IMUL,opsize,aint(e),hreg3);
+            emit_reg_reg(A_SUB,opsize,hreg3,hreg2);
+            location.register:=hreg2;
+          end
         else
           begin
 DefaultDiv:
