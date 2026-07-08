@@ -225,3 +225,34 @@ testtool --fpc=trunk-ppc --path=../tests/webtbs        # same suite, upstream co
 ## Exit code
 
 The runner exits `0` when every test passed, `1` when at least one failed, `2` for a usage / config error (e.g. testfiles directory does not exist).
+
+## Tests that need extra units (`Rtti`, `TypInfo`, …)
+
+A few tests `uses` units that live in the `packages/` tree rather than in the
+core RTL, so a bare `compiler/ppcx64 -Fu rtl/units/x86_64-linux` invocation
+cannot find them and reports `Fatal: Can't find unit Rtti`. This is a *unit-path*
+gap, not a compiler bug — the units compile fine with the fork compiler.
+
+The `composable_records_rtti_flatten_*` tests need the extended-RTTI `Rtti` unit
+(`packages/rtl-objpas/src/inc/rtti.pp`). Minimal step to build it with the fork
+compiler and point the tests at it (no package Makefile / fpmake needed):
+
+```
+# from the freepascal fork root, after building compiler/ppcx64:
+mkdir -p /tmp/objpasunits
+./compiler/ppcx64 -Furtl/units/x86_64-linux \
+  -Fipackages/rtl-objpas/src/inc \
+  -FU/tmp/objpasunits \
+  packages/rtl-objpas/src/inc/rtti.pp
+```
+
+Then add `-Fu/tmp/objpasunits -Fipackages/rtl-objpas/src/inc` to the compile
+flags for those tests (all three pass once `Rtti` resolves). The produced `.ppu`
+files are build artifacts — do not commit them.
+
+Building the bundled `testtool` itself still additionally needs `fcl-process`
+(`packages/fcl-process/src/process.pp`) for its worker-process handling; that
+package pulls in more of `packages/` and is easiest built through its own package
+Makefile / fpmake. Until then, use a small shell runner (compile each `.pp`,
+honour the `%OPT=` / `%FAIL` / `%NORUN` / `%CHECKBIN_*` directives, run each
+binary under `ulimit -v` + a `timeout`) as described above.
