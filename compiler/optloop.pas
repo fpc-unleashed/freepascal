@@ -45,6 +45,7 @@ unit optloop;
     function OptimizeLoopPeel(node : tnode) : boolean;
     function OptimizeLoopSplit(node : tnode) : boolean;
     function OptimizeLoopFuse(node : tnode) : boolean;
+    function OptimizeReassoc(node : tnode) : boolean;
 
   implementation
 
@@ -4851,6 +4852,406 @@ unit optloop;
           is visited) and then L1 with the already-merged loop, and so inner loops
           are considered before the statement list that holds them }
         foreachnodestatic(pm_postprocess,node,@loopfuse_processfuse_cb,@ctx);
+        Result:=ctx.changed;
+      end;
+
+
+{*****************************************************************************
+              Reduction reassociation (gcc -freassoc, fast-math gated)
+*****************************************************************************}
+
+    { A node-tree port of gcc's -freassoc / LLVM's reduction reassociation for
+      the reduction shape
+
+        for i := lo to hi do  acc := acc + expr(i);          (sum)
+        for i := lo to hi do  acc := acc + a[i]*b[i];        (dot product)
+
+      where acc is a simple local scalar used by no other statement in the loop.
+      The single serial accumulator is a loop-carried dependency: iteration i+1's
+      add cannot begin until iteration i's has retired, so the loop runs at the
+      latency of one FP add per element however wide the machine is.  The pass
+      splits acc into K=4 INDEPENDENT partial accumulators, each summing every
+      fourth element, and combines them after the loop:
+
+        s1:=0; s2:=0; s3:=0;  i:=lo;
+        while i <= hi-3 do begin
+          acc := acc + expr(i);       -- s0 keeps acc's incoming value
+          s1  := s1  + expr(i+1);
+          s2  := s2  + expr(i+2);
+          s3  := s3  + expr(i+3);
+          i := i+4;
+        end;
+        acc := (acc+s1) + (s2+s3);    -- combine
+        while i <= hi do begin acc := acc + expr(i); i := i+1 end;   -- tail
+
+      The four chains are independent, so four adds are in flight at once and the
+      loop becomes throughput- rather than latency-bound (a ~3-4x speedup on a
+      long single/double dot product on a machine with a 3-4-cycle-latency,
+      1/cycle-throughput FP adder).  This is exactly neural-api's inner products
+      (weight . activation) and L2/sum reductions over a TNNetVolume.
+
+      SOUNDNESS.  Reassociating the additions changes the ORDER in which the
+      partial sums are combined, hence the FP rounding -- so for a floating-point
+      accumulator the pass fires ONLY under fast-math (cs_opt_fastmath), matching
+      gcc's -ffast-math/-fassociative-math requirement.  For an integer
+      accumulator two's-complement addition is exactly associative (even on
+      overflow), so it is always safe -- except that -Co would trap on a different
+      add, so checked code is declined.  The per-element contribution is unchanged
+      (each element is added in the accumulator's precision exactly as before);
+      only the grouping across elements differs.  The recognizer is strict and
+      anything unmatched compiles exactly as before:
+
+        * The loop is an ascending, unit-step counted for-loop over a simple non-
+          aliased signed 32/64-bit counter (so i+1..i+3 and hi-3 cannot wrap for
+          any index the original loop reached).
+        * The body is exactly ONE plain (:=) assignment  acc := acc + expr  or
+          acc := expr + acc, whose target acc is a simple non-aliased, non-
+          address-taken, non-volatile local/value-param scalar of a floating-point
+          or integer type.  The single-statement shape guarantees acc and the
+          counter are written nowhere else in the loop.
+        * expr is side-effect free and does not mention acc: it contains no call,
+          no assignment, no address-of, no nested loop / control transfer, no
+          write or modify of any location, and no non-pure inline intrinsic (only
+          the pure single-argument arithmetic ones -- abs/sqr/sqrt and the min/max
+          family -- are allowed).  Because expr writes nothing and acc is not
+          address-taken, duplicating expr four times (with the counter shifted by
+          i+1..i+3) reads the same values the serial loop would and produces no
+          extra side effect; aliasing is irrelevant since nothing in the loop is
+          stored except the local acc.
+        * -Cr/-Co checked code is declined, and provably tiny constant-trip loops
+          (< 2*K iterations) are left alone (no benefit, and peeling handles them).
+        * Procedures with labels are skipped at the psub call site like the other
+          loop passes, so control cannot enter the split body mid-stream. }
+
+    const
+      reassoc_k = 4;   { number of independent partial accumulators }
+
+    type
+      treassoc_safety = record
+        accsym : tabstractvarsym;
+        bad : boolean;
+      end;
+      preassoc_safety = ^treassoc_safety;
+
+      treassoc_subst = record
+        counter : tsym;
+        delta : longint;
+        ctype : tdef;
+      end;
+      preassoc_subst = ^treassoc_subst;
+
+
+    function reassoc_safety_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      { rejects any expr construct that would make duplicating it unsound: a
+        write/modify of any location, a call, an address-of, an assignment, a
+        nested loop or control transfer, a non-pure inline intrinsic, or a read of
+        the accumulator itself (which must appear only as the reduction target) }
+      begin
+        result:=fen_false;
+        if ([nf_write,nf_modify]*n.flags)<>[] then
+          begin
+            preassoc_safety(arg)^.bad:=true;
+            exit(fen_norecurse_true);
+          end;
+        case n.nodetype of
+          calln,addrn,assignn,forn,whilerepeatn,
+          breakn,continuen,goton,labeln,exitn,raisen,tryexceptn,tryfinallyn,onn:
+            begin
+              preassoc_safety(arg)^.bad:=true;
+              result:=fen_norecurse_true;
+            end;
+          inlinen:
+            if not (tinlinenode(n).inlinenumber in
+                 [in_abs_long,in_abs_real,in_sqr_real,in_sqrt_real,
+                  in_min_single,in_max_single,in_min_double,in_max_double,
+                  in_min_dword,in_max_dword,in_min_longint,in_max_longint,
+                  in_min_qword,in_max_qword,in_min_int64,in_max_int64,
+                  in_min_quad,in_max_quad]) then
+              begin
+                preassoc_safety(arg)^.bad:=true;
+                result:=fen_norecurse_true;
+              end;
+          loadn:
+            if tloadnode(n).symtableentry=tsym(preassoc_safety(arg)^.accsym) then
+              begin
+                preassoc_safety(arg)^.bad:=true;
+                result:=fen_norecurse_true;
+              end;
+          else
+            ;
+        end;
+      end;
+
+
+    function reassoc_subst_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      { wrap every plain read of the loop counter i into (i + delta), so a body
+        copy computes expr(i+delta); returns fen_norecurse_false on a hit so the
+        freshly built counter read inside the new add is not re-wrapped.  The new
+        (i+delta) node is typechecked+firstpassed immediately: the surrounding expr
+        is a copy of an already-typechecked body, so do_firstpass on the enclosing
+        block will not descend into it -- but (i+delta) has the identical type as
+        the plain counter read it replaces, so the ancestors' cached resultdefs
+        stay valid and only this new subtree needs processing. }
+      var
+        ps : preassoc_subst;
+      begin
+        result:=fen_false;
+        ps:=preassoc_subst(arg);
+        if (n.nodetype=loadn) and (tloadnode(n).symtableentry=ps^.counter) and
+           (([nf_write,nf_modify]*n.flags)=[]) then
+          begin
+            n:=caddnode.create(addn,n,cordconstnode.create(ps^.delta,ps^.ctype,false));
+            do_firstpass(n);
+            result:=fen_norecurse_false;
+          end;
+      end;
+
+
+    function reassoc_zero(accdef : tdef) : tnode;
+      { the additive identity of the accumulator type }
+      begin
+        if is_fpu(accdef) then
+          result:=crealconstnode.create(0.0,accdef)
+        else
+          result:=cordconstnode.create(0,accdef,false);
+      end;
+
+
+    type
+      treassoccontext = object
+        changed : boolean;
+        procedure processloop(var n : tnode);
+      end;
+
+
+    procedure treassoccontext.processloop(var n : tnode);
+      var
+        forn : tfornode;
+        counter : tabstractvarsym;
+        accsym : tabstractvarsym;
+        ctype, accdef : tdef;
+        stmt, lhs, rhs, la, ra, exprnode : tnode;
+        assign : tassignmentnode;
+        block, mainbody, tailbody, combine : tnode;
+        stat, mstat, tstat : tstatementnode;
+        lotemp, hitemp : ttempcreatenode;
+        spart : array[1..reassoc_k-1] of ttempcreatenode;
+        safety : treassoc_safety;
+        subst : treassoc_subst;
+        exprk, accref : tnode;
+        j : longint;
+        lo, hi : tconstexprint;
+
+      function reassoc_reason : string;
+        begin
+          result:='';
+          if lnf_backward in forn.loopflags then
+            exit('descending (downto) loop');
+          if assigned(forn.loopstep) then
+            exit('non-unit loop step');
+
+          { counter: simple non-aliased signed 32/64-bit local/value-param }
+          counter:=rangeelim_simple_var(forn.left);
+          if not assigned(counter) then
+            exit('loop counter is not a simple non-aliased variable');
+          ctype:=forn.left.resultdef;
+          if not assigned(ctype) or (ctype.typ<>orddef) then
+            exit('loop counter is not an ordinal type');
+          if not is_signed(ctype) or not(ctype.size in [4,8]) then
+            exit('loop counter is not a signed 32/64-bit integer');
+
+          if ([cs_check_range,cs_check_overflow]*current_settings.localswitches)<>[] then
+            exit('range/overflow checking is enabled (-Cr/-Co)');
+
+          { body: exactly one plain assignment  acc := acc + expr }
+          stmt:=vect_body_single_stmt(forn.t2);
+          if not assigned(stmt) then
+            exit('loop body is empty or has multiple statements');
+          if stmt.nodetype<>assignn then
+            exit('loop body is not a single assignment statement');
+          assign:=tassignmentnode(stmt);
+          if assign.assigntype<>at_normal then
+            exit('loop body assignment is not a plain assignment');
+
+          { destination acc: a simple non-aliased local scalar of FP or integer
+            type }
+          lhs:=rangeelim_skip_typeconv(assign.left);
+          if not assigned(lhs) or (lhs.nodetype<>loadn) then
+            exit('reduction target is not a plain scalar variable');
+          accsym:=rangeelim_simple_var(lhs);
+          if not assigned(accsym) then
+            exit('reduction target is not a simple non-aliased local scalar');
+          accdef:=lhs.resultdef;
+          if not assigned(accdef) then
+            exit('reduction target has no known type');
+          if is_fpu(accdef) then
+            begin
+              if not(cs_opt_fastmath in current_settings.optimizerswitches) then
+                exit('floating-point reduction needs fast-math (-OoFASTMATH) to reassociate');
+            end
+          else if not(is_ordinal(accdef) and (accdef.typ=orddef) and (accdef.size in [1,2,4,8])) then
+            exit('reduction accumulator is neither a floating-point nor an integer scalar');
+
+          { RHS must be  acc + expr  or  expr + acc }
+          rhs:=rangeelim_skip_typeconv(assign.right);
+          if not assigned(rhs) or (rhs.nodetype<>addn) then
+            exit('right-hand side is not an addition into the accumulator');
+          if taddnode(rhs).nodetype<>addn then
+            exit('right-hand side is not an addition into the accumulator');
+          la:=rangeelim_skip_typeconv(taddnode(rhs).left);
+          ra:=rangeelim_skip_typeconv(taddnode(rhs).right);
+          if assigned(la) and (la.nodetype=loadn) and (tloadnode(la).symtableentry=tsym(accsym)) then
+            exprnode:=taddnode(rhs).right
+          else if assigned(ra) and (ra.nodetype=loadn) and (tloadnode(ra).symtableentry=tsym(accsym)) then
+            exprnode:=taddnode(rhs).left
+          else
+            exit('the addition does not have the accumulator as one operand');
+
+          { expr side-effect free and free of any further accumulator reference }
+          safety.accsym:=accsym;
+          safety.bad:=false;
+          foreachnodestatic(exprnode,@reassoc_safety_cb,@safety);
+          if safety.bad then
+            exit('the added expression has side effects, references the accumulator, or contains a call/non-pure intrinsic');
+
+          { leave provably tiny constant-trip loops alone }
+          if rangeelim_const_value(forn.right,lo) and rangeelim_const_value(forn.t1,hi) and
+             ((hi-lo+1) < 2*reassoc_k) then
+            exit('trip count is a small compile-time constant (not worth splitting)');
+        end;
+
+      begin
+        forn:=tfornode(n);
+
+        { pre-initialize recognizer outputs (a nested function assigning parent
+          locals defeats per-procedure DFA; see the matching note in the sibling
+          passes) }
+        counter:=nil;
+        accsym:=nil;
+        ctype:=nil;
+        accdef:=nil;
+        assign:=nil;
+        exprnode:=nil;
+
+        if reassoc_reason<>'' then
+          begin
+            MessagePos1(forn.fileinfo,cg_n_loop_not_reassociated,reassoc_reason);
+            exit;
+          end;
+
+        { ---- build the replacement block ---- }
+        block:=internalstatements(stat);
+
+        { lo := <start>;  hi := <end>  (evaluated once) }
+        lotemp:=ctempcreatenode.create(ctype,ctype.size,tt_persistent,true);
+        addstatement(stat,lotemp);
+        addstatement(stat,cassignmentnode.create(ctemprefnode.create(lotemp),forn.right.getcopy));
+        hitemp:=ctempcreatenode.create(ctype,ctype.size,tt_persistent,true);
+        addstatement(stat,hitemp);
+        addstatement(stat,cassignmentnode.create(ctemprefnode.create(hitemp),forn.t1.getcopy));
+
+        { i := lo }
+        addstatement(stat,cassignmentnode.create(
+          cloadnode.create(tsym(counter),counter.owner),
+          ctemprefnode.create(lotemp)));
+
+        { partial accumulators s1..s(K-1) := 0  (s0 is acc itself, keeping its
+          incoming value) }
+        for j:=1 to reassoc_k-1 do
+          begin
+            spart[j]:=ctempcreatenode.create(accdef,accdef.size,tt_persistent,true);
+            addstatement(stat,spart[j]);
+            addstatement(stat,cassignmentnode.create(ctemprefnode.create(spart[j]),reassoc_zero(accdef)));
+          end;
+
+        { main loop:  while i<=hi-(K-1) do begin K independent adds; i:=i+K end }
+        mainbody:=internalstatements(mstat);
+        for j:=0 to reassoc_k-1 do
+          begin
+            if j=0 then
+              accref:=cloadnode.create(tsym(accsym),accsym.owner)
+            else
+              accref:=ctemprefnode.create(spart[j]);
+            exprk:=exprnode.getcopy;
+            if j>0 then
+              begin
+                subst.counter:=tsym(counter);
+                subst.delta:=j;
+                subst.ctype:=ctype;
+                foreachnodestatic(pm_postprocess,exprk,@reassoc_subst_cb,@subst);
+              end;
+            addstatement(mstat,cassignmentnode.create(accref,
+              caddnode.create(addn,accref.getcopy,exprk)));
+          end;
+        addstatement(mstat,cassignmentnode.create(
+          cloadnode.create(tsym(counter),counter.owner),
+          caddnode.create(addn,cloadnode.create(tsym(counter),counter.owner),
+            cordconstnode.create(reassoc_k,ctype,false))));
+        addstatement(stat,cwhilerepeatnode.create(
+          caddnode.create(lten,cloadnode.create(tsym(counter),counter.owner),
+            caddnode.create(subn,ctemprefnode.create(hitemp),
+              cordconstnode.create(reassoc_k-1,ctype,false))),
+          mainbody,true,false));
+
+        { combine:  acc := (acc + s1) + (s2 + s3)   (balanced tree, K=4) }
+        combine:=caddnode.create(addn,
+          caddnode.create(addn,
+            cloadnode.create(tsym(accsym),accsym.owner),
+            ctemprefnode.create(spart[1])),
+          caddnode.create(addn,
+            ctemprefnode.create(spart[2]),
+            ctemprefnode.create(spart[3])));
+        addstatement(stat,cassignmentnode.create(
+          cloadnode.create(tsym(accsym),accsym.owner),combine));
+
+        { scalar remainder:  while i<=hi do begin <original body>; i:=i+1 end }
+        tailbody:=internalstatements(tstat);
+        addstatement(tstat,forn.t2.getcopy);
+        addstatement(tstat,cassignmentnode.create(
+          cloadnode.create(tsym(counter),counter.owner),
+          caddnode.create(addn,cloadnode.create(tsym(counter),counter.owner),
+            cordconstnode.create(1,ctype,false))));
+        addstatement(stat,cwhilerepeatnode.create(
+          caddnode.create(lten,cloadnode.create(tsym(counter),counter.owner),
+            ctemprefnode.create(hitemp)),
+          tailbody,true,false));
+
+        { release temps }
+        addstatement(stat,ctempdeletenode.create(lotemp));
+        addstatement(stat,ctempdeletenode.create(hitemp));
+        for j:=1 to reassoc_k-1 do
+          addstatement(stat,ctempdeletenode.create(spart[j]));
+
+        do_firstpass(block);
+        MessagePos1(forn.fileinfo,cg_n_loop_reassociated,tostr(reassoc_k));
+        forn.free;
+        n:=block;
+        changed:=true;
+      end;
+
+
+    function reassoc_processloop_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      begin
+        result:=fen_false;
+        if n.nodetype=forn then
+          begin
+            treassoccontext(arg^).processloop(n);
+            { n may now be a block; do not recurse into the freed for-node }
+            result:=fen_norecurse_false;
+          end;
+      end;
+
+
+    function OptimizeReassoc(node : tnode) : boolean;
+      var
+        ctx : treassoccontext;
+      begin
+        Result:=false;
+        if (cs_opt_size in current_settings.optimizerswitches) then
+          exit;
+        ctx.changed:=false;
+        { postorder so an inner reduction loop is split before an enclosing loop }
+        foreachnodestatic(pm_postprocess,node,@reassoc_processloop_cb,@ctx);
         Result:=ctx.changed;
       end;
 

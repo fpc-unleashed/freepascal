@@ -1304,6 +1304,22 @@ implementation
              and not(pi_has_label in flags) then
              RedoDFA:=OptimizeLoopPeel(code) or RedoDFA;
 
+           { reduction reassociation: split the single serial FP/integer
+             accumulator of a  for i:=lo to hi do acc:=acc+expr  sum / dot-product
+             reduction into K independent partial accumulators combined after the
+             loop, breaking the loop-carried dependency chain. FP accumulators are
+             only reassociated under fast-math. Run here (still on for-nodes,
+             before the for->while lowering below and BEFORE strength reduction
+             rewrites the a[i] index nodes into pointer walks -- the pass copies
+             the body with the counter shifted by i+1..i+3, which needs the
+             counter to still appear as a plain read). Skips procedures with labels
+             like the loop passes here so control cannot enter a split body mid-
+             stream. Uses no DFA (its checks are structural), but its new nodes are
+             folded into RedoDFA so strength reduction below sees fresh info. }
+           if (cs_opt_reassoc in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizeReassoc(code) or RedoDFA;
+
            if RedoDFA then
              begin
                dfabuilder.redodfainfo(code);

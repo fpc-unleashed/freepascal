@@ -2565,7 +2565,8 @@ const
          'cs_opt_looppeel',
          'cs_opt_loopsplit',
          'cs_opt_loopfuse',
-         'cs_opt_ifconvert'
+         'cs_opt_ifconvert',
+         'cs_opt_reassoc'
        );
     var
          globalswitch  : tglobalswitch;
