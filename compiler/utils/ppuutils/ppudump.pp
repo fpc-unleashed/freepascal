@@ -2569,7 +2569,8 @@ const
          'cs_opt_reassoc',
          'cs_opt_unrolljam',
          'cs_opt_predcom',
-         'cs_opt_sra'
+         'cs_opt_sra',
+         'cs_opt_storemerge'
        );
     var
          globalswitch  : tglobalswitch;
