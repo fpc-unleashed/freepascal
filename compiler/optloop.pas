@@ -40,6 +40,7 @@ unit optloop;
     function OptimizeBitIdiom(node : tnode) : boolean;
     function OptimizeRangeElim(node : tnode) : boolean;
     function OptimizeVectorize(node : tnode) : boolean;
+    function OptimizeJumpThread(node : tnode) : boolean;
 
   implementation
 
@@ -3275,6 +3276,557 @@ unit optloop;
         { postorder so nested (inner) loops are considered before their parents }
         foreachnodestatic(pm_postprocess,node,@vect_processloop_cb,@ctx);
         Result:=ctx.changed;
+      end;
+
+
+{*****************************************************************************
+                   Jump threading / nested re-test elimination
+*****************************************************************************}
+
+    { A node-tree port of gcc's -fthread-jumps / VRP-based jump threading.  A
+      full CFG-level threading pass is out of reach at the node level, but the
+      practical win -- eliminating a re-test of a predicate that a dominating
+      branch already decided -- maps directly onto the FPC node tree:
+
+          if <cond> then <TB> else <EB>
+
+      inside TB the predicate <cond> is known TRUE, and inside EB it is known
+      FALSE.  Any *nested* if whose condition is decided by those facts is
+      folded in place to the taken branch, deleting the redundant re-test (and
+      the dead arm).  Because we only fold -- never duplicate a block -- there
+      is no code growth and hence no I-cache budget to manage.
+
+      Two fact kinds are tracked, both restricted to provably-safe conditions:
+
+        * comparison facts  V <op> c  (op in = <> < <= > >=, c an ordinal
+          constant, V a simple non-aliased non-volatile local/value-param).
+          A nested comparison  V <op2> c2  on the *same* variable and the
+          *same* signedness is decided by integer implication (jt_all_satisfy):
+          the fact constrains V to a set S; the query is always-true if S is a
+          subset of the query's truth set, always-false if S is disjoint from
+          it, else undecided.  Reasoning is done on the unbounded integer line
+          (the type's own domain bounds are only ever a *subset* of S, so
+          ignoring them can only lose folds, never create an unsound one).
+
+        * identical-predicate facts: any side-effect-free, call-free, memory-
+          free condition built solely from constants, simple non-aliased var
+          loads and pure operators; a nested condition that is tnode.isequal to
+          it folds to the taken (or, in the else-branch, the not-taken) arm.
+
+      Soundness gates (a wrong-way implication is a miscompile):
+        * V (or, for identical-predicate facts, every variable in the
+          condition) must be a simple non-aliased, non-address-taken, non-
+          volatile, non-threadvar local or value parameter -- so no pointer,
+          alias, or other-thread write can change it -- AND must not be
+          assigned anywhere in the branch region the fact is asserted for
+          (jt_writes_var scans for a write load or a for-loop that owns it).
+          Address-not-taken already rules out by-ref parameter passing and
+          SetLength-style aliasing, so an ordinary call on the path cannot
+          touch V; combined with "unmodified in the whole region", the fact is
+          invariant throughout the region and a re-test anywhere in it -- even
+          inside a nested loop -- is decidable.
+        * Facts inherited from an enclosing dominating if stay valid in every
+          sub-region (their variable was already proven unmodified in the
+          larger region), so they are carried down unconditionally and let a
+          chained if/elsif ladder fold later re-tests of earlier decisions. }
+
+    type
+      tjtfact = record
+        sym      : tabstractvarsym;   { the constrained variable (both kinds) }
+        iscmp    : boolean;           { comparison fact vs identical-predicate }
+        op       : tnodetype;         { cmp: the (normalized) relation  V op c  }
+        c        : tconstexprint;     { cmp: the constant }
+        signed   : boolean;           { cmp: signedness of the compare }
+        origcond : tnode;             { isequal fact: the asserted condition }
+        asserted : boolean;           { isequal fact: TRUE known / FALSE known }
+      end;
+      tjtfactarr = array of tjtfact;
+
+      pjtenv = ^tjtenv;
+      tjtenv = record
+        facts   : tjtfactarr;
+        changed : pboolean;
+      end;
+
+
+    { swap a relational operator for the case  c <op> V  ==  V <swap> c }
+    function jt_swap_relop(op : tnodetype) : tnodetype;
+      begin
+        case op of
+          ltn:  result:=gtn;
+          gtn:  result:=ltn;
+          lten: result:=gten;
+          gten: result:=lten;
+          else  result:=op;   { =, <> are symmetric }
+        end;
+      end;
+
+
+    { logical negation of a relational operator }
+    function jt_negate_relop(op : tnodetype) : tnodetype;
+      begin
+        case op of
+          equaln:   result:=unequaln;
+          unequaln: result:=equaln;
+          ltn:      result:=gten;
+          lten:     result:=gtn;
+          gtn:      result:=lten;
+          gten:     result:=ltn;
+          else      result:=op;
+        end;
+      end;
+
+
+    { evaluate a concrete  v <op> c  over the integers }
+    function jt_eval_rel(const v : tconstexprint; op : tnodetype; const c : tconstexprint) : boolean;
+      begin
+        case op of
+          equaln:   result:=v=c;
+          unequaln: result:=v<>c;
+          ltn:      result:=v<c;
+          lten:     result:=v<=c;
+          gtn:      result:=v>c;
+          gten:     result:=v>=c;
+          else      result:=false;
+        end;
+      end;
+
+
+    { Describe the solution set of  V <op> c  as either a single value, the
+      complement of a single value (<>), or a one-sided interval.
+        kind: 0=interval [lo..hi] (haslo/hashi say which bounds are finite),
+              1=single value (in lo), 2=all-but-one (the excluded value in lo). }
+    procedure jt_relkind(op : tnodetype; const c : tconstexprint;
+                         out lo, hi : tconstexprint; out haslo, hashi : boolean;
+                         out kind : integer);
+      begin
+        lo:=c; hi:=c; haslo:=false; hashi:=false; kind:=0;
+        case op of
+          equaln:
+            begin kind:=1; lo:=c; end;
+          unequaln:
+            begin kind:=2; lo:=c; end;
+          ltn:
+            begin kind:=0; hashi:=true; hi:=c-1; end;
+          lten:
+            begin kind:=0; hashi:=true; hi:=c; end;
+          gtn:
+            begin kind:=0; haslo:=true; lo:=c+1; end;
+          gten:
+            begin kind:=0; haslo:=true; lo:=c; end;
+        end;
+      end;
+
+
+    { True iff every integer V satisfying the fact  V <fop> fc  also satisfies
+      the query  V <qop> qc .  Both relations are on the same variable and the
+      same signedness, so plain numeric comparison of the constants matches the
+      compare order (unsigned constants are non-negative -> numeric == unsigned
+      order; signed constants -> numeric == signed order). }
+    function jt_all_satisfy(fop : tnodetype; const fc : tconstexprint;
+                            qop : tnodetype; const qc : tconstexprint) : boolean;
+      var
+        flo, fhi, qlo, qhi : tconstexprint;
+        fhaslo, fhashi, qhaslo, qhashi : boolean;
+        fkind, qkind : integer;
+        lowerok, upperok : boolean;
+      begin
+        result:=false;
+        jt_relkind(fop,fc,flo,fhi,fhaslo,fhashi,fkind);
+        jt_relkind(qop,qc,qlo,qhi,qhaslo,qhashi,qkind);
+        case fkind of
+          1: { fact fixes V = flo: just evaluate the query there }
+            result:=jt_eval_rel(flo,qop,qc);
+          2: { fact is  V <> flo (everything but one point). The query holds for
+               all of that only if the query itself is  V <> flo }
+            result:=(qkind=2) and (qlo=flo);
+          0: { fact is a one-sided interval }
+            case qkind of
+              1: { infinite interval can never be a subset of a single point }
+                result:=false;
+              2: { subset of  V <> qc  iff the excluded point qc is outside S }
+                result:=(fhaslo and (qlo<flo)) or (fhashi and (qlo>fhi));
+              0: { subset of the query interval: query must cover both ends of S }
+                begin
+                  lowerok:=(not qhaslo) or (fhaslo and (flo>=qlo));
+                  upperok:=(not qhashi) or (fhashi and (fhi<=qhi));
+                  result:=lowerok and upperok;
+                end;
+            end;
+        end;
+      end;
+
+
+    { Recognize a condition of the form  V <op> const  (or  const <op> V ), with
+      V a simple non-aliased local/value-param of ordinal type and the compare
+      side-effect free.  Returns the normalized  V <op> c  plus its signedness. }
+    function jt_recognize_cmp(cond : tnode; out sym : tabstractvarsym;
+                              out op : tnodetype; out c : tconstexprint;
+                              out signed : boolean) : boolean;
+      var
+        l, r : tnode;
+      begin
+        result:=false;
+        sym:=nil;
+        if not assigned(cond) then
+          exit;
+        if not(cond.nodetype in [equaln,unequaln,ltn,lten,gtn,gten]) then
+          exit;
+        if ([nf_write,nf_modify]*cond.flags)<>[] then
+          exit;
+        l:=taddnode(cond).left;
+        r:=taddnode(cond).right;
+        { var on the left, constant on the right }
+        if rangeelim_const_value(r,c) then
+          begin
+            sym:=rangeelim_simple_var(rangeelim_skip_typeconv(l));
+            if assigned(sym) and assigned(l.resultdef) and is_ordinal(l.resultdef) then
+              begin
+                op:=cond.nodetype;
+                signed:=is_signed(l.resultdef);
+                exit(true);
+              end;
+            sym:=nil;
+          end;
+        { constant on the left, var on the right:  c <op> V  ==  V <swap> c }
+        if rangeelim_const_value(l,c) then
+          begin
+            sym:=rangeelim_simple_var(rangeelim_skip_typeconv(r));
+            if assigned(sym) and assigned(r.resultdef) and is_ordinal(r.resultdef) then
+              begin
+                op:=jt_swap_relop(cond.nodetype);
+                signed:=is_signed(r.resultdef);
+                exit(true);
+              end;
+            sym:=nil;
+          end;
+      end;
+
+
+    { scan state for jt_writes_var }
+    type
+      pjtwritescan = ^tjtwritescan;
+      tjtwritescan = record
+        sym   : tabstractvarsym;
+        found : boolean;
+      end;
+
+    function jt_writescan_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      var
+        p : pjtwritescan;
+      begin
+        result:=fen_false;
+        p:=pjtwritescan(arg);
+        if (n.nodetype=loadn) and (tloadnode(n).symtableentry=tsym(p^.sym)) and
+           (([nf_write,nf_modify]*n.flags)<>[]) then
+          begin
+            p^.found:=true;
+            result:=fen_norecurse_true;
+          end
+        { a for-loop assigns its counter variable each iteration }
+        else if (n.nodetype=forn) and assigned(tfornode(n).left) and
+                (tfornode(n).left.nodetype=loadn) and
+                (tloadnode(tfornode(n).left).symtableentry=tsym(p^.sym)) then
+          begin
+            p^.found:=true;
+            result:=fen_norecurse_true;
+          end;
+      end;
+
+    { True if the variable sym is (or might be) assigned anywhere in subtree.
+      addr_taken is already excluded by rangeelim_simple_var, so a write can
+      only appear as a write/modify load or a for-loop over the variable. }
+    function jt_writes_var(subtree : tnode; sym : tabstractvarsym) : boolean;
+      var
+        scan : tjtwritescan;
+      begin
+        result:=false;
+        if not assigned(subtree) then
+          exit;
+        scan.sym:=sym;
+        scan.found:=false;
+        foreachnodestatic(pm_postprocess,subtree,@jt_writescan_cb,@scan);
+        result:=scan.found;
+      end;
+
+
+    { scan state for jt_pure_cond }
+    type
+      pjtpurescan = ^tjtpurescan;
+      tjtpurescan = record
+        ok    : boolean;
+        vars  : array of tabstractvarsym;
+        nvars : integer;
+      end;
+
+    function jt_purescan_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      var
+        p : pjtpurescan;
+        sym : tabstractvarsym;
+        i : integer;
+      begin
+        result:=fen_false;
+        p:=pjtpurescan(arg);
+        { any write/modify anywhere makes the condition impure }
+        if ([nf_write,nf_modify]*n.flags)<>[] then
+          begin
+            p^.ok:=false;
+            exit(fen_norecurse_true);
+          end;
+        case n.nodetype of
+          ordconstn,realconstn,niln,
+          addn,subn,muln,andn,orn,xorn,
+          notn,unaryminusn,
+          equaln,unequaln,ltn,lten,gtn,gten:
+            result:=fen_false;
+          typeconvn:
+            { a range/overflow-checked conversion may trap -> not pure }
+            if ([cs_check_range,cs_check_overflow]*n.localswitches)<>[] then
+              begin
+                p^.ok:=false;
+                result:=fen_norecurse_true;
+              end
+            else
+              result:=fen_false;
+          loadn:
+            begin
+              sym:=rangeelim_simple_var(n);
+              if not assigned(sym) then
+                begin
+                  p^.ok:=false;
+                  result:=fen_norecurse_true;
+                end
+              else
+                begin
+                  { record the variable (deduplicated) }
+                  for i:=0 to p^.nvars-1 do
+                    if p^.vars[i]=sym then
+                      begin
+                        result:=fen_norecurse_false;
+                        exit;
+                      end;
+                  if p^.nvars>=length(p^.vars) then
+                    setlength(p^.vars,4+p^.nvars*2);
+                  p^.vars[p^.nvars]:=sym;
+                  inc(p^.nvars);
+                  result:=fen_norecurse_false;
+                end;
+            end;
+          else
+            { calls, derefs, array/field access, inline nodes, etc. -> impure }
+            begin
+              p^.ok:=false;
+              result:=fen_norecurse_true;
+            end;
+        end;
+      end;
+
+    { True if cond is a side-effect-free, call-free, memory-free predicate over
+      constants and simple non-aliased variable loads only; on success returns
+      in scan.vars the distinct variables it reads. }
+    function jt_pure_cond(cond : tnode; out scan : tjtpurescan) : boolean;
+      begin
+        scan.ok:=true;
+        scan.nvars:=0;
+        setlength(scan.vars,0);
+        result:=false;
+        if not assigned(cond) then
+          exit;
+        foreachnodestatic(pm_postprocess,cond,@jt_purescan_cb,@scan);
+        result:=scan.ok;
+      end;
+
+
+    { Decide a condition against the active facts.
+      Returns +1 (provably true), 0 (provably false) or -1 (undecided). }
+    function jt_decide(cond : tnode; const facts : tjtfactarr) : integer;
+      var
+        qsym : tabstractvarsym;
+        qop : tnodetype;
+        qc : tconstexprint;
+        qsigned : boolean;
+        i : integer;
+      begin
+        result:=-1;
+        if not assigned(cond) then
+          exit;
+        { comparison-fact reasoning }
+        if jt_recognize_cmp(cond,qsym,qop,qc,qsigned) then
+          for i:=0 to high(facts) do
+            if facts[i].iscmp and (facts[i].sym=qsym) and (facts[i].signed=qsigned) then
+              begin
+                if jt_all_satisfy(facts[i].op,facts[i].c,qop,qc) then
+                  exit(1);
+                if jt_all_satisfy(facts[i].op,facts[i].c,jt_negate_relop(qop),qc) then
+                  exit(0);
+              end;
+        { identical-predicate reasoning }
+        for i:=0 to high(facts) do
+          if not facts[i].iscmp and assigned(facts[i].origcond) and
+             cond.isequal(facts[i].origcond) then
+            begin
+              if facts[i].asserted then
+                exit(1)
+              else
+                exit(0);
+            end;
+      end;
+
+
+    procedure jt_walk(var n : tnode; const facts : tjtfactarr; changed : pboolean); forward;
+
+    { Build the fact set that holds inside one branch of a dominating if:
+      the inherited facts (still valid, since their variable was proven
+      unmodified in the enclosing region) plus, when provable, the new fact
+      that <cond> is <assert_true> throughout this branch. }
+    function jt_branch_facts(const facts : tjtfactarr; cond, branch : tnode;
+                             assert_true : boolean) : tjtfactarr;
+      var
+        sym : tabstractvarsym;
+        op : tnodetype;
+        c : tconstexprint;
+        signed : boolean;
+        scan : tjtpurescan;
+        i : integer;
+        allunwritten : boolean;
+        nf : tjtfact;
+      begin
+        result:=copy(facts);
+        if not assigned(cond) then
+          exit;
+        { comparison fact: a single variable, decidable by range implication }
+        if jt_recognize_cmp(cond,sym,op,c,signed) then
+          begin
+            if jt_writes_var(branch,sym) then
+              exit;   { variable changes in this branch -> not invariant }
+            nf.sym:=sym;
+            nf.iscmp:=true;
+            if assert_true then
+              nf.op:=op
+            else
+              nf.op:=jt_negate_relop(op);
+            nf.c:=c;
+            nf.signed:=signed;
+            nf.origcond:=nil;
+            nf.asserted:=true;
+            setlength(result,length(result)+1);
+            result[high(result)]:=nf;
+            exit;
+          end;
+        { identical-predicate fact: pure condition, no variable written here }
+        if jt_pure_cond(cond,scan) and (scan.nvars>0) then
+          begin
+            allunwritten:=true;
+            for i:=0 to scan.nvars-1 do
+              if jt_writes_var(branch,scan.vars[i]) then
+                begin
+                  allunwritten:=false;
+                  break;
+                end;
+            if allunwritten then
+              begin
+                nf.sym:=nil;
+                nf.iscmp:=false;
+                nf.op:=cond.nodetype;
+                nf.signed:=false;
+                nf.origcond:=cond;
+                nf.asserted:=assert_true;
+                setlength(result,length(result)+1);
+                result[high(result)]:=nf;
+              end;
+          end;
+      end;
+
+
+    procedure jt_do_if(var n : tnode; const facts : tjtfactarr; changed : pboolean);
+      var
+        ifn_ : tifnode;
+        d : integer;
+        keep : tnode;
+        thenfacts, elsefacts : tjtfactarr;
+      begin
+        ifn_:=tifnode(n);
+        d:=jt_decide(ifn_.left,facts);
+        if d=1 then
+          begin
+            { condition known true: thread straight to the then-branch }
+            keep:=ifn_.right;
+            ifn_.right:=nil;
+            if not assigned(keep) then
+              begin
+                keep:=cnothingnode.create;
+                do_firstpass(keep);
+              end;
+            n.free;
+            n:=keep;
+            changed^:=true;
+            jt_walk(n,facts,changed);
+            exit;
+          end
+        else if d=0 then
+          begin
+            { condition known false: thread straight to the else-branch }
+            keep:=ifn_.t1;
+            ifn_.t1:=nil;
+            if not assigned(keep) then
+              begin
+                keep:=cnothingnode.create;
+                do_firstpass(keep);
+              end;
+            n.free;
+            n:=keep;
+            changed^:=true;
+            jt_walk(n,facts,changed);
+            exit;
+          end;
+        { undecided: descend into both branches with the branch-local facts }
+        jt_walk(ifn_.left,facts,changed);
+        thenfacts:=jt_branch_facts(facts,ifn_.left,ifn_.right,true);
+        jt_walk(ifn_.right,thenfacts,changed);
+        elsefacts:=jt_branch_facts(facts,ifn_.left,ifn_.t1,false);
+        jt_walk(ifn_.t1,elsefacts,changed);
+      end;
+
+
+    function jt_walk_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      var
+        env : pjtenv;
+      begin
+        env:=pjtenv(arg);
+        if n.nodetype=ifn then
+          begin
+            { jt_do_if fully handles this if and its whole subtree (forking the
+              facts for its branches), so do not let the generic walk descend }
+            jt_do_if(n,env^.facts,env^.changed);
+            result:=fen_norecurse_false;
+          end
+        else
+          { any other node inherits the same facts; keep descending }
+          result:=fen_false;
+      end;
+
+    { Walk subtree n under the given active facts, folding decided re-tests. }
+    procedure jt_walk(var n : tnode; const facts : tjtfactarr; changed : pboolean);
+      var
+        env : tjtenv;
+      begin
+        if not assigned(n) then
+          exit;
+        env.facts:=facts;
+        env.changed:=changed;
+        foreachnodestatic(pm_preprocess,n,@jt_walk_cb,@env);
+      end;
+
+
+    function OptimizeJumpThread(node : tnode) : boolean;
+      var
+        changed : boolean;
+        emptyfacts : tjtfactarr;
+      begin
+        changed:=false;
+        setlength(emptyfacts,0);
+        jt_walk(node,emptyfacts,@changed);
+        Result:=changed;
       end;
 
 end.

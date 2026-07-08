@@ -396,7 +396,11 @@ interface
          { conservative loop autovectorization: rewrite a counted single-
            precision element-wise for-loop into a 128-bit SSE packed main loop
            (4 singles/iteration) plus a scalar remainder loop }
-         cs_opt_vectorize
+         cs_opt_vectorize,
+         { jump threading / nested re-test elimination: fold a nested if whose
+           condition a dominating branch (or a value-range fact) already
+           decided straight to the taken arm, deleting the redundant re-test }
+         cs_opt_jumpthread
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -471,7 +475,7 @@ interface
          'CONSTPROP',
          'DEADSTORE','FORCENOSTACKFRAME','USELOADMODIFYSTORE',
          'UNUSEDPARA','CONSTS','FORLOOP','LICM','LOOPUNSWITCH','BITIDIOM',
-         'RANGEELIM','VECTORIZE'
+         'RANGEELIM','VECTORIZE','JUMPTHREAD'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
@@ -506,7 +510,7 @@ interface
        genericlevel3optimizerswitches = [cs_opt_level3,cs_opt_constant_propagate,cs_opt_nodedfa,cs_opt_loopstrength
                                          {$ifndef llvm},cs_opt_use_load_modify_store{$endif},
                                          cs_opt_loopunroll,cs_opt_forloop];
-       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim];
+       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread];
 
        { whole program optimizations whose information generation requires
          information from all loaded units
