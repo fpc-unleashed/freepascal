@@ -1316,6 +1316,25 @@ implementation
                RedoDFA:=false;
              end;
 
+           { code sinking (the symmetric counterpart of LICM): move a pure,
+             side-effect-free assignment  V:=<expr>  that immediately precedes
+             an if and whose value is consumed on only ONE arm (and is dead on
+             the fall-through after the if) down into that arm, so paths that
+             never use V stop computing it -- partially dead code elimination.
+             Needs valid (freshly redone) DFA to read the if-successor's life
+             set that proves V dead after the branch; skips procedures with
+             labels like the loop passes so a goto cannot land between the
+             assignment and the arm it was sunk into. }
+           if (cs_opt_sink in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizeCodeSink(code) or RedoDFA;
+
+           if RedoDFA then
+             begin
+               dfabuilder.redodfainfo(code);
+               RedoDFA:=false;
+             end;
+
            { conservative loop autovectorization: rewrite a counted single-
              precision element-wise for-loop  for i:=lo to hi do a[i]:=b[i] op c[i]
              into a 128-bit SSE packed main loop (4 singles/iteration) plus a
