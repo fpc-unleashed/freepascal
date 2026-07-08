@@ -2574,7 +2574,8 @@ const
          'cs_opt_casecluster',
          'cs_opt_crossjump',
          'cs_opt_blockorder',
-         'cs_opt_sink'
+         'cs_opt_sink',
+         'cs_opt_storemotion'
        );
     var
          globalswitch  : tglobalswitch;

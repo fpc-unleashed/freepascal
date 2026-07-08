@@ -1487,6 +1487,25 @@ implementation
                RedoDFA:=false;
              end;
 
+           { loop store motion / scalar promotion (the store-side counterpart of
+             LICM): when a loop repeatedly loads/stores an invariant-address
+             memory location (v1: a plain unmanaged global written in the loop),
+             promote it to a register temp -- load once before, operate on the
+             temp inside, store back once after. Pure node-pattern rewrite (does
+             not use DFA); runs on the still-structured for/while nodes BEFORE
+             ConvertForLoops lowers them, so the body is clean user code. Skips
+             procedures with labels like the loop passes above so control cannot
+             enter the loop between the pre-load and the post-store. }
+           if (cs_opt_storemotion in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizeStoreMotion(code) or RedoDFA;
+
+           if RedoDFA then
+             begin
+               dfabuilder.redodfainfo(code);
+               RedoDFA:=false;
+             end;
+
            if cs_opt_forloop in current_settings.optimizerswitches then
              RedoDFA:=OptimizeForLoop(code);
 

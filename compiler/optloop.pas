@@ -49,6 +49,7 @@ unit optloop;
     function OptimizeUnrollJam(node : tnode) : boolean;
     function OptimizePredCom(node : tnode) : boolean;
     function OptimizeCodeSink(node : tnode) : boolean;
+    function OptimizeStoreMotion(node : tnode) : boolean;
 
   implementation
 
@@ -7300,6 +7301,359 @@ unit optloop;
         changed:=false;
         foreachnodestatic(pm_preprocess,node,@sink_stmt_cb,@changed);
         result:=changed;
+      end;
+
+
+{*****************************************************************************
+                       Loop store motion / scalar promotion
+                                 (-OoSTOREMOTION)
+*****************************************************************************}
+
+    { Loop store motion (gcc -fgcse-sm / tree-ssa-loop-im "store motion"): the
+      store-side counterpart of the landed -OoLOOPMOTION LICM (which only hoists
+      invariant *loads*/pure expressions).  When a loop body repeatedly
+      loads/stores a memory location whose ADDRESS IS LOOP-INVARIANT, the value
+      is promoted to a register temp for the loop's duration: one load before
+      the loop, every body access rewritten to the temp, one store back after
+      the loop -- so the accumulation shape  g := g + a[i]  stops re-loading and
+      re-storing g through memory every iteration.
+
+      This v1 handles the clearest sound-and-useful subset: a plain module/unit
+      global (tstaticvarsym) of unmanaged scalar (ordinal/enum/float/pointer)
+      type -- whose address is a fixed static address, so pre-loading it before
+      the loop can never trap and never differs from the in-loop address -- that
+      is WRITTEN at least once inside the loop.  Invariant-indexed array
+      elements a[k], pointer derefs p^ and record fields of those (which need an
+      address-invariance + non-trapping-address proof) are left to a follow-up;
+      record-field promotion in while/repeat loops is already covered by
+      optimize_record_writes.
+
+      SOUNDNESS (a wrong promotion is a miscompile).  Because we never write the
+      promoted location inside the loop any more, nothing else in the loop may
+      observe or clobber it through a different path, and the post-loop store
+      must always reflect exactly what the original in-loop stores would have
+      left.  We therefore require the ENTIRE loop node (bounds/condition *and*
+      body) to be built only from a strict whitelist that provably cannot:
+        * call (a call could read/write the global) -- no calln/inlinen;
+        * raise before the post-loop store would run (which would leave the
+          global at its stale pre-loop value where the original left a partial
+          accumulation) -- no deref/index/vec, no div/mod, no checked
+          arithmetic, no range-checked convert, no managed operator;
+        * alias-write the promoted global -- the only stores allowed are to
+          plain local/param/static simple variables (distinct non-addr-taken
+          statics do not alias; indexed/deref/absolute lvalues are rejected,
+          which conservatively declines the whole loop);
+        * transfer control out mid-loop (break/exit/goto/raise) -- procedures
+          with labels are skipped at the psub call site, and the whitelist
+          admits no break/continue/exit/goto/try nodes.
+      The promotion candidate itself is additionally required to be
+      non-addr-taken, non-volatile, non-threadvar, non-external and regable.
+
+      ZERO-TRIP / EARLY PATHS: the temp is initialised to the global's current
+      value before the loop, so if the loop runs zero times the post-loop store
+      writes the identical value back -- observationally a no-op for a
+      non-volatile, non-aliased plain variable.  Conditional in-loop writes are
+      safe for the same reason: the temp mirrors the global exactly on every
+      path, so storing it back after the loop reproduces the value the original
+      in-loop stores would have left. }
+
+    type
+      TStoreMotionVar = class(TLinkedListItem)
+        Sym: TAbstractVarSym;
+        TempCreate: TTempCreateNode;
+        Written: Boolean;
+      end;
+
+      PStoreMotionData = ^TStoreMotionData;
+      TStoreMotionData = record
+        Vars: TLinkedList;
+      end;
+
+    { A global (tstaticvarsym) that may be promoted for the loop's duration. }
+    function sm_qualifies_sym(sym: tsym): boolean;
+      var
+        v: tabstractvarsym;
+      begin
+        result:=false;
+        if not assigned(sym) or not (sym is tstaticvarsym) then
+          exit;
+        v:=tabstractvarsym(sym);
+        if not licm_simple_type(v.vardef) then
+          exit;
+        if is_managed_type(v.vardef) then
+          exit;
+        { addr_taken would let an unseen pointer alias the global; the
+          whitelist forbids all derefs/calls so it cannot actually be touched in
+          the loop, but we stay conservative and exclude it.  different_scope is
+          NOT excluded: for a static it merely records that the global is read
+          from a subroutine rather than its declaring scope (always true for a
+          global used inside a procedure) and implies no extra aliasing path. }
+        if v.addr_taken then
+          exit;
+        if (v.varoptions*[vo_volatile,vo_is_thread_var,vo_is_external,vo_is_weak_external])<>[] then
+          exit;
+        { only worth promoting if the temp can actually live in a register }
+        if not (tstoreddef(v.vardef).is_intregable or tstoreddef(v.vardef).is_fpuregable) then
+          exit;
+        result:=true;
+      end;
+
+
+    { A plain, non-indexed, non-deref lvalue whose store cannot alias a distinct
+      promoted global (rejects subscript/vec/deref/absolute lvalues). }
+    function sm_lvalue_safe(n: tnode): boolean;
+      begin
+        { a temp reference is a compiler-generated local slot -- it cannot alias
+          a distinct promoted global, so storing to it is safe }
+        if n.nodetype=temprefn then
+          begin
+            result:=true;
+            exit;
+          end;
+        result:=(n.nodetype=loadn) and
+          (tloadnode(n).symtableentry.typ in [localvarsym,paravarsym,staticvarsym]) and
+          licm_simple_type(n.resultdef) and
+          not is_managed_type(n.resultdef);
+      end;
+
+    { Recursive whitelist over statements *and* expressions: true only if every
+      node in the subtree is provably call-free, non-trapping and alias-safe as
+      described in the pass header. }
+    function sm_node_safe(n: tnode): boolean;
+      begin
+        result:=false;
+        if not assigned(n) then
+          begin
+            { an empty branch/bound is trivially safe }
+            result:=true;
+            exit;
+          end;
+        case n.nodetype of
+          nothingn:
+            result:=true;
+          blockn:
+            result:=sm_node_safe(tblocknode(n).left);
+          statementn:
+            result:=sm_node_safe(tstatementnode(n).statement) and
+                    sm_node_safe(tstatementnode(n).next);
+          assignn:
+            result:=sm_lvalue_safe(tassignmentnode(n).left) and
+                    sm_node_safe(tassignmentnode(n).right);
+          ifn:
+            result:=sm_node_safe(tifnode(n).left) and
+                    sm_node_safe(tifnode(n).right) and
+                    sm_node_safe(tifnode(n).t1);
+          ordconstn,realconstn,pointerconstn,niln,
+          tempcreaten,tempdeleten,temprefn:
+            { temp create/delete are markers; a temp ref reads/writes a
+              non-aliasing compiler-generated local slot -> always safe }
+            result:=true;
+          loadn:
+            { a read (or the lvalue of an assign, already vetted above) of a
+              plain simple local/param/static variable }
+            result:=(tloadnode(n).symtableentry.typ in [localvarsym,paravarsym,staticvarsym]) and
+                    licm_simple_type(n.resultdef) and
+                    not is_managed_type(n.resultdef);
+          typeconvn:
+            result:=not(cs_check_range in n.localswitches) and
+                    sm_node_safe(ttypeconvnode(n).left);
+          addn,subn,muln,
+          andn,orn,xorn,
+          equaln,unequaln,ltn,lten,gtn,gten,
+          shln,shrn:
+            { arithmetic/bitwise/relational: no trap as long as no overflow or
+              range check is attached (div/mod excluded -- they can raise) }
+            result:=(([cs_check_overflow,cs_check_range]*n.localswitches)=[]) and
+                    sm_node_safe(taddnode(n).left) and
+                    sm_node_safe(taddnode(n).right);
+          unaryminusn,notn:
+            result:=(([cs_check_overflow,cs_check_range]*n.localswitches)=[]) and
+                    sm_node_safe(tunarynode(n).left);
+          else
+            { calln, inlinen, derefn, subscriptn, vecn, divn, modn, nested
+              forn/whilerepeatn, break/continue/goto/raise/try, ... -> decline }
+            result:=false;
+        end;
+      end;
+
+    function sm_find_var(data: PStoreMotionData; sym: tsymentry): TStoreMotionVar;
+      begin
+        result:=TStoreMotionVar(data^.Vars.First);
+        while assigned(result) do
+          begin
+            if result.Sym=sym then
+              exit;
+            result:=TStoreMotionVar(result.Next);
+          end;
+        result:=nil;
+      end;
+
+    { Collect every qualifying global loaded/stored in the loop, noting writes. }
+    function sm_collectrefs(var n: tnode; arg: pointer): foreachnoderesult;
+      var
+        data: PStoreMotionData;
+        v: TStoreMotionVar;
+      begin
+        result:=fen_false;
+        if (n.nodetype=loadn) and sm_qualifies_sym(tloadnode(n).symtableentry) then
+          begin
+            data:=PStoreMotionData(arg);
+            v:=sm_find_var(data,tloadnode(n).symtableentry);
+            if not assigned(v) then
+              begin
+                v:=TStoreMotionVar.Create;
+                v.Sym:=tabstractvarsym(tloadnode(n).symtableentry);
+                v.TempCreate:=CTempCreateNode.Create(v.Sym.vardef,v.Sym.vardef.size,tt_persistent,True);
+                v.Written:=False;
+                if assigned(data^.Vars.Last) then
+                  data^.Vars.InsertAfter(v,data^.Vars.Last)
+                else
+                  data^.Vars.Insert(v);
+              end;
+            if (n.flags*[nf_write,nf_modify])<>[] then
+              v.Written:=True;
+          end;
+      end;
+
+    { Rewrite every reference to a promoted global into a ref to its temp. }
+    function sm_replacerefs(var n: tnode; arg: pointer): foreachnoderesult;
+      var
+        v: TStoreMotionVar;
+        NewNode: tnode;
+      begin
+        result:=fen_false;
+        if (n.nodetype=loadn) then
+          begin
+            v:=sm_find_var(PStoreMotionData(arg),tloadnode(n).symtableentry);
+            if assigned(v) then
+              begin
+                NewNode:=CTempRefNode.Create(v.TempCreate);
+                NewNode.fileinfo:=n.fileinfo;
+                NewNode.flags:=NewNode.flags+(n.flags*[nf_write,nf_modify]);
+                n.Free;
+                n:=NewNode;
+                n.pass_typecheck;
+                result:=fen_true;
+              end;
+          end;
+      end;
+
+    function _optimize_store_motion(var n: tnode; arg: pointer): foreachnoderesult;
+      var
+        data: TStoreMotionData;
+        v, nextv: TStoreMotionVar;
+        bodysafe: boolean;
+        NewBlock: TBlockNode;
+        NewWrapper: TStatementNode;
+        NewNode, NewCopy: tnode;
+        promoted: integer;
+      begin
+        result:=fen_false;
+        if not (n.nodetype in [forn,whilerepeatn]) or (nf_internal in n.flags) then
+          exit;
+
+        { the whole loop node (bounds/condition + body) must be provably
+          call-free, non-trapping and alias-safe }
+        if n.nodetype=forn then
+          bodysafe:=sm_node_safe(tfornode(n).right) and   { start bound }
+                    sm_node_safe(tfornode(n).t1) and       { end bound }
+                    sm_node_safe(tfornode(n).t2)           { body }
+        else
+          bodysafe:=sm_node_safe(twhilerepeatnode(n).left) and  { condition }
+                    sm_node_safe(twhilerepeatnode(n).right) and  { body }
+                    sm_node_safe(twhilerepeatnode(n).t1);
+        if not bodysafe then
+          exit;
+
+        data.Vars:=TLinkedList.Create;
+        try
+          foreachnodestatic(pm_postprocess,n,@sm_collectrefs,@data);
+
+          { keep only globals actually WRITTEN in the loop -- those are the ones
+            store motion pays off on; drop read-only ones }
+          v:=TStoreMotionVar(data.Vars.First);
+          while assigned(v) do
+            begin
+              nextv:=TStoreMotionVar(v.Next);
+              if not v.Written then
+                begin
+                  v.TempCreate.Free;
+                  data.Vars.Remove(v);
+                end;
+              v:=nextv;
+            end;
+
+          { cap register pressure like the record-write promotion does }
+          promoted:=0;
+          v:=TStoreMotionVar(data.Vars.First);
+          while assigned(v) do
+            begin
+              nextv:=TStoreMotionVar(v.Next);
+              inc(promoted);
+              if promoted>RECORD_TEMP_LIMIT then
+                begin
+                  v.TempCreate.Free;
+                  data.Vars.Remove(v);
+                end;
+              v:=nextv;
+            end;
+
+          if data.Vars.Count=0 then
+            exit;
+
+          { rewrite every reference in the loop to the corresponding temp }
+          if not foreachnodestatic(pm_postprocess,n,@sm_replacerefs,@data) then
+            exit;
+
+          { build:  temps ; temp:=g (init) ; loop ; g:=temp (store back) ;
+            temp-deletes }
+          NewBlock:=internalstatements(NewWrapper);
+          v:=TStoreMotionVar(data.Vars.First);
+          while assigned(v) do
+            begin
+              v.TempCreate.fileinfo:=n.fileinfo;
+              addstatement(NewWrapper,v.TempCreate);
+              NewNode:=cassignmentnode.create_internal(
+                ctemprefnode.create(v.TempCreate),
+                cloadnode.create(v.Sym,v.Sym.owner));
+              NewNode.fileinfo:=n.fileinfo;
+              addstatement(NewWrapper,NewNode);
+              v:=TStoreMotionVar(v.Next);
+            end;
+
+          NewCopy:=n.getcopy();
+          node_reset_flags(NewCopy,[],[tnf_pass1_done]);
+          Include(NewCopy.flags,nf_internal); { do not re-promote this loop }
+          addstatement(NewWrapper,NewCopy);
+
+          v:=TStoreMotionVar(data.Vars.Last);
+          while assigned(v) do
+            begin
+              NewNode:=cassignmentnode.create(
+                cloadnode.create(v.Sym,v.Sym.owner),
+                ctemprefnode.create(v.TempCreate));
+              NewNode.pass_typecheck;
+              NewNode.fileinfo:=n.fileinfo;
+              addstatement(NewWrapper,NewNode);
+
+              NewNode:=CTempDeleteNode.create(v.TempCreate);
+              NewNode.fileinfo:=n.fileinfo;
+              addstatement(NewWrapper,NewNode);
+              v:=TStoreMotionVar(v.Previous);
+            end;
+
+          n.Free;
+          n:=NewBlock;
+          n.pass_typecheck;
+          result:=fen_true;
+        finally
+          data.Vars.Free;
+        end;
+      end;
+
+    function OptimizeStoreMotion(node : tnode) : boolean;
+      begin
+        result:=foreachnodestatic(pm_preprocess,node,@_optimize_store_motion,nil);
       end;
 
 end.
