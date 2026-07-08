@@ -3945,8 +3945,10 @@ implementation
          is_cbool(todef) then
         exit;
 {$if not defined(cpuhighleveltarget) and not defined(cpu64bitalu)}
-        { handle 64bit rangechecks separate for 32bit processors }
-        if is_64bit(fromdef) or is_64bit(todef) then
+        { handle 64bit rangechecks separate for 32bit processors; a 128 bit
+          source is not a 64 bit value even when the target is, so leave it for
+          the 128 bit path below }
+        if (is_64bit(fromdef) or is_64bit(todef)) and not is_128bit(fromdef) then
           begin
              cg64.g_rangecheck64(list,l,fromdef,todef);
              exit;
@@ -4140,10 +4142,15 @@ implementation
     var
       lto,hto,lfrom,hfrom: TConstExprInt;
       from_signed: boolean;
+      errlab,donelab: tasmlabel;
+{$if defined(cpu64bitalu) or defined(cpuhighleveltarget)}
       lreg,hreg: tregister;
       href: treference;
-      errlab,donelab: tasmlabel;
+{$else}
+      valref: treference;
+{$endif}
 
+{$if defined(cpu64bitalu) or defined(cpuhighleveltarget)}
     { branches to errlab when the value in hreg:lreg lies on the wrong side
       of the bound: below it for dobelow, above it otherwise }
     procedure checkbound(const bound: TConstExprInt; dobelow: boolean);
@@ -4186,6 +4193,48 @@ implementation
         cg.a_reg_dealloc(list,NR_DEFAULTFLAGS);
         a_label(list,oklab);
       end;
+{$else}
+    { compares the 128 bit value at valref four 32 bit words at a time (the top
+      word signed for a signed source) and branches to errlab when it lies on
+      the wrong side of the bound: below for dobelow, above otherwise }
+    procedure cmpbound(const bound: TConstExprInt; dobelow: boolean);
+      var
+        oklab: tasmlabel;
+        dref: treference;
+        dreg: tregister;
+        dw: array[0..3] of tcgint;
+        i: longint;
+        errc,okc: topcmp;
+      begin
+        dw[0]:=tcgint(bound.vlo and $ffffffff);
+        dw[1]:=tcgint(bound.vlo shr 32);
+        dw[2]:=tcgint(bound.vhi and $ffffffff);
+        dw[3]:=tcgint(bound.vhi shr 32);
+        current_asmdata.getjumplabel(oklab);
+        for i:=3 downto 0 do
+          begin
+            if (i=3) and from_signed then
+              if dobelow then begin errc:=OC_LT; okc:=OC_GT; end
+              else begin errc:=OC_GT; okc:=OC_LT; end
+            else
+              if dobelow then begin errc:=OC_B; okc:=OC_A; end
+              else begin errc:=OC_A; okc:=OC_B; end;
+            dref:=valref;
+            if target_info.endian=endian_big then
+              inc(dref.offset,(3-i)*4)
+            else
+              inc(dref.offset,i*4);
+            dreg:=cg.getintregister(list,OS_32);
+            cg.a_load_ref_reg(list,OS_32,OS_32,dref,dreg);
+            cg.a_reg_alloc(list,NR_DEFAULTFLAGS);
+            cg.a_cmp_const_reg_label(list,OS_32,errc,dw[i],dreg,errlab);
+            if i>0 then
+              cg.a_cmp_const_reg_label(list,OS_32,okc,dw[i],dreg,oklab);
+            cg.a_reg_dealloc(list,NR_DEFAULTFLAGS);
+          end;
+        a_label(list,oklab);
+      end;
+{$endif}
 
     begin
       getrange(fromdef,lfrom,hfrom);
@@ -4208,6 +4257,9 @@ implementation
         lto:=lfrom;
       if hto>hfrom then
         hto:=hfrom;
+      current_asmdata.getjumplabel(errlab);
+      current_asmdata.getjumplabel(donelab);
+{$if defined(cpu64bitalu) or defined(cpuhighleveltarget)}
       { materialize the value as a 64 bit pair }
       lreg:=getintregister(list,u64inttype);
       hreg:=getintregister(list,u64inttype);
@@ -4234,12 +4286,23 @@ implementation
           a_load_loc_reg(list,fromdef,u64inttype,l,lreg);
           a_load_const_reg(list,u64inttype,0,hreg);
         end;
-      current_asmdata.getjumplabel(errlab);
-      current_asmdata.getjumplabel(donelab);
       if lto>lfrom then
         checkbound(lto,true);
       if hto<hfrom then
         checkbound(hto,false);
+{$else}
+      { without a 64 bit ALU, compare the value in memory word by word; the
+        narrow-source range check (128 bit subrange target) is not wired here }
+      if not is_128bit(fromdef) then
+        internalerror(2026070801);
+      if not(l.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
+        internalerror(2026070710);
+      valref:=l.reference;
+      if lto>lfrom then
+        cmpbound(lto,true);
+      if hto<hfrom then
+        cmpbound(hto,false);
+{$endif}
       a_jmp_always(list,donelab);
       a_label(list,errlab);
       g_call_system_proc(list,'fpc_rangeerror',[],nil).resetiftemp;
