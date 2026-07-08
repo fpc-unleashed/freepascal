@@ -2574,7 +2574,8 @@ const
          'cs_opt_loopmotion',
          'cs_opt_loopunswitch',
          'cs_opt_bitidiom',
-         'cs_opt_rangecheckelim'
+         'cs_opt_rangecheckelim',
+         'cs_opt_vectorize'
        );
     var
          globalswitch  : tglobalswitch;

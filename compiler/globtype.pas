@@ -392,7 +392,11 @@ interface
          cs_opt_bitidiom,
          { value-range range-check elimination: drop the -Cr per-access array
            bounds check where a for-loop counter is provably an in-bounds index }
-         cs_opt_rangecheckelim
+         cs_opt_rangecheckelim,
+         { conservative loop autovectorization: rewrite a counted single-
+           precision element-wise for-loop into a 128-bit SSE packed main loop
+           (4 singles/iteration) plus a scalar remainder loop }
+         cs_opt_vectorize
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -467,7 +471,7 @@ interface
          'CONSTPROP',
          'DEADSTORE','FORCENOSTACKFRAME','USELOADMODIFYSTORE',
          'UNUSEDPARA','CONSTS','FORLOOP','LICM','LOOPUNSWITCH','BITIDIOM',
-         'RANGEELIM'
+         'RANGEELIM','VECTORIZE'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'

@@ -39,11 +39,13 @@ unit optloop;
     function OptimizeLoopUnswitch(node : tnode) : boolean;
     function OptimizeBitIdiom(node : tnode) : boolean;
     function OptimizeRangeElim(node : tnode) : boolean;
+    function OptimizeVectorize(node : tnode) : boolean;
 
   implementation
 
     uses
       cclasses,cutils,compinnr,cdynset,
+      cgbase,
       globtype,globals,constexp,
 {$ifdef i386}
       cpuinfo,
@@ -2294,6 +2296,329 @@ unit optloop;
         ctx.changed:=false;
         { postorder so nested (inner) loops are handled before their parents }
         foreachnodestatic(pm_postprocess,node,@rangeelim_processloop_cb,@ctx);
+        Result:=ctx.changed;
+      end;
+
+
+{*****************************************************************************
+                   Conservative loop autovectorization
+*****************************************************************************}
+
+    { A deliberately narrow, provably-sound loop autovectorizer ported (in
+      miniature) to FPC, which has no autovectorizer at all today. It fires on
+      exactly one loop shape -- the canonical single-precision element-wise
+
+           for i := <lo> to <hi> do  a[i] := b[i] <op> c[i]     ( op in + - * )
+
+      where a, b and c are simple, non-aliased dynamic arrays of `single` and i
+      is a simple non-aliased signed integer counter -- and rewrites it into a
+      128-bit SSE (or AVX, when the fputype has an AVX unit) packed main loop
+      that processes VECWIDTH=4 lanes per iteration plus a scalar remainder loop
+      that runs the original body for the leftover 0..3 elements:
+
+           lo := <lo>; hi := <hi>; i := lo;
+           while i <= hi-3 do begin  (vector) a[i..i+3]:=b[i..i+3] op c[i..i+3];
+                                     i := i+4 end;
+           while i <= hi   do begin  (scalar) a[i]:=b[i] op c[i]; i := i+1 end;
+
+      Strategy (stated for the commit message): FPC exposes no node-level SIMD
+      vector arithmetic (modeswitch arrayoperators does not overload +/-/*
+      on  array[0..3] of single , and there is no packed-arithmetic high-level
+      cg helper -- a_opmm_ref_reg with shuffle=nil is scalar/logical, only the
+      AVX 3-op helper is packed), so Strategy A (rely on node-level vector types)
+      is not viable. This is Strategy B: keep the loop *control* as ordinary
+      nodes (the two while-loops, the counter compare/increment -- all lowered by
+      the existing, well-tested backend) and hand-emit only the 4-lane body from
+      a single dedicated backend node (tvectoropnode, x86 override in nx86inl):
+      movups/addps|subps|mulps (or the v-forms). The body node reuses the normal
+      vecn secondpass to compute the element-i address of each array, then reads
+      a full 128-bit window, which keeps the manual codegen to ~6 instructions.
+
+      Soundness (a wrong vectorization is a miscompile, so the recognizer is
+      strict; anything not matched compiles exactly as before):
+        * COUNTER is a simple, non-aliased, non-volatile, non-address-taken local
+          or value-parameter, and a *signed* 32/64-bit integer so hi-3 and i+4
+          cannot wrap; DFA additionally proves it is never assigned in the body.
+        * BODY is *exactly* one plain (:=, not +=) assignment of the recognized
+          shape; the single-statement shape already guarantees a, b, c and i are
+          never reassigned in the loop, so no aliasing can be introduced mid-loop.
+        * ARRAYS are simple non-aliased dynamic arrays of `single`. Two distinct
+          dynamic-array variables either reference the same block at offset 0
+          (e.g. after  a := b ) or disjoint blocks -- never a shifted overlap.
+          Because every read and the write use the *same* index i, the operation
+          is element-wise and therefore alias-safe even when a, b, c share a
+          block: the vector load of b[i..i+3] and c[i..i+3] happens before the
+          store to a[i..i+3], and each lane computes exactly the scalar value.
+          Hence we require no distinctness and emit no runtime overlap guard.
+        * The vector loop only advances to i where i+3 <= hi, so the 128-bit
+          window never touches an index beyond hi -- the exact same maximum index
+          the scalar loop reaches -- so no out-of-bounds over-read is introduced.
+        * Range/overflow checking (-Cr/-Co) disables the transform entirely (the
+          scalar loop keeps its checks; we do not vectorize checked code), gated
+          both on current_settings and by scanning the body for per-region
+          check localswitches.
+        * FP result is bit-identical to scalar: identical per-lane op in identical
+          order, no reassociation -> no fast-math gate needed (NaN/Inf and -0.0
+          propagate exactly). Double precision is out of scope (follow-up).
+        * The proc must not be an inline candidate (the synthetic node is never
+          streamed to a PPU), and -- like the neighbouring loop passes -- procs
+          with labels are skipped at the call site in psub. }
+
+    const
+      vect_vecwidth = 4;   { single lanes per 128-bit SSE packed op }
+
+    function vect_single_dynarray_elem(n : tnode; counter : tabstractvarsym) : tvecnode;
+      { returns the vecn if n (after peeling typeconv wrappers) is  A[i]  where A
+        is a simple non-aliased dynamic array of single and the index is exactly a
+        plain read of the loop counter; nil otherwise }
+      var
+        vn, idx : tnode;
+        vec : tvecnode;
+      begin
+        result:=nil;
+        vn:=rangeelim_skip_typeconv(n);
+        if not assigned(vn) or (vn.nodetype<>vecn) then
+          exit;
+        vec:=tvecnode(vn);
+        if not assigned(vec.left) or not assigned(vec.left.resultdef) then
+          exit;
+        { the array must be a simple non-aliased dynamic array of single }
+        if not assigned(rangeelim_simple_var(vec.left)) then
+          exit;
+        if not is_dynamic_array(vec.left.resultdef) then
+          exit;
+        if not is_single(tarraydef(vec.left.resultdef).elementdef) then
+          exit;
+        { the index must be exactly a plain read of the loop counter }
+        idx:=rangeelim_skip_typeconv(vec.right);
+        if not assigned(idx) or (idx.nodetype<>loadn) then
+          exit;
+        if ([nf_write,nf_modify]*idx.flags)<>[] then
+          exit;
+        if tloadnode(idx).symtableentry<>tsym(counter) then
+          exit;
+        result:=vec;
+      end;
+
+
+    function vect_body_single_stmt(body : tnode) : tnode;
+      { peel block/statement wrappers and return the single meaningful statement
+        of a loop body, or nil if there is not exactly one }
+      var
+        stmt, found : tnode;
+      begin
+        result:=nil;
+        found:=nil;
+        if not assigned(body) then
+          exit;
+        if body.nodetype=blockn then
+          body:=tblocknode(body).left;
+        if not assigned(body) then
+          exit;
+        if body.nodetype=statementn then
+          begin
+            stmt:=body;
+            while assigned(stmt) and (stmt.nodetype=statementn) do
+              begin
+                if assigned(tstatementnode(stmt).left) and
+                   (tstatementnode(stmt).left.nodetype<>nothingn) then
+                  begin
+                    if assigned(found) then
+                      exit;   { more than one real statement }
+                    found:=tstatementnode(stmt).left;
+                  end;
+                stmt:=tstatementnode(stmt).right;
+              end;
+            result:=found;
+          end
+        else
+          result:=body;   { a bare, unwrapped statement }
+      end;
+
+
+    function vect_check_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      { flags a per-region range/overflow check localswitch anywhere in the body }
+      begin
+        result:=fen_false;
+        if ([cs_check_range,cs_check_overflow]*n.localswitches)<>[] then
+          begin
+            pboolean(arg)^:=true;
+            result:=fen_norecurse_true;
+          end;
+      end;
+
+
+    type
+      tvectorizecontext = object
+        changed : boolean;
+        procedure processloop(var n : tnode);
+      end;
+
+
+    procedure tvectorizecontext.processloop(var n : tnode);
+      var
+        forn : tfornode;
+        counter : tabstractvarsym;
+        ctype : tdef;
+        stmt, rhs : tnode;
+        assign : tassignmentnode;
+        avec, bvec, cvec : tvecnode;
+        vecop : TOpCG;
+        hascheck : boolean;
+        block, vecbody, scalbody : tnode;
+        stat, vstat, sstat : tstatementnode;
+        lotemp, hitemp : ttempcreatenode;
+      begin
+        forn:=tfornode(n);
+
+        { only plain ascending unit-step for-loops }
+        if lnf_backward in forn.loopflags then
+          exit;
+        if assigned(forn.loopstep) then
+          exit;
+
+        { the counter must be a simple, non-aliased, signed 32/64-bit
+          local/value-param variable (so hi-3 / i+VL cannot wrap) }
+        counter:=rangeelim_simple_var(forn.left);
+        if not assigned(counter) then
+          exit;
+        ctype:=forn.left.resultdef;
+        if not assigned(ctype) or (ctype.typ<>orddef) then
+          exit;
+        if not is_signed(ctype) or not(ctype.size in [4,8]) then
+          exit;
+
+        { never emit the synthetic body node into an inline-candidate proc: it
+          must not be streamed into inline info / a PPU }
+        if po_inline in current_procinfo.procdef.procoptions then
+          exit;
+
+        { preserve bounds/overflow checking: do not vectorize checked code }
+        if ([cs_check_range,cs_check_overflow]*current_settings.localswitches)<>[] then
+          exit;
+
+        { the body must be exactly one plain  a[i] := b[i] op c[i]  assignment }
+        stmt:=vect_body_single_stmt(forn.t2);
+        if not assigned(stmt) or (stmt.nodetype<>assignn) then
+          exit;
+        assign:=tassignmentnode(stmt);
+        if assign.assigntype<>at_normal then
+          exit;
+
+        { belt-and-suspenders: bail if any body node carries a per-region
+          range/overflow check even when the proc default has none }
+        hascheck:=false;
+        foreachnodestatic(pm_postprocess,forn.t2,@vect_check_cb,@hascheck);
+        if hascheck then
+          exit;
+
+        { LHS: a single-precision dynamic-array element  a[i] }
+        avec:=vect_single_dynarray_elem(assign.left,counter);
+        if not assigned(avec) then
+          exit;
+
+        { RHS:  b[i] op c[i]  with op in + - * }
+        rhs:=rangeelim_skip_typeconv(assign.right);
+        if not assigned(rhs) or not(rhs.nodetype in [addn,subn,muln]) then
+          exit;
+        if ([nf_write,nf_modify]*rhs.flags)<>[] then
+          exit;
+        bvec:=vect_single_dynarray_elem(taddnode(rhs).left,counter);
+        cvec:=vect_single_dynarray_elem(taddnode(rhs).right,counter);
+        if not assigned(bvec) or not assigned(cvec) then
+          exit;
+        case rhs.nodetype of
+          addn: vecop:=OP_ADD;
+          subn: vecop:=OP_SUB;
+          muln: vecop:=OP_IMUL;
+          else
+            exit;
+        end;
+
+        { DFA: the counter must not be assigned anywhere in the body (on top of
+          the single-assignment shape, which already implies it) }
+        CalcDefSum(forn.t2);
+        if not assigned(forn.t2.optinfo) or not assigned(forn.left.optinfo) then
+          exit;
+        if DynSetIn(forn.t2.optinfo^.defsum,forn.left.optinfo^.index) then
+          exit;
+
+        { ---- build the replacement statement block ---- }
+        block:=internalstatements(stat);
+
+        { lo := <start>;  hi := <end>   (loop bounds evaluated once, as the
+          original for-loop does) }
+        lotemp:=ctempcreatenode.create(ctype,ctype.size,tt_persistent,true);
+        addstatement(stat,lotemp);
+        addstatement(stat,cassignmentnode.create(ctemprefnode.create(lotemp),forn.right.getcopy));
+
+        hitemp:=ctempcreatenode.create(ctype,ctype.size,tt_persistent,true);
+        addstatement(stat,hitemp);
+        addstatement(stat,cassignmentnode.create(ctemprefnode.create(hitemp),forn.t1.getcopy));
+
+        { i := lo }
+        addstatement(stat,cassignmentnode.create(
+          cloadnode.create(tsym(counter),counter.owner),
+          ctemprefnode.create(lotemp)));
+
+        { vector loop:  while i <= hi-(VL-1) do begin <packed body>; i := i+VL end }
+        vecbody:=internalstatements(vstat);
+        addstatement(vstat,cvectoropnode.create(avec.getcopy,bvec.getcopy,cvec.getcopy,vecop,vect_vecwidth));
+        addstatement(vstat,cassignmentnode.create(
+          cloadnode.create(tsym(counter),counter.owner),
+          caddnode.create(addn,cloadnode.create(tsym(counter),counter.owner),
+            cordconstnode.create(vect_vecwidth,ctype,false))));
+        addstatement(stat,cwhilerepeatnode.create(
+          caddnode.create(lten,cloadnode.create(tsym(counter),counter.owner),
+            caddnode.create(subn,ctemprefnode.create(hitemp),
+              cordconstnode.create(vect_vecwidth-1,ctype,false))),
+          vecbody,true,false));
+
+        { scalar remainder:  while i <= hi do begin <original body>; i := i+1 end }
+        scalbody:=internalstatements(sstat);
+        addstatement(sstat,forn.t2.getcopy);
+        addstatement(sstat,cassignmentnode.create(
+          cloadnode.create(tsym(counter),counter.owner),
+          caddnode.create(addn,cloadnode.create(tsym(counter),counter.owner),
+            cordconstnode.create(1,ctype,false))));
+        addstatement(stat,cwhilerepeatnode.create(
+          caddnode.create(lten,cloadnode.create(tsym(counter),counter.owner),
+            ctemprefnode.create(hitemp)),
+          scalbody,true,false));
+
+        { release the bound temps after their last use }
+        addstatement(stat,ctempdeletenode.create(lotemp));
+        addstatement(stat,ctempdeletenode.create(hitemp));
+
+        do_firstpass(block);
+        forn.free;
+        n:=block;
+        changed:=true;
+      end;
+
+
+    function vect_processloop_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      begin
+        result:=fen_false;
+        if n.nodetype=forn then
+          begin
+            tvectorizecontext(arg^).processloop(n);
+            { n may now be a block; do not recurse into the freed for-node }
+            result:=fen_norecurse_false;
+          end;
+      end;
+
+
+    function OptimizeVectorize(node : tnode) : boolean;
+      var
+        ctx : tvectorizecontext;
+      begin
+        Result:=false;
+        if not(pi_dfaavailable in current_procinfo.flags) then
+          exit;
+        ctx.changed:=false;
+        { postorder so nested (inner) loops are considered before their parents }
+        foreachnodestatic(pm_postprocess,node,@vect_processloop_cb,@ctx);
         Result:=ctx.changed;
       end;
 

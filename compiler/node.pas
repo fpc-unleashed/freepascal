@@ -113,7 +113,8 @@ interface
           finalizetempsn,   { Internal node used to clean up code generator temps (warning: must NOT create additional tepms that may need to be finalised!) }
           defern,           { parser-only marker for `defer STATEMENT;` - rewritten away in statement_block before typecheck }
           asyncn,           { parser-only marker for `async <call>` / `async begin..end` - rewritten into a future-impl factory call during async lowering, before firstpass }
-          awaitn            { parser-only marker for `await <future>` - rewritten into the future's `__Await` method call during async lowering, before firstpass }
+          awaitn,           { parser-only marker for `await <future>` - rewritten into the future's `__Await` method call during async lowering, before firstpass }
+          vectoropn         { autovectorizer: process VL single-precision elements of an element-wise a[i]:=b[i] op c[i] with one packed SSE/AVX op (backend-only, created by OptimizeVectorize) }
        );
 
        tnodetypeset = set of tnodetype;
@@ -200,7 +201,8 @@ interface
           'finalizetempsn',
           'defern',
           'asyncn',
-          'awaitn');
+          'awaitn',
+          'vectoropn');
 
       { a set containing all const nodes }
       nodetype_const = [niln,

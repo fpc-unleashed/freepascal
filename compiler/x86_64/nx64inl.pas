@@ -38,7 +38,7 @@ implementation
 
   uses
     symconst,
-    node,ncnv,ninl;
+    node,nbas,ncnv,ninl;
 
   procedure tx8664inlinenode.maybe_remove_round_trunc_typeconv;
     var
@@ -69,4 +69,6 @@ implementation
 
 begin
    cinlinenode:=tx8664inlinenode;
+   { the autovectorizer body node is emitted by the x86 backend }
+   cvectoropnode:=tx86vectoropnode;
 end.
