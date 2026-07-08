@@ -54,6 +54,12 @@ unit opttree;
 
     function searchstatements(var n : tnode;arg : pointer) : foreachnoderesult;forward;
 
+    { normalization success flag, shared so that a nested statement context
+      entered from searchblock can signal failure without threading a pointer
+      through the tree walk }
+    var
+      normalizesuccessp : pboolean;
+
     function hasblock(var n : tnode;arg : pointer) : foreachnoderesult;
       begin
         result:=fen_false;
@@ -64,11 +70,8 @@ unit opttree;
     function searchblock(var n : tnode;arg : pointer) : foreachnoderesult;
       var
         hp,
-        statements,
         stmnt : tstatementnode;
         res : pnode;
-        tempcreatenode : ttempcreatenode;
-        newblock : tnode;
       begin
         result:=fen_true;
         if n.nodetype in [addn,orn] then
@@ -81,6 +84,19 @@ unit opttree;
               end;
           end;
         case n.nodetype of
+          statementn:
+            begin
+              { A nested statement list (e.g. the body of a loop or an if
+                branch) reached while scanning the current statement's
+                expression tree. Its block-expressions must NOT be hoisted out
+                here: the insertion point of this scan is the enclosing
+                statement, and moving loop-/branch-body code before the loop or
+                if would be wrong. Stop the scan at this boundary; the nested
+                statement list is normalized separately (see the second phase in
+                searchstatements) with its own insertion point. }
+              result:=fen_norecurse_true;
+              exit;
+            end;
           calln:
             begin
               if assigned(tcallnode(n).callinitblock) then
@@ -144,29 +160,32 @@ unit opttree;
                           end
                         else if assigned(res^.resultdef) and not(is_void(res^.resultdef)) then
                           begin
-                            { replace the last node of the block by an assignment to a temp, and move the block out
-                              of the expression }
-                            newblock:=internalstatements(statements);
-                            tempcreatenode:=ctempcreatenode.create(res^.resultdef,res^.resultdef.size,tt_persistent,true);
-                            addstatement(statements,tempcreatenode);
-                            addstatement(statements,n);
+                            { "move the whole block out of the expression": the
+                              upstream code here builds a temp, assigns the block's
+                              value node to it, replaces the *statement slot*
+                              (pnode(arg)^) with a plain block node and absorbs the
+                              rest of the statement chain into it.
 
-                            { replace the old result node of the block by an assignment to the newly generated temp }
-                            res^:=cassignmentnode.create_internal(ctemprefnode.create(tempcreatenode),res^);
-                            do_firstpass(res^);
-                            addstatement(statements,ctempdeletenode.create_normal_temp(tempcreatenode));
-                            addstatement(statements,pnode(arg)^);
+                              That rewrite is structurally fragile -- the statement
+                              slot no longer holds a statementn -- and for
+                              block-expressions whose result is a managed value that
+                              carries its own initialisation / cleanup (interface and
+                              function-reference construction, some generic-intrinsic
+                              results) the follow-up firstpass / re-normalisation
+                              dereferences freed or mis-typed nodes and crashes the
+                              compiler.
 
-                            { use the temp. ref instead of the block node }
-                            n:=ctemprefnode.create(tempcreatenode);
-                            { replace the statement with the block }
-                            pnode(arg)^:=newblock;
-                            { first pass the newly generated block }
-                            do_firstpass(newblock);
-                            { ... and the inserted temp. }
-                            do_firstpass(n);
-                            { process the newly generated block }
-                            foreachnodestatic(pnode(arg)^,@searchstatements,nil);
+                              None of the constructs this pass actually needs to
+                              normalise require it: statement expressions, inline
+                              vars and match / if expressions all produce a temp-ref
+                              or a constant as the block result and take the branch
+                              above. So instead of performing the crashy transform,
+                              declare the procedure "not normalizable". normalize()
+                              then returns false and the dead-store pass is skipped
+                              for it, leaving the block-expression exactly as it is
+                              when the dead-store switch is off -- which is safe and
+                              preserves its semantics. }
+                            normalizesuccessp^:=false;
                           end;
                       end;
                     end;
@@ -180,18 +199,52 @@ unit opttree;
     var
       searchstatementsproc : staticforeachnodefunction;
 
+    { second-phase walker: descend the current statement's (already hoisted)
+      expression tree and normalize every nested statement list it contains
+      (loop / if / case / try bodies, sub-blocks) as its own statement context.
+      When a nested statement head is found it is fully processed here (including
+      its siblings), so we stop the walk from descending into it again. }
+    function searchnested(var n : tnode;arg : pointer) : foreachnoderesult;
+      begin
+        if n.nodetype=statementn then
+          begin
+            searchstatementsproc(n,nil);
+            result:=fen_norecurse_false;
+          end
+        else
+          result:=fen_false;
+      end;
+
     function searchstatements(var n : tnode;arg : pointer) : foreachnoderesult;
       begin
         if n.nodetype=statementn then
           begin
+            { phase 1: hoist block-expressions that live in this statement's own
+              straight-line expression tree (searchblock stops at nested
+              statement lists, so it never carries this insertion point across a
+              control-flow boundary) }
             if not(foreachnodestatic(tstatementnode(n).left,@searchblock,@n)) then
               begin
-                pboolean(arg)^:=false;
+                normalizesuccessp^:=false;
                 result:=fen_norecurse_false;
                 exit;
               end;
-            { do not recurse automatically, but continue with the next statement }
             result:=fen_norecurse_false;
+            { searchblock may have replaced this statement slot with a plain
+              block node (the "move the whole block out of the expression" case
+              in searchblock, which absorbs the rest of the statement chain into
+              the new block and already re-runs searchstatements over it). In
+              that case n is no longer a statementn and its .right is not a
+              sibling pointer -- reading it would walk garbage. The continuation
+              has already been fully normalized, so there is nothing more to do
+              here. }
+            if n.nodetype<>statementn then
+              exit;
+            { phase 2: now that this statement's expression is stable, recurse
+              into any nested statement lists it contains and normalize them with
+              their own (correct) insertion point }
+            foreachnodestatic(tstatementnode(n).left,@searchnested,nil);
+            { do not recurse automatically, but continue with the next statement }
             foreachnodestatic(tstatementnode(n).right,searchstatementsproc,arg);
           end
         else
@@ -204,6 +257,7 @@ unit opttree;
         success : Boolean;
       begin
         success:=true;
+        normalizesuccessp:=@success;
 {$ifdef DEBUG_NORMALIZE}
         writeln('******************************************** Before ********************************************');
         printnode(output,n);
