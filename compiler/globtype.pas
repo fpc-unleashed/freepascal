@@ -474,7 +474,16 @@ interface
            "case c of 'a','e','i','o','u'" shape), leftovers stay simple
            compares -- and dispatch between the clusters with a balanced
            binary comparison tree }
-         cs_opt_casecluster
+         cs_opt_casecluster,
+         { cross-jumping / tail merging (gcc -fcrossjumping): when two or more
+           predecessor blocks end in identical instruction sequences and
+           converge on the same successor (if/else branches sharing a trailing
+           tail, case arms ending with the same cleanup, the per-arm TError
+           early-exit boilerplate this repo's TResult style produces), keep one
+           copy of the shared tail and redirect the other predecessors to jump
+           into it.  Late assembler-list pass on x86, run after register
+           allocation where taicpu equality is operand-exact. }
+         cs_opt_crossjump
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -551,7 +560,7 @@ interface
          'UNUSEDPARA','CONSTS','FORLOOP','LICM','LOOPUNSWITCH','BITIDIOM',
          'RANGEELIM','VECTORIZE','JUMPTHREAD','LOOPDISTPAT',
          'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC','UNROLLJAM',
-         'PREDCOM','SRA','STOREMERGE','CASECLUSTER'
+         'PREDCOM','SRA','STOREMERGE','CASECLUSTER','CROSSJUMP'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
@@ -586,7 +595,7 @@ interface
        genericlevel3optimizerswitches = [cs_opt_level3,cs_opt_constant_propagate,cs_opt_nodedfa,cs_opt_loopstrength
                                          {$ifndef llvm},cs_opt_use_load_modify_store{$endif},
                                          cs_opt_loopunroll,cs_opt_forloop];
-       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert,cs_opt_reassoc,cs_opt_unrolljam,cs_opt_predcom,cs_opt_sra,cs_opt_storemerge,cs_opt_casecluster];
+       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert,cs_opt_reassoc,cs_opt_unrolljam,cs_opt_predcom,cs_opt_sra,cs_opt_storemerge,cs_opt_casecluster,cs_opt_crossjump];
 
        { whole program optimizations whose information generation requires
          information from all loaded units
