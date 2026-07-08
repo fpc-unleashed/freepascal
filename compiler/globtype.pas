@@ -516,7 +516,19 @@ interface
            -Cr range-CHECK nodes) and -OoJUMPTHREAD (which seeds facts solely
            from dominating branch conditions): VRP seeds from types and loop
            bounds and folds user branches with interval math }
-         cs_opt_vrp
+         cs_opt_vrp,
+         { managed-type reference-count traffic elision (ARC-style pair
+           elimination, LLVM ObjCARCOpts / Swift retain-release / Delphi's
+           const-string idiom): a straight-line ansistring local that borrows
+           its value from a value-parameter or single-assignment local
+           (a := b) and is then only read -- never reassigned, never has its
+           address taken, never passed by var/out -- needs no incref on the
+           assignment nor decref at scope end, because the source b keeps the
+           buffer alive for the whole scope (a value parameter via its entry
+           incref, a local via its own reference). The borrow is lowered to a
+           plain pointer copy and a's finalization is skipped. Opt-in (NOT in
+           -O4) for the first cut }
+         cs_opt_refelide
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -594,7 +606,7 @@ interface
          'RANGEELIM','VECTORIZE','JUMPTHREAD','LOOPDISTPAT',
          'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC','UNROLLJAM',
          'PREDCOM','SRA','STOREMERGE','CASECLUSTER','CROSSJUMP','BLOCKORDER',
-         'SINK','STOREMOTION','VRP'
+         'SINK','STOREMOTION','VRP','REFELIDE'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'

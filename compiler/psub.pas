@@ -2366,6 +2366,18 @@ implementation
         XMLPrintProc(True);
 {$endif DEBUG_NODE_XML}
 
+        { managed-type reference-count traffic elision (-OoREFELIDE): remove the
+          redundant incref/decref pair of an ansistring local that merely
+          borrows its value from a value-parameter or single-assignment local
+          and is then only read. Must run HERE, before do_firstpass lowers the
+          a := b assignment into an fpc_ansistr_assign call; the analysis is
+          flow-insensitive (whole-routine occurrence counts + addr_taken flags)
+          so it is sound under any control flow and across the implicit finally
+          frame. Skipped for assembler routines (no analysable node tree). }
+        if (cs_opt_refelide in current_settings.optimizerswitches) and
+           not(po_assembler in current_procinfo.procdef.procoptions) then
+          OptimizeRefElide(code);
+
         { firstpass everything }
         flowcontrol:=[];
         do_firstpass(code);

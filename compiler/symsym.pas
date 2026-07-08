@@ -292,6 +292,12 @@ interface
           { the variable is not living at entry of the scope, so it does not need to be initialized if it is a reg. var
             (not written to ppu, because not important and would change interface crc) }
           noregvarinitneeded : boolean;
+          { -OoREFELIDE: this managed local borrows its value from a longer-lived
+            source (value-parameter or single-assignment local) via a plain
+            pointer copy, so it never owns a reference and must NOT be finalized
+            at scope end (doing so would drop a refcount it never took). Set by
+            OptimizeRefElide; not stored in PPU (transient codegen decision) }
+          refelide_noinitfinal : boolean;
           { not stored in PPU! }
           capture_sym : tsym;
           constructor create(st:tsymtyp;const n : TSymStr;vsp:tvarspez;def:tdef;vopts:tvaroptions);
