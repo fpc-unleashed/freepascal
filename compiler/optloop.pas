@@ -72,7 +72,7 @@ unit optloop;
       nadd,nbas,nflw,ncon,ninl,ncal,nld,nmem,ncnv,nmat,
       ncgmem,
       pass_1,
-      optbase,optutils,
+      optbase,optutils,optpure,
       procinfo;
 
     function number_unrolls(node : tnode) : cardinal;
@@ -1284,6 +1284,7 @@ unit optloop;
     function licm_is_pure_invariant(loopdefsum : tdfaset; expr : tnode) : boolean;
       var
         sym : tabstractvarsym;
+        para : tcallparanode;
       begin
         result:=false;
         case expr.nodetype of
@@ -1328,6 +1329,39 @@ unit optloop;
             if licm_simple_type(expr.resultdef) and
                (([cs_check_overflow,cs_check_range]*expr.localswitches)=[]) then
               result:=licm_is_pure_invariant(loopdefsum,tunarynode(expr).left);
+          calln:
+            { a direct call to a routine proven CONST by -OoPURE (its result
+              depends only on its by-value parameters, no global reads, no side
+              effects, no trap) is a pure value; it is loop-invariant iff every
+              argument is. "const" (not merely "pure") is required so that a
+              global modified inside the loop cannot change the result, and it
+              guarantees the call is side-effect-free and non-trapping, so
+              evaluating it once in the preheader -- even for a zero-trip loop --
+              is unobservable. }
+            begin
+              result:=false;
+              if not licm_simple_type(expr.resultdef) then
+                exit;
+              if assigned(tcallnode(expr).methodpointer) then
+                exit;
+              if not(assigned(tcallnode(expr).procdefinition) and
+                     (tcallnode(expr).procdefinition is tprocdef)) then
+                exit;
+              if not proc_is_const(tprocdef(tcallnode(expr).procdefinition)) then
+                exit;
+              { every actual parameter must itself be pure and loop-invariant }
+              result:=true;
+              para:=tcallparanode(tcallnode(expr).left);
+              while assigned(para) do
+                begin
+                  if not licm_is_pure_invariant(loopdefsum,para.paravalue) then
+                    begin
+                      result:=false;
+                      break;
+                    end;
+                  para:=tcallparanode(para.nextpara);
+                end;
+            end;
           else
             ;
         end;
@@ -1367,20 +1401,25 @@ unit optloop;
             exit;
           end;
 
-        { only whole arithmetic subexpressions are worth hoisting }
-        if not(n.nodetype in [addn,subn,muln]) then
+        { only whole arithmetic subexpressions, or a call to a proven-const
+          routine (-OoPURE), are worth hoisting }
+        if not(n.nodetype in [addn,subn,muln,calln]) then
           exit;
         if ([nf_write,nf_modify]*n.flags)<>[] then
           exit;
         if not is_pure_invariant(n) then
           exit;
 
-        { a purely constant expression is already folded; require at least one
-          variable read so we actually save work }
-        found:=false;
-        foreachnodestatic(pm_postprocess,n,@licm_contains_load,@found);
-        if not found then
-          exit;
+        { a purely constant arithmetic expression is already folded; require at
+          least one variable read so we actually save work. A call is always
+          worth hoisting (it stays a call even with constant arguments). }
+        if n.nodetype<>calln then
+          begin
+            found:=false;
+            foreachnodestatic(pm_postprocess,n,@licm_contains_load,@found);
+            if not found then
+              exit;
+          end;
 
         { reuse a temp if we already hoisted an identical expression }
         tempnode:=find_existing_hoist(n);

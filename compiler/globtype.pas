@@ -592,7 +592,22 @@ interface
            unconditionally available; procedures with labels, inline assembler
            or exceptions are skipped wholesale. Opt-in (-OoGVNPRE): a wrong
            reuse is a miscompile }
-         cs_opt_gvnpre
+         cs_opt_gvnpre,
+         { interprocedural pure/const function-attribute discovery (the gcc
+           -fipa-pure-const idea ported to FPC): walk the unit's routines
+           bottom-up over the call graph and prove, per routine, that it (a)
+           reads no global state ("const": result depends only on its by-value
+           parameters) and/or (b) reads but never writes global state and does
+           no I/O ("pure"), propagating conservatively through mutually-
+           recursive SCCs and stopping at indirect/virtual/external calls,
+           inline assembler, raises, exception handlers and trapping arithmetic.
+           The result is recorded as internal flags on the routine's procdef and
+           consumed by LICM (-OoLICM), which may hoist a call to a proven-const
+           function with loop-invariant arguments out of a loop. Conservative:
+           any global/threadvar/pointer write, call to an unproven routine,
+           Writeln/IO, raise, try/except or inline asm => not pure. Opt-in
+           (-OoPURE): a wrong attribute is a miscompile }
+         cs_opt_pure
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -671,7 +686,7 @@ interface
          'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC','UNROLLJAM',
          'PREDCOM','SRA','STOREMERGE','CASECLUSTER','CROSSJUMP','BLOCKORDER',
          'SINK','STOREMOTION','VRP','REFELIDE','SWITCHTABLE','REE',
-         'SHRINKWRAP','GVNPRE'
+         'SHRINKWRAP','GVNPRE','PURE'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'

@@ -172,6 +172,7 @@ implementation
        opttail,
        optcse,
        optloop,
+       optpure,
        optsra,
        optconstprop,
        optdeadstore,
@@ -1663,6 +1664,19 @@ implementation
          (procdef.proctypeoption in [potype_operator,potype_procedure,potype_function]) and
          (code.nodetype=blockn) and (tblocknode(code).statements=nil) then
          procdef.isempty:=true;
+
+       { interprocedural pure/const attribute discovery (the gcc
+         -fipa-pure-const idea): record on this routine's procdef whether it is
+         provably const (result depends only on its by-value parameters) and/or
+         pure (reads but never writes global state, no I/O / side effects), so
+         that later-compiled callers' LICM can hoist a call to it out of a loop.
+         Runs here, on the final node tree of the current routine, so its
+         summary is available to every routine compiled after it in the unit;
+         mutually-recursive SCCs are resolved by the on-demand fixpoint in
+         optpure. Opt-in via -OoPURE; the flags default to "impure" for routines
+         we never analysed (e.g. loaded from other units). }
+       if cs_opt_pure in current_settings.optimizerswitches then
+         AnalyzeProcPurity(procdef,code);
 
        { global value numbering + full-redundancy elimination: number
          side-effect-free scalar expressions across control flow and reuse a

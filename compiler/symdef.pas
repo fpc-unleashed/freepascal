@@ -972,6 +972,30 @@ interface
           { only needed when actually compiling a unit, no need to save/load from ppu }
           invoke_helper : tprocdef;
           copied_from : tprocdef;
+          { interprocedural pure/const attribute discovery (-OoPURE). All of
+            these are transient: computed while compiling the current unit and
+            never saved to / loaded from the ppu (a cross-unit / WPO version is
+            a follow-up), so on load they default to "not analyzed" => the
+            routine is treated conservatively as impure.
+              pure_analyzed        : the summary below has been filled in
+              pure_intrinsic_impure: the body itself performs a disqualifying
+                                     operation (global/memory write, I/O, raise,
+                                     try/except, inline asm, trapping arithmetic,
+                                     indirect/virtual/external/method call, ...)
+                                     regardless of its callees
+              pure_reads_global    : the body reads global/static/threadvar or
+                                     dereferenced memory (kills "const", allowed
+                                     for "pure")
+              pure_callees         : the directly-called ordinary routines whose
+                                     purity this routine transitively depends on
+              pure_qtoken/pure_qresult: scratch for the on-demand fixpoint query
+                                     in optpure (per-query memo + cycle marker) }
+          pure_analyzed : boolean;
+          pure_intrinsic_impure : boolean;
+          pure_reads_global : boolean;
+          pure_callees : array of tprocdef;
+          pure_qtoken : cardinal;
+          pure_qresult : byte;
           constructor create(level:byte;doregister:boolean);virtual;
           constructor ppuload(ppufile:tcompilerppufile);
           destructor  destroy;override;
