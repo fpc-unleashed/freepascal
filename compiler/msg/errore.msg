@@ -2903,6 +2903,17 @@ cg_n_loop_not_peeled=06070_N_Loop not peeled: $1
 % it as a loop. The reason it could not peel the loop is given as \var{$1}. This
 % diagnostic is only emitted while the pass is enabled and is shown at note
 % verbosity (\var{-vn}).
+cg_n_loop_split=06071_N_Loop split into two branch-free loops at an induction-variable crossover
+% The loop-splitting pass (\var{-O4 -OoLOOPSPLIT}) recognized a conditional
+% inside this counted for-loop that compares the induction variable against a
+% loop-invariant bound and split the iteration space into two consecutive loops
+% at the crossover, so each loop body is branch-free. This diagnostic is only
+% emitted while the pass is enabled and is shown at note verbosity (\var{-vn}).
+cg_n_loop_not_split=06072_N_Loop not split: $1
+% The loop-splitting pass (\var{-O4 -OoLOOPSPLIT}) inspected this for-loop but
+% left it as a single loop. The reason it could not split the loop is given as
+% \var{$1}. This diagnostic is only emitted while the pass is enabled and is
+% shown at note verbosity (\var{-vn}).
 %
 % \end{description}
 # EndOfTeX

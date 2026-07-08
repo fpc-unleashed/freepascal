@@ -1221,6 +1221,24 @@ implementation
                  actually change any nodes }
              end;
 
+           { loop splitting: when a counted for-loop's whole body is a single if
+             comparing the induction variable against a loop-invariant bound
+             (if i<m then A else B), split the iteration space at the crossover
+             into two consecutive branch-free loops. Run before the vectorizer so
+             the branch-free interior loop it exposes becomes a vectorizable
+             uniform kernel; needs valid DFA to prove the counter/bound unmodified
+             in the body, and skips procedures with labels like the loop passes
+             below so control cannot enter a split loop mid-stream. }
+           if (cs_opt_loopsplit in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizeLoopSplit(code) or RedoDFA;
+
+           if RedoDFA then
+             begin
+               dfabuilder.redodfainfo(code);
+               RedoDFA:=false;
+             end;
+
            { conservative loop autovectorization: rewrite a counted single-
              precision element-wise for-loop  for i:=lo to hi do a[i]:=b[i] op c[i]
              into a 128-bit SSE packed main loop (4 singles/iteration) plus a
