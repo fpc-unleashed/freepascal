@@ -2965,6 +2965,18 @@ cg_n_loop_not_unrolljammed=06080_N_Loop nest not unroll-and-jammed: $1
 % did not unroll-and-jam it. The reason is given as \var{$1}. This diagnostic is
 % only emitted while the pass is enabled and is shown at note verbosity
 % (\var{-vn}).
+cg_n_loop_predcommoned=06081_N_Loop predictively commoned (window width $1) for array $2
+% The predictive-commoning pass (\var{-O4 -OoPREDCOM}) recognized a counted loop
+% that re-reads the same array location across iterations through a small window
+% of constant offsets and rewrote it to carry the window in a rotating set of
+% scalar temporaries, loading only the leading edge each iteration instead of
+% re-loading every offset. This diagnostic is only emitted while the pass is
+% enabled and is shown at note verbosity (\var{-vn}).
+cg_n_loop_not_predcommoned=06082_N_Loop not predictively commoned: $1
+% The predictive-commoning pass (\var{-O4 -OoPREDCOM}) inspected a counted
+% for-loop but did not common any cross-iteration re-load. The reason is given as
+% \var{$1}. This diagnostic is only emitted while the pass is enabled and is
+% shown at note verbosity (\var{-vn}).
 %
 % \end{description}
 # EndOfTeX

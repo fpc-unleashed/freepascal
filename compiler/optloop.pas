@@ -47,6 +47,7 @@ unit optloop;
     function OptimizeLoopFuse(node : tnode) : boolean;
     function OptimizeReassoc(node : tnode) : boolean;
     function OptimizeUnrollJam(node : tnode) : boolean;
+    function OptimizePredCom(node : tnode) : boolean;
 
   implementation
 
@@ -5906,6 +5907,614 @@ unit optloop;
           declines for lack of its own nested loop, then the outer 2-level nest
           matches) }
         foreachnodestatic(pm_postprocess,node,@ujam_processloop_cb,@ctx);
+        Result:=ctx.changed;
+      end;
+
+
+{*****************************************************************************
+                 Predictive commoning (gcc -fpredictive-commoning)
+*****************************************************************************}
+
+    { A node-tree port of gcc's -fpredictive-commoning.  In a counted loop that
+      re-reads the same array location across successive iterations through a
+      small window of constant offsets -- the classic stencil
+
+        for i:=lo to hi do  a[i] := b[i-1] + b[i] + b[i+1];
+
+      and 1-D convolution inner loops sliding a window over an array -- the value
+      b[i+c] loaded at iteration i is exactly b[i+c-1] as seen at iteration i+1.
+      Instead of re-loading every offset each iteration, the window is carried in
+      a rotating set of scalar temporaries and only the LEADING EDGE b[i+maxoff]
+      is loaded each iteration:
+
+        if lo<=hi then                     ( guard: no preheader loads if empty )
+          begin t0:=b[lo-1]; t1:=b[lo]; end;             ( preheader: offsets  )
+        for i:=lo to hi do begin                         ( minoff..maxoff-1     )
+          t2 := b[i+1];                    ( leading edge -- the only load      )
+          a[i] := t0 + t1 + t2;            ( window reads served from temps     )
+          t0:=t1; t1:=t2;                  ( rotate down for the next iteration )
+        end;
+
+      This is cross-*sequential*-iteration reuse in a single loop, which LICM
+      (invariant loads only), same-iteration CSE and unroll-and-jam (cross-*outer*
+      -iteration reuse) each miss.  The value carried is bit-identical to the
+      re-loaded one (FP included -- no reassociation, values are only carried), so
+      the transform is exact for any input.
+
+      LEGALITY (a wrong commoning is a miscompile; the recognizer is strict and
+      anything not matched compiles exactly as before):
+
+        * The reuse base B is a plain 1-D dynamic or normal (non-packed) static
+          array VARIABLE (a direct load, so field/pointer-backed arrays are
+          declined) with an unmanaged 8/16/32/64-bit integer or Single/Double
+          element, read as B[i+c] for constant offsets c with |c|<=predcom_maxoff.
+        * B must be READ-ONLY across the loop: it is declined if any store target
+          in the body resolves (through the vec/subscript chain) to B's variable.
+          Disjointness from the stores is the fork's trusted array-identity
+          disambiguation that LOOPFUSE / LOOPDISTPAT / UNROLLJAM already rely on:
+          a store to a *different* array variable A (A<>B by symbol) is assumed
+          not to alias B.  An in-place stencil that stores into B itself is thus
+          declined (its store target resolves to B), which sidesteps the stale/
+          fresh-value hazard entirely.
+        * The commoned offsets must form a CONTIGUOUS window [minoff..maxoff]
+          (every integer in between actually appears as a B read) of width
+          2..predcom_maxwindow.  Contiguity is what makes the preheader safe: the
+          preheader loads B[lo+minoff .. lo+maxoff-1] and the loop's leading edge
+          loads B[i+maxoff]; every index either touches is one the ORIGINAL first
+          iteration i=lo (which reads the whole contiguous window) already read,
+          and the leading edge B[i+maxoff] is read by the original iteration i, so
+          NO load is introduced that the original did not perform.  The  if lo<=hi
+          guard suppresses the preheader when the loop is empty, so a zero-trip or
+          too-short loop performs no speculative / out-of-bounds load (a hard
+          requirement under -Cr and at the edges of an array).  All body reads are
+          unconditional (no if/case/short-circuit and/or, see below), so the whole
+          window is genuinely read every iteration.
+        * The loop is ascending, unit step, over a simple non-aliased signed
+          32/64-bit counter not modified in the body (DFA), and -Cr/-Co is
+          declined (so no per-element check ordering is disturbed).  downto and
+          non-unit steps are declined.
+        * The body is built only from a whitelist of side-effect-free constructs
+          -- plain (:=) assignments whose target is an array element or a simple
+          scalar, array/scalar/field reads, constants, and pure arithmetic --
+          with NO call, pointer deref, address-of, as-cast, nested loop, if/case/
+          with, break/continue/goto/label/exit/raise/try, short-circuit and/or, or
+          non-pure inline intrinsic (only the abs/sqr/sqrt and min/max whitelist).
+          This guarantees B is not written through an unanalysable channel and
+          every recognized read runs every iteration.
+        * The counter bounds are snapshotted into temporaries evaluated once (as a
+          real for-loop already does), so the guard and preheader see the same
+          bounds; the transformed loop is left as a real for-node, so the counter's
+          post-loop value is exactly what the original for-loop left.
+        * Procedures with labels are skipped at the psub call site like the sibling
+          loop passes, so control cannot enter a partly-rotated body mid-stream. }
+
+    const
+      predcom_maxoff    = 16;   { largest |c| in a recognized B[i+c] }
+      predcom_maxwindow = 8;    { largest window width carried in temps }
+      predcom_maxbases  = 32;   { cap on distinct arrays tracked per loop }
+
+    type
+      tpc_offarray = array[-predcom_maxoff..predcom_maxoff] of boolean;
+
+      tpc_base = record
+        sym     : tsym;         { the array variable }
+        proto   : tnode;        { a representative load of B, to getcopy }
+        elemdef : tdef;         { the element type }
+        elemok  : boolean;      { element type is a carriable scalar }
+        written : boolean;      { B is a store target somewhere in the body }
+        seen    : tpc_offarray; { which offsets appear as B[i+c] reads }
+        minoff  : longint;
+        maxoff  : longint;
+        noffsets: longint;      { number of distinct offsets seen }
+        count   : longint;      { total windowed reads (payoff proxy) }
+      end;
+
+      tpc_scan = record
+        counter   : tsym;
+        bases     : array of tpc_base;
+        nbases    : longint;
+        bad       : boolean;
+        badreason : string;
+      end;
+      ppc_scan = ^tpc_scan;
+
+      tpc_subst = record
+        counter : tsym;
+        basesym : tsym;
+        minoff  : longint;
+        maxoff  : longint;
+        temps   : array of ttempcreatenode;   { indexed 0..W-1 by offset-minoff }
+      end;
+      ppc_subst = ^tpc_subst;
+
+
+    function predcom_elem_ok(d : tdef) : boolean;
+      { true when d is an unmanaged scalar we can carry in a register temp: an
+        8/16/32/64-bit ordinal, or Single/Double }
+      begin
+        result:=false;
+        if not assigned(d) then
+          exit;
+        if is_managed_type(d) then
+          exit;
+        if (d.typ=orddef) and (d.size in [1,2,4,8]) then
+          exit(true);
+        if is_single(d) or is_double(d) then
+          exit(true);
+      end;
+
+
+    function predcom_ultimate_array_sym(n : tnode) : tsym;
+      { the array VARIABLE a (possibly multi-dimensional) l-value resolves to,
+        walking the vec/typeconv chain down to a plain load; nil if it bottoms out
+        at anything else (a field subscript, a pointer deref, ...) }
+      begin
+        result:=nil;
+        n:=rangeelim_skip_typeconv(n);
+        while assigned(n) and (n.nodetype=vecn) do
+          n:=rangeelim_skip_typeconv(tvecnode(n).left);
+        if assigned(n) and (n.nodetype=loadn) then
+          result:=tloadnode(n).symtableentry;
+      end;
+
+
+    function predcom_index_offset(idx : tnode; counter : tsym; out c : longint) : boolean;
+      { true (with offset c) if idx is exactly the loop counter i (c=0), or i+const
+        / const+i / i-const for a small constant, else false.  A read index only:
+        any write/modify flag rejects it. }
+      var
+        l, r : tnode;
+        v : tconstexprint;
+      begin
+        result:=false;
+        c:=0;
+        idx:=rangeelim_skip_typeconv(idx);
+        if not assigned(idx) then
+          exit;
+        if ([nf_write,nf_modify]*idx.flags)<>[] then
+          exit;
+        if (idx.nodetype=loadn) and (tloadnode(idx).symtableentry=counter) then
+          exit(true);
+        if idx.nodetype in [addn,subn] then
+          begin
+            l:=rangeelim_skip_typeconv(taddnode(idx).left);
+            r:=rangeelim_skip_typeconv(taddnode(idx).right);
+            if idx.nodetype=addn then
+              begin
+                if assigned(l) and (l.nodetype=loadn) and (tloadnode(l).symtableentry=counter) and
+                   rangeelim_const_value(r,v) then
+                  begin
+                    if (v>=-predcom_maxoff) and (v<=predcom_maxoff) then
+                      begin c:=longint(v.svalue); exit(true); end;
+                  end
+                else if assigned(r) and (r.nodetype=loadn) and (tloadnode(r).symtableentry=counter) and
+                   rangeelim_const_value(l,v) then
+                  begin
+                    if (v>=-predcom_maxoff) and (v<=predcom_maxoff) then
+                      begin c:=longint(v.svalue); exit(true); end;
+                  end;
+              end
+            else { subn: i - const }
+              begin
+                if assigned(l) and (l.nodetype=loadn) and (tloadnode(l).symtableentry=counter) and
+                   rangeelim_const_value(r,v) then
+                  begin
+                    if (v>=-predcom_maxoff) and (v<=predcom_maxoff) then
+                      begin c:=-longint(v.svalue); exit(true); end;
+                  end;
+              end;
+          end;
+      end;
+
+
+    function predcom_find_or_add(sc : ppc_scan; sym : tsym; proto : tnode;
+                                 elemok : boolean; ed : tdef) : longint;
+      { index of the base record for sym, adding one if absent (filling type info
+        the first time a real read supplies it via proto<>nil).  Returns -1 and
+        flags sc^.bad if the per-loop base cap would be exceeded. }
+      var
+        i : longint;
+      begin
+        result:=-1;
+        for i:=0 to sc^.nbases-1 do
+          if sc^.bases[i].sym=sym then
+            begin
+              result:=i;
+              break;
+            end;
+        if result<0 then
+          begin
+            if sc^.nbases>=predcom_maxbases then
+              begin
+                sc^.bad:=true;
+                sc^.badreason:='too many distinct arrays in the loop body';
+                exit;
+              end;
+            if sc^.nbases>=length(sc^.bases) then
+              setlength(sc^.bases,2*sc^.nbases+4);
+            result:=sc^.nbases;
+            inc(sc^.nbases);
+            fillchar(sc^.bases[result],sizeof(tpc_base),0);
+            sc^.bases[result].sym:=sym;
+            sc^.bases[result].minoff:=predcom_maxoff+1;
+            sc^.bases[result].maxoff:=-predcom_maxoff-1;
+          end;
+        if assigned(proto) and not assigned(sc^.bases[result].proto) then
+          begin
+            sc^.bases[result].proto:=proto;
+            sc^.bases[result].elemdef:=ed;
+            sc^.bases[result].elemok:=elemok;
+          end;
+      end;
+
+
+    procedure predcom_note_write(sc : ppc_scan; sym : tsym);
+      { record that the array variable sym is written somewhere in the body }
+      var
+        idx : longint;
+      begin
+        idx:=predcom_find_or_add(sc,sym,nil,false,nil);
+        if idx>=0 then
+          sc^.bases[idx].written:=true;
+      end;
+
+
+    function predcom_scan_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      { one traversal of the loop body: reject anything outside the safe whitelist,
+        record every array store target (so B can be proven read-only), and collect
+        the constant offsets of every plain B[i+c] read }
+      var
+        sc : ppc_scan;
+        leftn, lhs : tnode;
+        usym : tsym;
+        adef : tdef;
+        c, idx : longint;
+      begin
+        result:=fen_false;
+        sc:=ppc_scan(arg);
+        case n.nodetype of
+          { --- hard rejects: unanalysable side effects / control flow --- }
+          calln:
+            begin sc^.bad:=true; sc^.badreason:='body contains a call'; exit(fen_norecurse_true); end;
+          derefn,addrn:
+            begin sc^.bad:=true; sc^.badreason:='body dereferences or takes the address of a pointer'; exit(fen_norecurse_true); end;
+          asn:
+            begin sc^.bad:=true; sc^.badreason:='body contains an as-cast (may raise)'; exit(fen_norecurse_true); end;
+          forn,whilerepeatn:
+            begin sc^.bad:=true; sc^.badreason:='body contains a nested loop'; exit(fen_norecurse_true); end;
+          ifn,casen:
+            begin sc^.bad:=true; sc^.badreason:='body contains conditional control flow (if/case)'; exit(fen_norecurse_true); end;
+          andn,orn:
+            begin sc^.bad:=true; sc^.badreason:='body contains a short-circuit and/or (conditional evaluation)'; exit(fen_norecurse_true); end;
+          breakn,continuen,goton,labeln,exitn,raisen,tryexceptn,tryfinallyn,onn:
+            begin sc^.bad:=true; sc^.badreason:='body contains break/continue/goto/label/exit/raise/try'; exit(fen_norecurse_true); end;
+          inlinen:
+            if not (tinlinenode(n).inlinenumber in
+                 [in_abs_long,in_abs_real,in_sqr_real,in_sqrt_real,
+                  in_min_single,in_max_single,in_min_double,in_max_double,
+                  in_min_dword,in_max_dword,in_min_longint,in_max_longint,
+                  in_min_qword,in_max_qword,in_min_int64,in_max_int64,
+                  in_min_quad,in_max_quad]) then
+              begin sc^.bad:=true; sc^.badreason:='body contains a non-pure inline intrinsic'; exit(fen_norecurse_true); end;
+          assignn:
+            begin
+              if tassignmentnode(n).assigntype<>at_normal then
+                begin sc^.bad:=true; sc^.badreason:='body has a non-plain (compound) assignment'; exit(fen_norecurse_true); end;
+              lhs:=rangeelim_skip_typeconv(tassignmentnode(n).left);
+              if not assigned(lhs) then
+                begin sc^.bad:=true; sc^.badreason:='assignment has no target'; exit(fen_norecurse_true); end;
+              case lhs.nodetype of
+                vecn:
+                  if predcom_ultimate_array_sym(lhs)=nil then
+                    begin sc^.bad:=true; sc^.badreason:='store target is a field/pointer-backed array element'; exit(fen_norecurse_true); end;
+                loadn:
+                  ; { a scalar or whole dynamic/static array store: allowed, marked below via the loadn case }
+                else
+                  begin sc^.bad:=true; sc^.badreason:='store target is not an array element or a simple variable'; exit(fen_norecurse_true); end;
+              end;
+            end;
+          loadn:
+            { a whole-array store target (A:=B) marks A written; scalar stores are
+              irrelevant (a scalar can never be the array base B) }
+            if (([nf_write,nf_modify]*n.flags)<>[]) and assigned(n.resultdef) and
+               (is_dynamic_array(n.resultdef) or is_normal_array(n.resultdef)) then
+              predcom_note_write(sc,tloadnode(n).symtableentry);
+          vecn:
+            begin
+              if ([nf_write,nf_modify]*n.flags)<>[] then
+                begin
+                  { a store target: mark its array written, do not collect it }
+                  usym:=predcom_ultimate_array_sym(n);
+                  if assigned(usym) then
+                    predcom_note_write(sc,usym);
+                end
+              else
+                begin
+                  { a read: collect it if it is a plain 1-D B[i+c] over an array }
+                  leftn:=rangeelim_skip_typeconv(tvecnode(n).left);
+                  if assigned(leftn) and (leftn.nodetype=loadn) and assigned(leftn.resultdef) then
+                    begin
+                      adef:=leftn.resultdef;
+                      if is_dynamic_array(adef) or
+                         (is_normal_array(adef) and not is_packed_array(adef)) then
+                        if predcom_index_offset(tvecnode(n).right,sc^.counter,c) then
+                          begin
+                            idx:=predcom_find_or_add(sc,tloadnode(leftn).symtableentry,
+                              tvecnode(n).left,predcom_elem_ok(n.resultdef),n.resultdef);
+                            if idx>=0 then
+                              begin
+                                if not sc^.bases[idx].seen[c] then
+                                  begin
+                                    sc^.bases[idx].seen[c]:=true;
+                                    inc(sc^.bases[idx].noffsets);
+                                  end;
+                                inc(sc^.bases[idx].count);
+                                if c<sc^.bases[idx].minoff then sc^.bases[idx].minoff:=c;
+                                if c>sc^.bases[idx].maxoff then sc^.bases[idx].maxoff:=c;
+                              end;
+                          end;
+                    end;
+                end;
+            end;
+          { --- allowed structural / value / arithmetic constructs --- }
+          blockn,statementn,nothingn,tempcreaten,temprefn,tempdeleten,
+          ordconstn,realconstn,niln,pointerconstn,stringconstn,setconstn,
+          subscriptn,typeconvn,
+          addn,subn,muln,slashn,divn,modn,xorn,shln,shrn,
+          unaryminusn,notn,ltn,lten,gtn,gten,equaln,unequaln:
+            ;
+          else
+            begin sc^.bad:=true; sc^.badreason:='body contains an unsupported construct'; exit(fen_norecurse_true); end;
+        end;
+      end;
+
+
+    function predcom_subst_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      { in a copy of the loop body, replace every plain read B[i+c] (c in the
+        window) with a reference to its carry temporary.  The new tempref is
+        typechecked immediately -- the surrounding body is a copy of an already-
+        typechecked tree do_firstpass will not re-descend into, and the tempref has
+        the identical element type of the vecn it replaces (the REASSOC gotcha). }
+      var
+        ps : ppc_subst;
+        leftn : tnode;
+        newref : ttemprefnode;
+        c : longint;
+      begin
+        result:=fen_false;
+        ps:=ppc_subst(arg);
+        if (n.nodetype<>vecn) or (([nf_write,nf_modify]*n.flags)<>[]) then
+          exit;
+        leftn:=rangeelim_skip_typeconv(tvecnode(n).left);
+        if not assigned(leftn) or (leftn.nodetype<>loadn) or
+           (tloadnode(leftn).symtableentry<>ps^.basesym) then
+          exit;
+        if not predcom_index_offset(tvecnode(n).right,ps^.counter,c) then
+          exit;
+        if (c<ps^.minoff) or (c>ps^.maxoff) then
+          exit;
+        { replace the reload with its carry temp; typecheck immediately (the
+          surrounding body is a copy do_firstpass will not re-descend into, and the
+          tempref has the identical element type of the vecn) -- the REASSOC gotcha }
+        newref:=ctemprefnode.create(ps^.temps[c-ps^.minoff]);
+        n:=newref;
+        do_firstpass(n);
+        result:=fen_norecurse_false;
+      end;
+
+
+    type
+      tpredcomcontext = object
+        changed : boolean;
+        procedure processloop(var n : tnode);
+      end;
+
+
+    procedure tpredcomcontext.processloop(var n : tnode);
+      var
+        forn : tfornode;
+        counter : tabstractvarsym;
+        ctype, elemdef : tdef;
+        reason : string;
+        sc : tpc_scan;
+        subst : tpc_subst;
+        chosen, minoff, maxoff, w, k, off : longint;
+        basesym : tsym;
+        baseproto : tnode;
+        block, preheader, newbody, bodycopy, newfor, idxn, ledidx : tnode;
+        stat, pstat, bstat : tstatementnode;
+        lotemp, hitemp : ttempcreatenode;
+        carr : array of ttempcreatenode;
+
+      { Recognizer: '' when the loop can be commoned (filling counter, ctype,
+        basesym, baseproto, elemdef, minoff, maxoff), else the failure reason. }
+      function predcom_reason : string;
+        var
+          bi, ww : longint;
+        begin
+          result:='';
+          if lnf_backward in forn.loopflags then
+            exit('descending (downto) loop');
+          if assigned(forn.loopstep) then
+            exit('non-unit loop step');
+
+          counter:=rangeelim_simple_var(forn.left);
+          if not assigned(counter) then
+            exit('loop counter is not a simple non-aliased variable');
+          ctype:=forn.left.resultdef;
+          if not assigned(ctype) or (ctype.typ<>orddef) then
+            exit('loop counter is not an ordinal type');
+          if not is_signed(ctype) or not(ctype.size in [4,8]) then
+            exit('loop counter is not a signed 32/64-bit integer');
+
+          if ([cs_check_range,cs_check_overflow]*current_settings.localswitches)<>[] then
+            exit('range/overflow checking is enabled (-Cr/-Co)');
+
+          if not assigned(forn.t2) then
+            exit('loop body is empty');
+
+          { scan the body: reject unsafe constructs, gather store targets and
+            windowed B[i+c] reads }
+          sc.counter:=tsym(counter);
+          foreachnodestatic(forn.t2,@predcom_scan_cb,@sc);
+          if sc.bad then
+            exit(sc.badreason);
+
+          { pick the read-only base with a contiguous >=2-wide window and the most
+            reuse }
+          chosen:=-1;
+          for bi:=0 to sc.nbases-1 do
+            if sc.bases[bi].elemok and not sc.bases[bi].written and
+               (sc.bases[bi].noffsets>=2) then
+              begin
+                ww:=sc.bases[bi].maxoff-sc.bases[bi].minoff+1;
+                if (sc.bases[bi].noffsets=ww) and (ww<=predcom_maxwindow) then
+                  if (chosen<0) or (sc.bases[bi].count>sc.bases[chosen].count) then
+                    chosen:=bi;
+              end;
+          if chosen<0 then
+            exit('no read-only array is re-loaded across iterations through a small contiguous constant-offset window');
+
+          basesym:=sc.bases[chosen].sym;
+          baseproto:=sc.bases[chosen].proto;
+          elemdef:=sc.bases[chosen].elemdef;
+          minoff:=sc.bases[chosen].minoff;
+          maxoff:=sc.bases[chosen].maxoff;
+
+          { DFA: the counter must not be assigned in the body }
+          CalcDefSum(forn.t2);
+          if not assigned(forn.t2.optinfo) or not assigned(forn.left.optinfo) then
+            exit('data-flow information is unavailable for the loop body');
+          if DynSetIn(forn.t2.optinfo^.defsum,forn.left.optinfo^.index) then
+            exit('loop counter is modified inside the loop body');
+        end;
+
+      function pc_index(base : tnode; delta : longint) : tnode;
+        { base + delta as a counter-typed index expression (base is copied) }
+        begin
+          if delta=0 then
+            result:=base
+          else
+            result:=caddnode.create(addn,base,cordconstnode.create(delta,ctype,false));
+        end;
+
+      begin
+        forn:=tfornode(n);
+
+        { pre-initialize recognizer outputs (a nested function assigning parent
+          locals defeats per-procedure DFA; see the sibling passes) }
+        counter:=nil; ctype:=nil; elemdef:=nil; basesym:=nil; baseproto:=nil;
+        chosen:=-1; minoff:=0; maxoff:=0; w:=0;
+        sc.counter:=nil; sc.nbases:=0; sc.bad:=false; sc.badreason:='';
+        setlength(sc.bases,0);
+
+        reason:=predcom_reason;
+        if reason<>'' then
+          begin
+            MessagePos1(forn.fileinfo,cg_n_loop_not_predcommoned,reason);
+            exit;
+          end;
+
+        w:=maxoff-minoff+1;
+
+        { ---- build the replacement block ---- }
+        block:=internalstatements(stat);
+
+        { lo := <start>;  hi := <end>  (evaluated once, as the for-loop would) }
+        lotemp:=ctempcreatenode.create(ctype,ctype.size,tt_persistent,true);
+        addstatement(stat,lotemp);
+        addstatement(stat,cassignmentnode.create(ctemprefnode.create(lotemp),forn.right.getcopy));
+        hitemp:=ctempcreatenode.create(ctype,ctype.size,tt_persistent,true);
+        addstatement(stat,hitemp);
+        addstatement(stat,cassignmentnode.create(ctemprefnode.create(hitemp),forn.t1.getcopy));
+
+        { carry temporaries carr[0..W-1], carr[k] holds B[i+minoff+k] }
+        setlength(carr,w);
+        for k:=0 to w-1 do
+          begin
+            carr[k]:=ctempcreatenode.create(elemdef,elemdef.size,tt_persistent,true);
+            addstatement(stat,carr[k]);
+          end;
+
+        { guard:  if lo<=hi then load the window's non-leading edge for i=lo }
+        preheader:=internalstatements(pstat);
+        for k:=0 to w-2 do
+          begin
+            off:=minoff+k;
+            addstatement(pstat,cassignmentnode.create(ctemprefnode.create(carr[k]),
+              cvecnode.create(baseproto.getcopy,
+                pc_index(ctemprefnode.create(lotemp),off))));
+          end;
+        addstatement(stat,cifnode.create(
+          caddnode.create(lten,ctemprefnode.create(lotemp),ctemprefnode.create(hitemp)),
+          preheader,nil));
+
+        { for i:=lo to hi do begin leading edge; body'; rotate end }
+        newbody:=internalstatements(bstat);
+        { leading edge:  carr[W-1] := B[i+maxoff] }
+        if maxoff=0 then
+          ledidx:=cloadnode.create(tsym(counter),counter.owner)
+        else
+          ledidx:=caddnode.create(addn,cloadnode.create(tsym(counter),counter.owner),
+            cordconstnode.create(maxoff,ctype,false));
+        addstatement(bstat,cassignmentnode.create(ctemprefnode.create(carr[w-1]),
+          cvecnode.create(baseproto.getcopy,ledidx)));
+        { the original body with B[i+c] reads replaced by carry temps }
+        bodycopy:=forn.t2.getcopy;
+        subst.counter:=tsym(counter);
+        subst.basesym:=basesym;
+        subst.minoff:=minoff;
+        subst.maxoff:=maxoff;
+        subst.temps:=carr;
+        foreachnodestatic(bodycopy,@predcom_subst_cb,@subst);
+        addstatement(bstat,bodycopy);
+        { rotate down for the next iteration:  carr[k]:=carr[k+1] }
+        for k:=0 to w-2 do
+          addstatement(bstat,cassignmentnode.create(ctemprefnode.create(carr[k]),
+            ctemprefnode.create(carr[k+1])));
+
+        newfor:=cfornode.create(cloadnode.create(tsym(counter),counter.owner),
+          ctemprefnode.create(lotemp),ctemprefnode.create(hitemp),newbody,false);
+        addstatement(stat,newfor);
+
+        { release temporaries }
+        addstatement(stat,ctempdeletenode.create(lotemp));
+        addstatement(stat,ctempdeletenode.create(hitemp));
+        for k:=0 to w-1 do
+          addstatement(stat,ctempdeletenode.create(carr[k]));
+
+        do_firstpass(block);
+        MessagePos2(forn.fileinfo,cg_n_loop_predcommoned,tostr(w),basesym.realname);
+        forn.free;
+        n:=block;
+        changed:=true;
+      end;
+
+
+    function predcom_processloop_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      begin
+        result:=fen_false;
+        if n.nodetype=forn then
+          begin
+            tpredcomcontext(arg^).processloop(n);
+            { n may now be a block; do not recurse into the freed for-node }
+            result:=fen_norecurse_false;
+          end;
+      end;
+
+
+    function OptimizePredCom(node : tnode) : boolean;
+      var
+        ctx : tpredcomcontext;
+      begin
+        Result:=false;
+        if (cs_opt_size in current_settings.optimizerswitches) then
+          exit;
+        if not(pi_dfaavailable in current_procinfo.flags) then
+          exit;
+        ctx.changed:=false;
+        { postorder so an inner loop is commoned before an enclosing loop }
+        foreachnodestatic(pm_postprocess,node,@predcom_processloop_cb,@ctx);
         Result:=ctx.changed;
       end;
 

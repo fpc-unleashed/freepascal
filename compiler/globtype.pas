@@ -444,7 +444,14 @@ interface
            loop, so a value the inner body loads once (b[j] in a matmul-shaped
            nest) is reused across the unrolled outer iterations from a register
            and a per-outer-iteration scalar accumulator is register-blocked }
-         cs_opt_unrolljam
+         cs_opt_unrolljam,
+         { predictive commoning (gcc -fpredictive-commoning): in a counted loop
+           that reads B[i+c] for a small window of constant offsets c, the value
+           B[i+c] loaded this iteration equals B[i+c-1] loaded next iteration, so
+           carry the window in a rotating set of scalar temporaries and load only
+           the leading edge B[i+maxoff] each iteration instead of re-loading every
+           offset (the classic stencil / 1-D convolution sliding window) }
+         cs_opt_predcom
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -520,7 +527,8 @@ interface
          'DEADSTORE','FORCENOSTACKFRAME','USELOADMODIFYSTORE',
          'UNUSEDPARA','CONSTS','FORLOOP','LICM','LOOPUNSWITCH','BITIDIOM',
          'RANGEELIM','VECTORIZE','JUMPTHREAD','LOOPDISTPAT',
-         'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC','UNROLLJAM'
+         'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC','UNROLLJAM',
+         'PREDCOM'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
@@ -555,7 +563,7 @@ interface
        genericlevel3optimizerswitches = [cs_opt_level3,cs_opt_constant_propagate,cs_opt_nodedfa,cs_opt_loopstrength
                                          {$ifndef llvm},cs_opt_use_load_modify_store{$endif},
                                          cs_opt_loopunroll,cs_opt_forloop];
-       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert,cs_opt_reassoc,cs_opt_unrolljam];
+       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert,cs_opt_reassoc,cs_opt_unrolljam,cs_opt_predcom];
 
        { whole program optimizations whose information generation requires
          information from all loaded units
