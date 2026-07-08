@@ -9,7 +9,7 @@
 ## Quick Start
 
 > [!TIP]
-> Always compile with `-O4`. The new optimization passes added by this fork (store merging, case clustering, cross-jumping, hot/cold block layout, code sinking, ...) only run at `-O4` - without it you get a stock-FPC level of optimization.
+> Compile release builds with `-O4`. The new optimization passes added by this fork (store merging, case clustering, cross-jumping, hot/cold block layout, code sinking, ...) only run at `-O4` - without it you get a stock-FPC level of optimization. For debugging, skip `-O4` and use `-g` as usual, since heavy optimization makes stepping through code harder.
 
 ### Compiling an existing Pascal program
 
@@ -19,13 +19,13 @@ If you installed via the [official installer or fpcupdeluxe](#installation), the
 /path/to/fpcunleashed/fpc/bin/x86_64-linux/fpc -O4 myprogram.pas
 ```
 
-From a source checkout, after building (`make all` with a starting FPC 3.2.x on PATH, then `make rtl packages FPC=$PWD/compiler/ppcx64`), use the `fpcu.sh` wrapper in the repository root - it invokes the freshly built compiler with `-O4` and the in-tree unit paths, and works from any directory:
+From a source checkout, after building (`make all` with a starting FPC 3.2.x on PATH, then `make rtl packages FPC=$PWD/compiler/ppcx64`), use the `fpcu.sh` wrapper in the repository root - it invokes the freshly built compiler with the in-tree unit paths and works from any directory. It deliberately adds no optimization or debug flags of its own, so pass `-O4` for release builds (or `-g` for debug-friendly ones):
 
 ```bash
-/path/to/checkout/fpcu.sh myprogram.pas
+/path/to/checkout/fpcu.sh -O4 myprogram.pas
 ```
 
-Flags you pass come last and override the defaults (e.g. `fpcu.sh -O1 test.pas` for a quick unoptimized build). The wrapper expands to:
+The wrapper expands to:
 
 ```bash
 compiler/ppcx64 -O4 -Furtl/units/x86_64-linux "-Fupackages/*/units/x86_64-linux" myprogram.pas
