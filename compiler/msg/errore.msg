@@ -2926,6 +2926,19 @@ cg_n_loop_not_fused=06074_N_Loops not fused: $1
 % did not fuse it with the following statement. The reason is given as \var{$1}.
 % This diagnostic is only emitted while the pass is enabled and is shown at note
 % verbosity (\var{-vn}).
+cg_n_loop_ifconverted=06075_N_Branch-predicated min/max loop widened to packed maxps/minps ($1 lanes)
+% The if-conversion pass (\var{-O4 -OoIFCONVERT}) recognized a counted element-wise
+% for-loop whose body FPC's if-conversion had already lowered to a branch-free
+% min/max activation (a ReLU, a one-sided clamp, or an element-wise max/min of two
+% arrays) and widened it across \var{$1} SIMD lanes to a packed maxps/minps main
+% loop plus a scalar tail, so the data-dependent per-element branch disappears
+% entirely. This diagnostic is only emitted while the pass is enabled and is shown
+% at note verbosity (\var{-vn}).
+cg_n_loop_not_ifconverted=06076_N_Loop not if-converted: $1
+% The if-conversion pass (\var{-O4 -OoIFCONVERT}) inspected a counted for-loop but
+% did not widen its min/max activation body. The reason is given as \var{$1}. This
+% diagnostic is only emitted while the pass is enabled and is shown at note
+% verbosity (\var{-vn}).
 %
 % \end{description}
 # EndOfTeX

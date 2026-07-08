@@ -1268,8 +1268,13 @@ implementation
              would rewrite them into pointer walks the recognizer can't match.
              Needs valid DFA to prove the counter and arrays are not modified in
              the body; skips procedures with labels like the loop passes below so
-             control cannot enter the rewritten loop mid-stream. }
-           if (cs_opt_vectorize in current_settings.optimizerswitches)
+             control cannot enter the rewritten loop mid-stream.
+             The same recognizer/scaffold also drives -OoIFCONVERT: a counted loop
+             whose body FPC's -O2 if-conversion has already lowered to a branch-
+             free single-precision min/max activation (ReLU / one-sided clamp /
+             element-wise max-min) is widened to a packed maxps/minps main loop,
+             so the enabling gate is either switch. }
+           if (([cs_opt_vectorize,cs_opt_ifconvert]*current_settings.optimizerswitches)<>[])
              and not(pi_has_label in flags) then
              RedoDFA:=OptimizeVectorize(code) or RedoDFA;
 

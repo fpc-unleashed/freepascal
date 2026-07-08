@@ -3033,6 +3033,16 @@ unit optloop;
         lotemp, hitemp, splattemp : ttempcreatenode;
         reason : string;
         leftreason, rightreason : string;
+        { if-conversion (min/max) recognizer outputs: opA is loaded into the
+          destination register, opB is the second (NaN-preferred) operand; each is
+          either an array element (mmA/mmB_vec) or an invariant scalar to broadcast
+          (mmA/mmB_scalar). splata/splatb hold the broadcast slots when used. }
+        mmA_vec, mmB_vec : tvecnode;
+        mmA_scalar, mmB_scalar : tnode;
+        ismaxop : boolean;
+        mminl : tinlinenode;
+        splata, splatb : ttempcreatenode;
+        windowa, windowb : tnode;
 
       { Runs the full OptimizeVectorize recognizer over the current for-loop and
         returns '' when the loop can be vectorized (also filling in counter,
@@ -3097,14 +3107,62 @@ unit optloop;
             fields the builder reads: }
           bvec:=nil; cvec:=nil; scalarnode:=nil; scalarleft:=false;
           vecop:=OP_NONE;
+          mmA_vec:=nil; mmB_vec:=nil; mmA_scalar:=nil; mmB_scalar:=nil;
+          ismaxop:=false;
 
+          rhs:=rangeelim_skip_typeconv(assign.right);
+
+          { if-conversion shape (-OoIFCONVERT):  a[i] := max/min(u,v)  where FPC's
+            -O2 if-conversion has already lowered a branch-predicated ReLU / one-
+            sided clamp / element-wise max-min into a single-precision min/max
+            intrinsic.  u = opA is the first parameter (loaded into the destination
+            register); v = opB is the second, NaN-preferred parameter (the min/max
+            node's parameter-list head).  Each operand is either an array element
+            of the loop counter or a provably loop-invariant single scalar. }
+          if assigned(rhs) and (rhs.nodetype=inlinen) and
+             (tinlinenode(rhs).inlinenumber in [in_min_single,in_max_single]) then
+            begin
+              if not(cs_opt_ifconvert in current_settings.optimizerswitches) then
+                exit('min/max activation body but -OoIFCONVERT is disabled');
+              mminl:=tinlinenode(rhs);
+              if not assigned(mminl.left) or (mminl.left.nodetype<>callparan) or
+                 not assigned(tcallparanode(mminl.left).nextpara) or
+                 (tcallparanode(mminl.left).nextpara.nodetype<>callparan) or
+                 assigned(tcallparanode(tcallparanode(mminl.left).nextpara).nextpara) then
+                exit('min/max intrinsic is not a plain two-operand call');
+              ismaxop:=mminl.inlinenumber=in_max_single;
+              { opB = parameter-list head (second logical arg, NaN-preferred),
+                opA = next parameter (first logical arg, loaded into dest reg) }
+              rhs:=tcallparanode(mminl.left).paravalue;                              { opB }
+              { classify opB }
+              if vect_elem_reason(rhs,counter,mmB_vec)<>'' then
+                begin
+                  result:=vect_invariant_scalar_reason(rhs,counter);
+                  if result<>'' then
+                    exit('min/max second operand is not an array element or loop-invariant single scalar (it '+result+')');
+                  mmB_scalar:=rhs; mmB_vec:=nil;
+                end;
+              rhs:=tcallparanode(tcallparanode(mminl.left).nextpara).paravalue;       { opA }
+              { classify opA }
+              if vect_elem_reason(rhs,counter,mmA_vec)<>'' then
+                begin
+                  result:=vect_invariant_scalar_reason(rhs,counter);
+                  if result<>'' then
+                    exit('min/max first operand is not an array element or loop-invariant single scalar (it '+result+')');
+                  mmA_scalar:=rhs; mmA_vec:=nil;
+                end;
+              vshape:=vok_minmax;
+            end
           { plain copy:  a[i] := b[i] }
-          if vect_elem_reason(assign.right,counter,bvec)='' then
+          else if (cs_opt_vectorize in current_settings.optimizerswitches) and
+                  (vect_elem_reason(assign.right,counter,bvec)='') then
             begin
               vshape:=vok_copy;
             end
           else
             begin
+              if not(cs_opt_vectorize in current_settings.optimizerswitches) then
+                exit('right-hand side is not a recognized if-conversion (min/max) shape and -OoVECTORIZE is disabled');
               { arithmetic:  b[i] op c[i] ,  b[i] op s ,  or  s op b[i]  (op in + - *) }
               rhs:=rangeelim_skip_typeconv(assign.right);
               if not assigned(rhs) or not(rhs.nodetype in [addn,subn,muln]) then
@@ -3188,6 +3246,12 @@ unit optloop;
         scalarleft:=false;
         vecop:=OP_NONE;
         vshape:=vok_arr_arr;
+        mmA_vec:=nil;
+        mmB_vec:=nil;
+        mmA_scalar:=nil;
+        mmB_scalar:=nil;
+        ismaxop:=false;
+        mminl:=nil;
 
         { recognize; on failure report the reason and leave codegen untouched }
         reason:=vectorize_reason;
@@ -3231,6 +3295,38 @@ unit optloop;
               ctemprefnode.create(splattemp),scalarnode.getcopy));
           end;
 
+        { if-conversion (vok_minmax): each min/max operand is either an array
+          element window or an invariant scalar broadcast once into a splat slot.
+          Build windowa/windowb (the packed operand nodes) accordingly. }
+        splata:=nil; splatb:=nil; windowa:=nil; windowb:=nil;
+        if vshape=vok_minmax then
+          begin
+            if assigned(mmA_vec) then
+              windowa:=mmA_vec.getcopy
+            else
+              begin
+                splata:=ctempcreatenode.create(
+                  tarraydef.getreusable_vector(s32floattype,vect_vecwidth),
+                  vect_vecwidth*s32floattype.size,tt_persistent,false);
+                addstatement(stat,splata);
+                addstatement(stat,cvectoropnode.create_broadcast(
+                  ctemprefnode.create(splata),mmA_scalar.getcopy));
+                windowa:=ctemprefnode.create(splata);
+              end;
+            if assigned(mmB_vec) then
+              windowb:=mmB_vec.getcopy
+            else
+              begin
+                splatb:=ctempcreatenode.create(
+                  tarraydef.getreusable_vector(s32floattype,vect_vecwidth),
+                  vect_vecwidth*s32floattype.size,tt_persistent,false);
+                addstatement(stat,splatb);
+                addstatement(stat,cvectoropnode.create_broadcast(
+                  ctemprefnode.create(splatb),mmB_scalar.getcopy));
+                windowb:=ctemprefnode.create(splatb);
+              end;
+          end;
+
         { vector loop:  while i <= hi-(VL-1) do begin <packed body>; i := i+VL end }
         vecbody:=internalstatements(vstat);
         case vshape of
@@ -3241,6 +3337,8 @@ unit optloop;
               ctemprefnode.create(splattemp),vecop,scalarleft,vect_vecwidth));
           vok_copy:
             addstatement(vstat,cvectoropnode.create_copy(avec.getcopy,bvec.getcopy,vect_vecwidth));
+          vok_minmax:
+            addstatement(vstat,cvectoropnode.create_minmax(avec.getcopy,windowa,windowb,ismaxop,vect_vecwidth));
           else
             internalerror(2026070706);
         end;
@@ -3271,9 +3369,16 @@ unit optloop;
         addstatement(stat,ctempdeletenode.create(hitemp));
         if assigned(splattemp) then
           addstatement(stat,ctempdeletenode.create(splattemp));
+        if assigned(splata) then
+          addstatement(stat,ctempdeletenode.create(splata));
+        if assigned(splatb) then
+          addstatement(stat,ctempdeletenode.create(splatb));
 
         do_firstpass(block);
-        MessagePos1(forn.fileinfo,cg_n_loop_vectorized,tostr(vect_vecwidth));
+        if vshape=vok_minmax then
+          MessagePos1(forn.fileinfo,cg_n_loop_ifconverted,tostr(vect_vecwidth))
+        else
+          MessagePos1(forn.fileinfo,cg_n_loop_vectorized,tostr(vect_vecwidth));
         forn.free;
         n:=block;
         changed:=true;

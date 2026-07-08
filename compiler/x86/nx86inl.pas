@@ -127,6 +127,13 @@ implementation
             movups regb,[b+i]; movups [a+i],regb
           vok_broadcast   splat := [s,s,s,s]   (runs ONCE, hoisted before the loop)
             movss regs,s; shufps regs,regs,$00; movups [splat],regs
+          vok_minmax      a[i..i+3] := max/min(u[i..i+3], v[i..i+3])
+            movups regb,[u]; movups regc,[v]; max/minps regc,regb; movups [a+i],regb
+            (u=opA in `right`, v=opB in `third`; each is an array window or a
+             pre-broadcast [s,s,s,s] splot slot.  maxps/minps returns its SECOND
+             source operand -- here regc=v=opB -- when a lane is unordered, exactly
+             as the scalar maxss/minss the if-conversion produced, so every lane is
+             bit-identical incl. NaN/negative-zero)
 
         Under an AVX fputype the VEX v-forms are used. Reuses the ordinary vecn
         secondpass to compute the element-i address of each array, then reads a
@@ -186,9 +193,19 @@ implementation
           resreg:=regb
         else
           begin
-            { second packed operand into regc: the c[i..i+3] window (vok_arr_arr)
-              or the pre-broadcast [s,s,s,s] slot (vok_arr_scalar) -- both are
-              plain 16-byte references loaded identically }
+            { second packed operand into regc: the c[i..i+3] window (vok_arr_arr /
+              vok_minmax) or the pre-broadcast [s,s,s,s] slot (vok_arr_scalar) --
+              all are plain 16-byte references loaded identically }
+            if kind=vok_minmax then
+              begin
+                { max/minps regc,regb  =>  regb := op(regb,regc), NaN -> regc (opB):
+                  matches the scalar maxss/minss the if-conversion emitted }
+                if ismax then
+                  if avx then opps:=A_VMAXPS else opps:=A_MAXPS
+                else
+                  if avx then opps:=A_VMINPS else opps:=A_MINPS;
+              end
+            else
             case op of
               OP_ADD:
                 if avx then opps:=A_VADDPS else opps:=A_ADDPS;
