@@ -464,7 +464,17 @@ interface
            (record field-by-field initialisation, small constant fills) into a
            single wider naturally-aligned store, composing the constants
            little-endian.  Assembler-level straight-line peephole on x86-64. }
-         cs_opt_storemerge
+         cs_opt_storemerge,
+         { gcc-style case/switch clustering (gcc tree-switch-conversion jump
+           table / bit test clustering): instead of lowering a case statement
+           with one all-or-nothing strategy, partition the sorted labels into
+           an optimal mix of clusters -- dense runs become jump tables, groups
+           of labels within a word-sized span sharing few targets become a
+           single range check plus shift/AND bit-mask test (the classic
+           "case c of 'a','e','i','o','u'" shape), leftovers stay simple
+           compares -- and dispatch between the clusters with a balanced
+           binary comparison tree }
+         cs_opt_casecluster
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -541,7 +551,7 @@ interface
          'UNUSEDPARA','CONSTS','FORLOOP','LICM','LOOPUNSWITCH','BITIDIOM',
          'RANGEELIM','VECTORIZE','JUMPTHREAD','LOOPDISTPAT',
          'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC','UNROLLJAM',
-         'PREDCOM','SRA','STOREMERGE'
+         'PREDCOM','SRA','STOREMERGE','CASECLUSTER'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
@@ -576,7 +586,7 @@ interface
        genericlevel3optimizerswitches = [cs_opt_level3,cs_opt_constant_propagate,cs_opt_nodedfa,cs_opt_loopstrength
                                          {$ifndef llvm},cs_opt_use_load_modify_store{$endif},
                                          cs_opt_loopunroll,cs_opt_forloop];
-       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert,cs_opt_reassoc,cs_opt_unrolljam,cs_opt_predcom,cs_opt_sra,cs_opt_storemerge];
+       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert,cs_opt_reassoc,cs_opt_unrolljam,cs_opt_predcom,cs_opt_sra,cs_opt_storemerge,cs_opt_casecluster];
 
        { whole program optimizations whose information generation requires
          information from all loaded units
