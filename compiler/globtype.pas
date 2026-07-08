@@ -437,7 +437,14 @@ interface
            the per-iteration adds pipeline. Only acts on FP accumulators when
            fast-math is active (reassociating FP rounding otherwise is wrong);
            integer reductions are always exact }
-         cs_opt_reassoc
+         cs_opt_reassoc,
+         { unroll-and-jam (gcc -funroll-and-jam / LLVM loop-unroll-and-jam):
+           unroll the outer loop of a perfect two-level counted nest by a small
+           factor and fuse (jam) the duplicated inner-loop bodies into one inner
+           loop, so a value the inner body loads once (b[j] in a matmul-shaped
+           nest) is reused across the unrolled outer iterations from a register
+           and a per-outer-iteration scalar accumulator is register-blocked }
+         cs_opt_unrolljam
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -513,7 +520,7 @@ interface
          'DEADSTORE','FORCENOSTACKFRAME','USELOADMODIFYSTORE',
          'UNUSEDPARA','CONSTS','FORLOOP','LICM','LOOPUNSWITCH','BITIDIOM',
          'RANGEELIM','VECTORIZE','JUMPTHREAD','LOOPDISTPAT',
-         'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC'
+         'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC','UNROLLJAM'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
@@ -548,7 +555,7 @@ interface
        genericlevel3optimizerswitches = [cs_opt_level3,cs_opt_constant_propagate,cs_opt_nodedfa,cs_opt_loopstrength
                                          {$ifndef llvm},cs_opt_use_load_modify_store{$endif},
                                          cs_opt_loopunroll,cs_opt_forloop];
-       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert,cs_opt_reassoc];
+       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse,cs_opt_ifconvert,cs_opt_reassoc,cs_opt_unrolljam];
 
        { whole program optimizations whose information generation requires
          information from all loaded units

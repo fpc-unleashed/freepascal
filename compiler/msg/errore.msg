@@ -2952,6 +2952,19 @@ cg_n_loop_not_reassociated=06078_N_Reduction loop not reassociated: $1
 % for-loop but did not split it. The reason is given as \var{$1}. This diagnostic
 % is only emitted while the pass is enabled and is shown at note verbosity
 % (\var{-vn}).
+cg_n_loop_unrolljammed=06079_N_Two-level loop nest unroll-and-jammed (outer factor $1)
+% The unroll-and-jam pass (\var{-O4 -OoUNROLLJAM}) recognized a perfect two-level
+% counted loop nest, unrolled the outer loop by factor \var{$1} and fused (jammed)
+% the duplicated inner-loop bodies into one inner loop, so a value the inner body
+% loads once is reused across the unrolled outer iterations from a register and a
+% per-outer-iteration scalar accumulator is register-blocked. This diagnostic is
+% only emitted while the pass is enabled and is shown at note verbosity
+% (\var{-vn}).
+cg_n_loop_not_unrolljammed=06080_N_Loop nest not unroll-and-jammed: $1
+% The unroll-and-jam pass (\var{-O4 -OoUNROLLJAM}) inspected a counted for-loop but
+% did not unroll-and-jam it. The reason is given as \var{$1}. This diagnostic is
+% only emitted while the pass is enabled and is shown at note verbosity
+% (\var{-vn}).
 %
 % \end{description}
 # EndOfTeX

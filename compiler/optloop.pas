@@ -46,6 +46,7 @@ unit optloop;
     function OptimizeLoopSplit(node : tnode) : boolean;
     function OptimizeLoopFuse(node : tnode) : boolean;
     function OptimizeReassoc(node : tnode) : boolean;
+    function OptimizeUnrollJam(node : tnode) : boolean;
 
   implementation
 
@@ -5252,6 +5253,659 @@ unit optloop;
         ctx.changed:=false;
         { postorder so an inner reduction loop is split before an enclosing loop }
         foreachnodestatic(pm_postprocess,node,@reassoc_processloop_cb,@ctx);
+        Result:=ctx.changed;
+      end;
+
+
+{*****************************************************************************
+                       Unroll-and-jam (gcc -funroll-and-jam)
+*****************************************************************************}
+
+    { A node-tree port of gcc's -funroll-and-jam / LLVM's loop-unroll-and-jam for
+      a perfect (or near-perfect) two-level counted loop nest.  The OUTER loop is
+      unrolled by a small factor K and the K resulting duplicated INNER loops are
+      fused (jammed) into a single inner loop, so a value the inner body loads
+      once (e.g. b[j] in a matmul-shaped  for i .. for j .. c[i]:=c[i]+a[i,j]*b[j])
+      is reused across the K unrolled outer iterations straight from a register
+      instead of being reloaded from memory on every outer pass, and a scalar
+      accumulator kept per outer iteration is register-blocked:
+
+        for i:=lo to hi do          -->   i:=lo;
+        begin                             while i<=hi-(K-1) do begin
+          s:=0;                             s0:=0; s1:=0; ... ;
+          for j:=lo2 to hi2 do              for j:=lo2 to hi2 do begin
+            s:=s+a[i,j]*b[j];                 s0:=s0+a[i  ,j]*b[j];   (b[j] loaded)
+          c[i]:=s;                            s1:=s1+a[i+1,j]*b[j];   (b[j] reused)
+        end;                                  ... end;
+                                            c[i]:=s0; c[i+1]:=s1; ... ;
+                                            i:=i+K;
+                                          end;
+                                          while i<=hi do begin        (remainder)
+                                            s:=0; for j:=lo2 to hi2 do s:=s+a[i,j]*b[j];
+                                            c[i]:=s; i:=i+1;
+                                          end;
+
+      DEPENDENCE / LEGALITY (a wrong jam is a miscompile; the recognizer is strict
+      and anything not matched compiles exactly as before).  Jamming the K inner
+      loops is the same reordering as fusing K copies of the inner body that run
+      on outer indices i, i+1, ... i+K-1, so it is legal iff those copies touch
+      provably disjoint memory (no loop-carried dependence across the outer loop).
+      One blunt, sufficient rule guarantees it instead of a general dependence
+      test:
+
+        * The ONLY writes the outer body performs are (a) to a simple non-aliased
+          LOCAL SCALAR accumulator -- renamed to a fresh per-copy temp in copies
+          1..K-1 (the register-blocking payoff) and required dead outside the
+          whole nest so the rename cannot change any observable value -- or (b) to
+          an ARRAY ELEMENT whose subscript chain mentions the outer counter i, so
+          copy k writes the i+k slice and the K copies' stores are disjoint.
+        * The outer counter i may appear in the body ONLY as an exact array
+          subscript  [i]  (unit stride, no i+/-c offset and never in a scalar
+          computation or the inner-loop bounds).  Hence every array reference that
+          copy k could touch through i lives at index i+k, disjoint across copies;
+          arrays not mentioning i are never written (a write must be scalar or
+          i-indexed) so they are read-only and shared safely, and the inner
+          iteration space is i-invariant so the jam is well-defined.  (Enforced by
+          counting: every read of i must coincide with a bare [i] subscript.)
+        * No calls, pointer dereferences, address-of, non-pure inline intrinsics
+          (only the abs/sqr/sqrt and min/max whitelist), and exactly ONE nested
+          loop -- the inner counted for -- with no other loop anywhere; no
+          break/continue/goto/label/exit/raise/try; only plain (:=) assignments.
+        * -Cr/-Co checked code is declined (the unroll reorders the per-element
+          checks); both loops ascending, unit step, over simple non-aliased
+          signed 32/64-bit counters i<>j (so i+1..i+K-1 and hi-(K-1) cannot wrap
+          for any index the loop reached).
+        * The enclosing routine has no labels (checked at the psub call site, like
+          the sibling loop passes) so control cannot enter a jammed body mid-way,
+          and DFA proves i is not assigned inside the body. }
+
+    const
+      ujam_k = 4;       { outer unroll (and inner jam) factor }
+      ujam_maxaccum = 8;  { cap renamed scalar accumulators to bound expansion }
+
+    type
+      tujam_scan = record
+        counter_i : tsym;
+        counter_j : tsym;
+        innerforcount : longint;
+        otherloopcount : longint;
+        iload_total : longint;       { reads of i anywhere in the body }
+        iload_subscript : longint;   { vecn whose direct index is exactly i }
+        accsyms : array of tsym;
+        accdefs : array of tdef;
+        naccums : longint;
+        bad : boolean;
+        badreason : string;
+      end;
+      pujam_scan = ^tujam_scan;
+
+      tujam_subst = record
+        counter_i : tsym;
+        delta : longint;
+        ctype : tdef;
+        naccums : longint;
+        accsyms : array of tsym;
+        acctemps : array of ttempcreatenode;
+      end;
+      pujam_subst = ^tujam_subst;
+
+      tujam_refcount = record
+        sym : tsym;
+        count : longint;
+      end;
+      pujam_refcount = ^tujam_refcount;
+
+
+    function ujam_refcount_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      begin
+        result:=fen_false;
+        if (n.nodetype=loadn) and (tloadnode(n).symtableentry=pujam_refcount(arg)^.sym) then
+          inc(pujam_refcount(arg)^.count);
+      end;
+
+
+    function ujam_count_refs(subtree : tnode; sym : tsym) : longint;
+      var
+        rc : tujam_refcount;
+      begin
+        result:=0;
+        if not assigned(subtree) then
+          exit;
+        rc.sym:=sym;
+        rc.count:=0;
+        foreachnodestatic(subtree,@ujam_refcount_cb,@rc);
+        result:=rc.count;
+      end;
+
+
+    function ujam_body_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      { validates every construct in the outer-loop body against the legality rule
+        above and, as a side effect, records the (single) inner counter, the set
+        of scalar-accumulator syms, and the i-read / i-subscript tallies used by
+        the caller to prove i appears only as a bare array subscript }
+      var
+        ps : pujam_scan;
+        idx, lhs : tnode;
+        s : tabstractvarsym;
+        a : longint;
+      begin
+        result:=fen_false;
+        ps:=pujam_scan(arg);
+        case n.nodetype of
+          calln:
+            begin
+              ps^.bad:=true; ps^.badreason:='body contains a call';
+              exit(fen_norecurse_true);
+            end;
+          derefn,addrn:
+            begin
+              ps^.bad:=true;
+              ps^.badreason:='body dereferences or takes the address of a pointer (aliasing cannot be proven)';
+              exit(fen_norecurse_true);
+            end;
+          inlinen:
+            if not (tinlinenode(n).inlinenumber in
+                 [in_abs_long,in_abs_real,in_sqr_real,in_sqrt_real,
+                  in_min_single,in_max_single,in_min_double,in_max_double,
+                  in_min_dword,in_max_dword,in_min_longint,in_max_longint,
+                  in_min_qword,in_max_qword,in_min_int64,in_max_int64,
+                  in_min_quad,in_max_quad]) then
+              begin
+                ps^.bad:=true;
+                ps^.badreason:='body contains a non-pure inline intrinsic';
+                exit(fen_norecurse_true);
+              end;
+          whilerepeatn:
+            begin
+              inc(ps^.otherloopcount);
+              ps^.bad:=true; ps^.badreason:='body contains a while/repeat loop';
+              exit(fen_norecurse_true);
+            end;
+          forn:
+            begin
+              inc(ps^.innerforcount);
+              if ps^.innerforcount>1 then
+                begin
+                  ps^.bad:=true; ps^.badreason:='body contains more than one nested for-loop';
+                  exit(fen_norecurse_true);
+                end;
+              { the single nested inner counted loop: ascending, unit step, a
+                simple non-aliased ordinal counter distinct from i }
+              if lnf_backward in tfornode(n).loopflags then
+                begin
+                  ps^.bad:=true; ps^.badreason:='inner loop is descending (downto)';
+                  exit(fen_norecurse_true);
+                end;
+              if assigned(tfornode(n).loopstep) then
+                begin
+                  ps^.bad:=true; ps^.badreason:='inner loop has a non-unit step';
+                  exit(fen_norecurse_true);
+                end;
+              s:=rangeelim_simple_var(tfornode(n).left);
+              if not assigned(s) then
+                begin
+                  ps^.bad:=true; ps^.badreason:='inner loop counter is not a simple non-aliased variable';
+                  exit(fen_norecurse_true);
+                end;
+              if not assigned(tfornode(n).left.resultdef) or (tfornode(n).left.resultdef.typ<>orddef) then
+                begin
+                  ps^.bad:=true; ps^.badreason:='inner loop counter is not an ordinal type';
+                  exit(fen_norecurse_true);
+                end;
+              if tsym(s)=ps^.counter_i then
+                begin
+                  ps^.bad:=true; ps^.badreason:='inner loop reuses the outer loop counter';
+                  exit(fen_norecurse_true);
+                end;
+              ps^.counter_j:=tsym(s);
+              { descend normally into the inner for's bounds/body -- they are held
+                to the same rule (any i they mention shows up in iload_total but
+                not as a subscript, so a bound or offset use of i is rejected) }
+            end;
+          breakn,continuen,goton,labeln,exitn,raisen,tryexceptn,tryfinallyn,onn:
+            begin
+              ps^.bad:=true;
+              ps^.badreason:='body contains break/continue/goto/label/exit/raise/try';
+              exit(fen_norecurse_true);
+            end;
+          assignn:
+            begin
+              if tassignmentnode(n).assigntype<>at_normal then
+                begin
+                  ps^.bad:=true; ps^.badreason:='body has a non-plain (compound) assignment';
+                  exit(fen_norecurse_true);
+                end;
+              lhs:=rangeelim_skip_typeconv(tassignmentnode(n).left);
+              if not assigned(lhs) then
+                begin
+                  ps^.bad:=true; ps^.badreason:='assignment has no target';
+                  exit(fen_norecurse_true);
+                end;
+              if lhs.nodetype=loadn then
+                begin
+                  { a scalar store: must be a simple non-aliased local we can
+                    rename per copy; recorded as an accumulator }
+                  s:=rangeelim_simple_var(lhs);
+                  if not assigned(s) then
+                    begin
+                      ps^.bad:=true;
+                      ps^.badreason:='body writes a scalar that is not a simple non-aliased local (cannot rename per copy)';
+                      exit(fen_norecurse_true);
+                    end;
+                  if (tsym(s)=ps^.counter_i) or (tsym(s)=ps^.counter_j) then
+                    begin
+                      ps^.bad:=true; ps^.badreason:='body assigns a loop counter';
+                      exit(fen_norecurse_true);
+                    end;
+                  { dedupe }
+                  for a:=0 to ps^.naccums-1 do
+                    if ps^.accsyms[a]=tsym(s) then
+                      exit(fen_false);
+                  if ps^.naccums>=ujam_maxaccum then
+                    begin
+                      ps^.bad:=true; ps^.badreason:='too many distinct scalar accumulators';
+                      exit(fen_norecurse_true);
+                    end;
+                  if not assigned(lhs.resultdef) then
+                    begin
+                      ps^.bad:=true; ps^.badreason:='scalar accumulator has no known type';
+                      exit(fen_norecurse_true);
+                    end;
+                  SetLength(ps^.accsyms,ps^.naccums+1);
+                  SetLength(ps^.accdefs,ps^.naccums+1);
+                  ps^.accsyms[ps^.naccums]:=tsym(s);
+                  ps^.accdefs[ps^.naccums]:=lhs.resultdef;
+                  inc(ps^.naccums);
+                end
+              else if lhs.nodetype=vecn then
+                begin
+                  { an array-element store: must mention i so the K copies write
+                    disjoint outer slices }
+                  if ujam_count_refs(lhs,ps^.counter_i)=0 then
+                    begin
+                      ps^.bad:=true;
+                      ps^.badreason:='an array store is not indexed by the outer counter (would collide across unrolled copies)';
+                      exit(fen_norecurse_true);
+                    end;
+                end
+              else
+                begin
+                  ps^.bad:=true;
+                  ps^.badreason:='body writes a field, pointer or other non-renamable target';
+                  exit(fen_norecurse_true);
+                end;
+            end;
+          vecn:
+            begin
+              idx:=rangeelim_skip_typeconv(tvecnode(n).right);
+              if assigned(idx) and (idx.nodetype=loadn) and
+                 (tloadnode(idx).symtableentry=ps^.counter_i) then
+                inc(ps^.iload_subscript);
+            end;
+          loadn:
+            if (tloadnode(n).symtableentry=ps^.counter_i) and
+               (([nf_write,nf_modify]*n.flags)=[]) then
+              inc(ps^.iload_total);
+          else
+            ;
+        end;
+      end;
+
+
+    function ujam_subst_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      { in a copy of the outer body for unrolled iteration i+delta: wrap every
+        plain read of the outer counter i into (i+delta), and replace every read
+        or write of an accumulator scalar with its fresh per-copy temp.  Each new
+        node is typechecked immediately (the surrounding body is a copy of an
+        already-typechecked tree do_firstpass will not re-descend into, but the
+        substituted node has the identical type of what it replaced, so ancestor
+        resultdefs stay valid) -- the REASSOC substitution gotcha. }
+      var
+        ps : pujam_subst;
+        a : longint;
+        newref : ttemprefnode;
+      begin
+        result:=fen_false;
+        ps:=pujam_subst(arg);
+        if n.nodetype<>loadn then
+          exit;
+        if (ps^.delta<>0) and (tloadnode(n).symtableentry=ps^.counter_i) and
+           (([nf_write,nf_modify]*n.flags)=[]) then
+          begin
+            n:=caddnode.create(addn,n,cordconstnode.create(ps^.delta,ps^.ctype,false));
+            do_firstpass(n);
+            exit(fen_norecurse_false);
+          end;
+        for a:=0 to ps^.naccums-1 do
+          if tloadnode(n).symtableentry=ps^.accsyms[a] then
+            begin
+              newref:=ctemprefnode.create(ps^.acctemps[a]);
+              newref.flags:=newref.flags+(n.flags*[nf_write,nf_modify]);
+              n:=newref;
+              do_firstpass(n);
+              exit(fen_norecurse_false);
+            end;
+      end;
+
+
+    type
+      tunrolljamcontext = object
+        changed : boolean;
+        root : tnode;
+        procedure processloop(var n : tnode);
+      end;
+
+
+    procedure tunrolljamcontext.processloop(var n : tnode);
+      var
+        outerfor, innerfor : tfornode;
+        counter_i : tabstractvarsym;
+        ctype : tdef;
+        scan : tujam_scan;
+        prologue, epilogue : array of tnode;
+        nprologue, nepilogue : longint;
+        acctemps : array[1..ujam_k-1] of array of ttempcreatenode;
+        lotemp, hitemp : ttempcreatenode;
+        block, mainbody, tailbody, jambody : tnode;
+        stat, mstat, jstat, tstat : tstatementnode;
+        subst : tujam_subst;
+        k, a : longint;
+        lo, hi : tconstexprint;
+
+      function ujam_copy(orig : tnode; kk : longint) : tnode;
+        var
+          aa : longint;
+        begin
+          result:=orig.getcopy;
+          if kk>0 then
+            begin
+              subst.counter_i:=tsym(counter_i);
+              subst.delta:=kk;
+              subst.ctype:=ctype;
+              subst.naccums:=scan.naccums;
+              subst.accsyms:=scan.accsyms;
+              SetLength(subst.acctemps,scan.naccums);
+              for aa:=0 to scan.naccums-1 do
+                subst.acctemps[aa]:=acctemps[kk][aa];
+              foreachnodestatic(pm_postprocess,result,@ujam_subst_cb,@subst);
+            end;
+        end;
+
+      function ujam_reason : string;
+        var
+          body, cur : tnode;
+          stmtlist : tnode;
+          idx, i2 : longint;
+          tmparr : array of tnode;
+          ntmp : longint;
+          hascheck : boolean;
+        begin
+          result:='';
+          if lnf_backward in outerfor.loopflags then
+            exit('outer loop is descending (downto)');
+          if assigned(outerfor.loopstep) then
+            exit('outer loop has a non-unit step');
+
+          counter_i:=rangeelim_simple_var(outerfor.left);
+          if not assigned(counter_i) then
+            exit('outer loop counter is not a simple non-aliased variable');
+          ctype:=outerfor.left.resultdef;
+          if not assigned(ctype) or (ctype.typ<>orddef) then
+            exit('outer loop counter is not an ordinal type');
+          if not is_signed(ctype) or not(ctype.size in [4,8]) then
+            exit('outer loop counter is not a signed 32/64-bit integer');
+
+          if ([cs_check_range,cs_check_overflow]*current_settings.localswitches)<>[] then
+            exit('range/overflow checking is enabled (-Cr/-Co)');
+          { also decline a body that carries a per-region R+ or Q+ }
+          hascheck:=false;
+          if foreachnodestatic(outerfor.t2,@vect_check_cb,@hascheck) then
+            exit('body has per-region range/overflow checking');
+
+          if not assigned(outerfor.t2) then
+            exit('outer loop body is empty');
+          if not fuse_bound_pure(outerfor.right) or not fuse_bound_pure(outerfor.t1) then
+            exit('outer loop bounds are not side-effect free');
+
+          { scan the whole body for legality and to collect the inner counter and
+            the accumulator set }
+          scan.counter_i:=tsym(counter_i);
+          scan.counter_j:=nil;
+          scan.innerforcount:=0;
+          scan.otherloopcount:=0;
+          scan.iload_total:=0;
+          scan.iload_subscript:=0;
+          scan.naccums:=0;
+          scan.bad:=false;
+          scan.badreason:='';
+          SetLength(scan.accsyms,0);
+          SetLength(scan.accdefs,0);
+          foreachnodestatic(outerfor.t2,@ujam_body_cb,@scan);
+          if scan.bad then
+            exit(scan.badreason);
+          if scan.innerforcount<>1 then
+            exit('outer body does not contain exactly one nested counted loop');
+          if scan.iload_total<>scan.iload_subscript then
+            exit('the outer counter is used outside a bare array subscript (offset index, bound or scalar use)');
+
+          { DFA: the outer counter must not be assigned in the body }
+          CalcDefSum(outerfor.t2);
+          if not assigned(outerfor.t2.optinfo) or not assigned(outerfor.left.optinfo) then
+            exit('data-flow information is unavailable for the loop body');
+          if DynSetIn(outerfor.t2.optinfo^.defsum,outerfor.left.optinfo^.index) then
+            exit('outer loop counter is modified inside the body');
+
+          { every renamed scalar accumulator must be dead outside the whole nest,
+            so renaming it per unrolled copy cannot change any observable value:
+            all of its references must lie inside this outer for-node }
+          for i2:=0 to scan.naccums-1 do
+            if ujam_count_refs(root,scan.accsyms[i2])<>ujam_count_refs(outerfor,scan.accsyms[i2]) then
+              exit('a scalar accumulator is live outside the loop nest (cannot safely rename)');
+
+          { locate the inner for as a top-level statement of the body and split
+            the surrounding prologue / epilogue around it }
+          body:=outerfor.t2;
+          if body.nodetype=blockn then
+            body:=tblocknode(body).left;
+          SetLength(tmparr,0);
+          ntmp:=0;
+          stmtlist:=body;
+          while assigned(stmtlist) and (stmtlist.nodetype=statementn) do
+            begin
+              cur:=tstatementnode(stmtlist).left;
+              if assigned(cur) and (cur.nodetype<>nothingn) then
+                begin
+                  SetLength(tmparr,ntmp+1);
+                  tmparr[ntmp]:=cur;
+                  inc(ntmp);
+                end;
+              stmtlist:=tstatementnode(stmtlist).right;
+            end;
+          if (ntmp=0) and (body.nodetype=forn) then
+            begin
+              { the body is a bare unwrapped for-loop (no prologue/epilogue) }
+              SetLength(tmparr,1);
+              tmparr[0]:=body;
+              ntmp:=1;
+            end;
+          idx:=-1;
+          for i2:=0 to ntmp-1 do
+            if tmparr[i2].nodetype=forn then
+              begin
+                if idx>=0 then
+                  exit('multiple top-level loops in the outer body');
+                idx:=i2;
+              end;
+          if idx<0 then
+            exit('the nested loop is not a direct statement of the outer body');
+          innerfor:=tfornode(tmparr[idx]);
+          SetLength(prologue,idx);
+          nprologue:=idx;
+          for i2:=0 to idx-1 do
+            prologue[i2]:=tmparr[i2];
+          SetLength(epilogue,ntmp-idx-1);
+          nepilogue:=ntmp-idx-1;
+          for i2:=idx+1 to ntmp-1 do
+            epilogue[i2-idx-1]:=tmparr[i2];
+
+          { leave a provably tiny constant-trip outer loop alone -- the unrolled
+            main body would never run }
+          if rangeelim_const_value(outerfor.right,lo) and rangeelim_const_value(outerfor.t1,hi) and
+             ((hi-lo+1) < ujam_k) then
+            exit('outer trip count is a small compile-time constant (not worth unrolling)');
+        end;
+
+      begin
+        outerfor:=tfornode(n);
+
+        { pre-initialize recognizer outputs (a nested function assigning parent
+          locals defeats per-procedure DFA; see the sibling passes) }
+        counter_i:=nil;
+        ctype:=nil;
+        innerfor:=nil;
+        nprologue:=0;
+        nepilogue:=0;
+        { fully initialize the managed-type recognizer record here too: it is
+          populated inside ujam_reason (a nested function), which per-procedure
+          DFA cannot see, so without this the -O4 -Sew self-compile flags scan as
+          possibly-uninitialized }
+        scan.counter_i:=nil;
+        scan.counter_j:=nil;
+        scan.innerforcount:=0;
+        scan.otherloopcount:=0;
+        scan.iload_total:=0;
+        scan.iload_subscript:=0;
+        scan.naccums:=0;
+        scan.bad:=false;
+        scan.badreason:='';
+        SetLength(scan.accsyms,0);
+        SetLength(scan.accdefs,0);
+        SetLength(prologue,0);
+        SetLength(epilogue,0);
+        SetLength(subst.accsyms,0);
+        SetLength(subst.acctemps,0);
+        for k:=1 to ujam_k-1 do
+          SetLength(acctemps[k],0);
+
+        if ujam_reason<>'' then
+          begin
+            MessagePos1(outerfor.fileinfo,cg_n_loop_not_unrolljammed,ujam_reason);
+            exit;
+          end;
+
+        { ---- build the replacement block ---- }
+        block:=internalstatements(stat);
+
+        { lo := <start>;  hi := <end>  (evaluated once, as a for-loop would) }
+        lotemp:=ctempcreatenode.create(ctype,ctype.size,tt_persistent,true);
+        addstatement(stat,lotemp);
+        addstatement(stat,cassignmentnode.create(ctemprefnode.create(lotemp),outerfor.right.getcopy));
+        hitemp:=ctempcreatenode.create(ctype,ctype.size,tt_persistent,true);
+        addstatement(stat,hitemp);
+        addstatement(stat,cassignmentnode.create(ctemprefnode.create(hitemp),outerfor.t1.getcopy));
+
+        { i := lo }
+        addstatement(stat,cassignmentnode.create(
+          cloadnode.create(tsym(counter_i),counter_i.owner),
+          ctemprefnode.create(lotemp)));
+
+        { fresh per-copy accumulator temps for copies 1..K-1 }
+        for k:=1 to ujam_k-1 do
+          begin
+            SetLength(acctemps[k],scan.naccums);
+            for a:=0 to scan.naccums-1 do
+              begin
+                acctemps[k][a]:=ctempcreatenode.create(scan.accdefs[a],scan.accdefs[a].size,tt_persistent,true);
+                addstatement(stat,acctemps[k][a]);
+              end;
+          end;
+
+        { main unrolled loop:  while i<=hi-(K-1) do begin ...; i:=i+K end }
+        mainbody:=internalstatements(mstat);
+        { all K prologue copies first (the accumulator inits) }
+        for k:=0 to ujam_k-1 do
+          for a:=0 to nprologue-1 do
+            addstatement(mstat,ujam_copy(prologue[a],k));
+        { the single jammed inner loop: its body is the K inner bodies back to
+          back (all over the same counter j and iteration space) }
+        jambody:=internalstatements(jstat);
+        for k:=0 to ujam_k-1 do
+          addstatement(jstat,ujam_copy(innerfor.t2,k));
+        addstatement(mstat,cfornode.create(
+          cloadnode.create(scan.counter_j,tabstractvarsym(scan.counter_j).owner),
+          innerfor.right.getcopy,
+          innerfor.t1.getcopy,
+          jambody,
+          false));
+        { all K epilogue copies (the stores) }
+        for k:=0 to ujam_k-1 do
+          for a:=0 to nepilogue-1 do
+            addstatement(mstat,ujam_copy(epilogue[a],k));
+        { i := i + K }
+        addstatement(mstat,cassignmentnode.create(
+          cloadnode.create(tsym(counter_i),counter_i.owner),
+          caddnode.create(addn,cloadnode.create(tsym(counter_i),counter_i.owner),
+            cordconstnode.create(ujam_k,ctype,false))));
+        addstatement(stat,cwhilerepeatnode.create(
+          caddnode.create(lten,cloadnode.create(tsym(counter_i),counter_i.owner),
+            caddnode.create(subn,ctemprefnode.create(hitemp),
+              cordconstnode.create(ujam_k-1,ctype,false))),
+          mainbody,true,false));
+
+        { scalar remainder:  while i<=hi do begin <original outer body>; i:=i+1 end }
+        tailbody:=internalstatements(tstat);
+        addstatement(tstat,outerfor.t2.getcopy);
+        addstatement(tstat,cassignmentnode.create(
+          cloadnode.create(tsym(counter_i),counter_i.owner),
+          caddnode.create(addn,cloadnode.create(tsym(counter_i),counter_i.owner),
+            cordconstnode.create(1,ctype,false))));
+        addstatement(stat,cwhilerepeatnode.create(
+          caddnode.create(lten,cloadnode.create(tsym(counter_i),counter_i.owner),
+            ctemprefnode.create(hitemp)),
+          tailbody,true,false));
+
+        { release temps }
+        addstatement(stat,ctempdeletenode.create(lotemp));
+        addstatement(stat,ctempdeletenode.create(hitemp));
+        for k:=1 to ujam_k-1 do
+          for a:=0 to scan.naccums-1 do
+            addstatement(stat,ctempdeletenode.create(acctemps[k][a]));
+
+        do_firstpass(block);
+        MessagePos1(outerfor.fileinfo,cg_n_loop_unrolljammed,tostr(ujam_k));
+        outerfor.free;
+        n:=block;
+        changed:=true;
+      end;
+
+
+    function ujam_processloop_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      begin
+        result:=fen_false;
+        if n.nodetype=forn then
+          begin
+            tunrolljamcontext(arg^).processloop(n);
+            { n may now be a block; do not recurse into the freed for-node }
+            result:=fen_norecurse_false;
+          end;
+      end;
+
+
+    function OptimizeUnrollJam(node : tnode) : boolean;
+      var
+        ctx : tunrolljamcontext;
+      begin
+        Result:=false;
+        if (cs_opt_size in current_settings.optimizerswitches) then
+          exit;
+        if not(pi_dfaavailable in current_procinfo.flags) then
+          exit;
+        ctx.changed:=false;
+        ctx.root:=node;
+        { postorder so the innermost nest is considered first (the inner for
+          declines for lack of its own nested loop, then the outer 2-level nest
+          matches) }
+        foreachnodestatic(pm_postprocess,node,@ujam_processloop_cb,@ctx);
         Result:=ctx.changed;
       end;
 

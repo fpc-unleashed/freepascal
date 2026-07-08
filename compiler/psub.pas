@@ -1260,6 +1260,28 @@ implementation
                RedoDFA:=false;
              end;
 
+           { unroll-and-jam: unroll the outer loop of a perfect two-level counted
+             nest by a small factor and fuse (jam) the duplicated inner-loop
+             bodies into one inner loop, so a value the inner body loads once
+             (b[j] in a matmul-shaped nest) is reused across the unrolled outer
+             iterations from a register and a per-outer-iteration scalar
+             accumulator is register-blocked. Run before the vectorizer / strength
+             reduction / the for->while lowering: it matches on for-nodes with
+             plain a[i] index nodes and copies the outer body with the counter
+             shifted by i+1..i+K-1, which needs the counter to still appear as a
+             plain read. Needs valid DFA to prove the outer counter is not modified
+             in its body; skips procedures with labels like the loop passes below
+             so control cannot enter a jammed body mid-stream. }
+           if (cs_opt_unrolljam in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizeUnrollJam(code) or RedoDFA;
+
+           if RedoDFA then
+             begin
+               dfabuilder.redodfainfo(code);
+               RedoDFA:=false;
+             end;
+
            { conservative loop autovectorization: rewrite a counted single-
              precision element-wise for-loop  for i:=lo to hi do a[i]:=b[i] op c[i]
              into a 128-bit SSE packed main loop (4 singles/iteration) plus a
