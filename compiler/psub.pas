@@ -1239,6 +1239,27 @@ implementation
                RedoDFA:=false;
              end;
 
+           { loop fusion: merge two adjacent counted for-loops over the same
+             iteration space into one loop body when no dependence forbids it, so
+             an intermediate result stays in registers/cache instead of being
+             streamed out by the first loop and reloaded from memory by the
+             second. Run before the vectorizer so a fused element-wise loop is
+             still presented as a single for-node the vectorizer can pack, and
+             before strength reduction / the for->while lowering (it matches on
+             for-nodes with plain a[i] index nodes). Needs valid DFA to prove each
+             counter is not modified in its body; skips procedures with labels
+             like the loop passes below so control cannot enter a fused body
+             mid-stream. }
+           if (cs_opt_loopfuse in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizeLoopFuse(code) or RedoDFA;
+
+           if RedoDFA then
+             begin
+               dfabuilder.redodfainfo(code);
+               RedoDFA:=false;
+             end;
+
            { conservative loop autovectorization: rewrite a counted single-
              precision element-wise for-loop  for i:=lo to hi do a[i]:=b[i] op c[i]
              into a 128-bit SSE packed main loop (4 singles/iteration) plus a

@@ -44,6 +44,7 @@ unit optloop;
     function OptimizeLoopDistPat(node : tnode) : boolean;
     function OptimizeLoopPeel(node : tnode) : boolean;
     function OptimizeLoopSplit(node : tnode) : boolean;
+    function OptimizeLoopFuse(node : tnode) : boolean;
 
   implementation
 
@@ -4333,6 +4334,418 @@ unit optloop;
         ctx.changed:=false;
         { postorder so an inner loop is split before its enclosing loop is }
         foreachnodestatic(pm_postprocess,node,@loopsplit_processloop_cb,@ctx);
+        Result:=ctx.changed;
+      end;
+
+
+{*****************************************************************************
+                                 Loop fusion
+*****************************************************************************}
+
+    { A node-tree port of gcc/LLVM loop fusion (the inverse of the loop-
+      distribution above).  Two *adjacent* counted for-loops over the identical
+      iteration space are merged into one loop whose body is the concatenation of
+      the two original bodies:
+
+        for i := lo to hi do A(i);          -->   for i := lo to hi do
+        for i := lo to hi do B(i);                  begin A(i); B(i) end;
+
+      so an intermediate result A writes to memory and B immediately re-reads (a
+      bias/scale add followed by an activation, a gradient accumulate followed by
+      a weight update -- the consecutive element-wise passes neural-api runs over
+      one TNNetVolume) stays in registers / cache for one pass instead of being
+      streamed out by the first loop and reloaded from DRAM by the second.  The
+      fused element-wise loop is also a clean vectorizer candidate, which is why
+      the pass runs *before* OptimizeVectorize at the psub call site.
+
+      DEPENDENCE SAFETY (a wrong fusion is a miscompile, so the recognizer is
+      strict; anything not matched compiles exactly as before).  Fusion is legal
+      iff no iteration i of loop 2 needs a value that loop 1 has not yet produced
+      for that same index i (and, symmetrically, loop 1 must not read a location
+      loop 2 will only overwrite later).  We guarantee this with one blunt,
+      provably sufficient rule instead of a general dependence test:
+
+        * EVERY array-element reference in both bodies -- read or write -- is
+          indexed by *exactly* the loop counter (unit stride, no a[i-1]/a[i+1]
+          offset).  Then everything either body touches at "time i" lives at
+          array index i, so after the reorder body1(i) still runs before body2(i)
+          and no iteration ever reaches an element another iteration owns.  This
+          holds regardless of aliasing: two dynamic arrays can only fully alias at
+          offset 0 or be disjoint (a shifted overlap is impossible -- the same
+          fact LOOPDISTPAT relied on), and a full alias with identical [i]
+          indexing is still element-wise safe; static arrays / fields likewise,
+          because the index is the same i on both sides.
+        * The ONLY writes allowed are to such a[counter] element (the write flag
+          sits on the vecn).  A scalar / field / pointer write (write flag on a
+          loadn / subscriptn / derefn) is declined outright -- that is exactly the
+          channel by which a value could be carried across the loop boundary
+          (a[i]:=s in loop 2 after s:=... in loop 1, a reduction into the same
+          scalar in both loops, ...).  Because no scalar or field is ever written
+          by either body, every scalar/field a body reads (and every variable the
+          shared bounds mention) is loop-invariant across the whole fused region,
+          so reordering cannot change its value.
+        * No calls (side effects / unprovable aliasing), no pointer dereferences
+          (unprovable aliasing), no inline intrinsics (inc/dec/setlength/... can
+          write; declined wholesale), no nested loops (their indices are not the
+          fused counter), and no break/continue/goto/label/exit/raise (control
+          must not enter a fused body mid-stream).  Only plain (:=) assignments.
+        * -Cr/-Co checked code is declined: fusion reorders the per-element
+          bounds/overflow checks, so a check that would fire first in loop 1 could
+          be preceded by one from loop 2.
+        * Both loops are ascending, unit step, and their lo/hi bounds are
+          structurally equal (tnode.isequal) and free of calls/derefs, so -- given
+          no body writes any scalar and nothing runs between the two loops -- the
+          value each bound evaluates to at loop 1's entry equals its value at loop
+          2's entry, i.e. the two iteration spaces are provably identical.
+        * Counters may be the same variable or two different simple non-aliased
+          locals of the same ordinal type; in the latter case loop 2's body is
+          rewritten to use loop 1's counter and, to match a stand-alone for-loop's
+          post-value, loop 2's counter is set to hi after the fused loop, guarded
+          by  if lo<=hi  (a for-loop that ran zero times leaves its counter
+          untouched).  The fused loop itself leaves loop 1's counter at hi exactly
+          as the original first loop did.
+        * The enclosing routine is not an inline candidate and has no labels
+          (checked at the psub call site, like the sibling loop passes). }
+
+    type
+      tfusebodyinfo = record
+        counter : tabstractvarsym;
+        badreason : string;
+      end;
+      pfusebodyinfo = ^tfusebodyinfo;
+
+
+    function fuse_body_check_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      { rejects any body construct that would make the reorder unsound: a call,
+        a pointer deref, an inline intrinsic, a nested loop, control flow, a
+        non-plain assignment, a scalar/field/pointer write, or an array-element
+        access whose index is not exactly the loop counter }
+      var
+        pc : pfusebodyinfo;
+        idx, lhs : tnode;
+      begin
+        result:=fen_false;
+        pc:=pfusebodyinfo(arg);
+        case n.nodetype of
+          calln:
+            begin
+              pc^.badreason:='body contains a call';
+              exit(fen_norecurse_true);
+            end;
+          inlinen:
+            { only a small whitelist of pure, side-effect-free, single-argument
+              arithmetic intrinsics is allowed -- they read their operand (an
+              a[counter] element or an invariant) and return a value with no
+              memory write and no cross-element access, so they cannot introduce a
+              dependence.  Min/Max in particular is what FPC's if-conversion turns
+              a  if a[i]<0 then a[i]:=0  ReLU activation into (in_max_*), the very
+              activation-after-scale shape this pass targets.  Any other intrinsic
+              (inc/dec, setlength, i/o, new, ...) may write or have side effects
+              and is declined. }
+            if not (tinlinenode(n).inlinenumber in
+                 [in_abs_long,in_abs_real,in_sqr_real,in_sqrt_real,
+                  in_min_single,in_max_single,in_min_double,in_max_double,
+                  in_min_dword,in_max_dword,in_min_longint,in_max_longint,
+                  in_min_qword,in_max_qword,in_min_int64,in_max_int64,
+                  in_min_quad,in_max_quad]) then
+              begin
+                pc^.badreason:='body contains a non-pure inline intrinsic';
+                exit(fen_norecurse_true);
+              end;
+          derefn,addrn:
+            begin
+              pc^.badreason:='body dereferences or takes the address of a pointer (aliasing cannot be proven)';
+              exit(fen_norecurse_true);
+            end;
+          forn,whilerepeatn:
+            begin
+              pc^.badreason:='body contains a nested loop';
+              exit(fen_norecurse_true);
+            end;
+          breakn,continuen,goton,labeln,exitn,raisen:
+            begin
+              pc^.badreason:='body contains break/continue/goto/label/exit/raise';
+              exit(fen_norecurse_true);
+            end;
+          assignn:
+            begin
+              if tassignmentnode(n).assigntype<>at_normal then
+                begin
+                  pc^.badreason:='body has a non-plain (compound) assignment';
+                  exit(fen_norecurse_true);
+                end;
+              { the ONLY writes allowed are to an array element a[counter]: its
+                lhs is a vecn (whose [counter] index is checked by the vecn case
+                below).  Any other assignment target -- a plain scalar (loadn), a
+                record/object field (subscriptn) or a pointer target (derefn) --
+                is a channel that could carry a value across the loop boundary, so
+                it is declined.  Note we must test the assignment *target*, not a
+                write/modify flag: writing a[i] marks the array-base load/subscript
+                nf_modify too (e.g. a dynamic-array field Self.FData[i]:=x), and
+                that base is a safe element access, not a scalar write. }
+              lhs:=rangeelim_skip_typeconv(tassignmentnode(n).left);
+              if not assigned(lhs) or (lhs.nodetype<>vecn) then
+                begin
+                  pc^.badreason:='body writes a scalar, field or pointer target (only a[counter] element stores are allowed)';
+                  exit(fen_norecurse_true);
+                end;
+            end;
+          vecn:
+            begin
+              idx:=rangeelim_skip_typeconv(tvecnode(n).right);
+              if not assigned(idx) or (idx.nodetype<>loadn) or
+                 (tloadnode(idx).symtableentry<>tsym(pc^.counter)) then
+                begin
+                  pc^.badreason:='array index is not exactly the loop counter (non-unit stride or offset)';
+                  exit(fen_norecurse_true);
+                end;
+            end;
+          else
+            ;
+        end;
+      end;
+
+
+    function fuse_loop_ok(forn : tfornode; out counter : tabstractvarsym;
+                          out ctype : tdef) : string;
+      { per-loop gate shared by both fusion candidates: '' when forn is an
+        ascending unit-step counted loop over a simple non-aliased ordinal
+        counter whose body is safe to reorder element-wise, else the reason }
+      var
+        bi : tfusebodyinfo;
+      begin
+        result:='';
+        counter:=nil;
+        ctype:=nil;
+
+        if lnf_backward in forn.loopflags then
+          exit('descending (downto) loop');
+        if assigned(forn.loopstep) then
+          exit('non-unit loop step');
+
+        counter:=rangeelim_simple_var(forn.left);
+        if not assigned(counter) then
+          exit('loop counter is not a simple non-aliased variable');
+        ctype:=forn.left.resultdef;
+        if not assigned(ctype) or (ctype.typ<>orddef) then
+          exit('loop counter is not an ordinal type');
+
+        if ([cs_check_range,cs_check_overflow]*current_settings.localswitches)<>[] then
+          exit('range/overflow checking is enabled (-Cr/-Co)');
+
+        if not assigned(forn.t2) then
+          exit('loop body is empty');
+
+        bi.counter:=counter;
+        bi.badreason:='';
+        foreachnodestatic(forn.t2,@fuse_body_check_cb,@bi);
+        if bi.badreason<>'' then
+          exit(bi.badreason);
+
+        { DFA: the counter must not be assigned in the body }
+        CalcDefSum(forn.t2);
+        if not assigned(forn.t2.optinfo) or not assigned(forn.left.optinfo) then
+          exit('data-flow information is unavailable for the loop body');
+        if DynSetIn(forn.t2.optinfo^.defsum,forn.left.optinfo^.index) then
+          exit('loop counter is modified inside the loop body');
+      end;
+
+
+    function fuse_bound_impure_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      { flags a call or pointer deref anywhere in a bound expression }
+      begin
+        if n.nodetype in [calln,derefn] then
+          result:=fen_norecurse_true
+        else
+          result:=fen_false;
+      end;
+
+
+    function fuse_bound_pure(n : tnode) : boolean;
+      { true when the bound expression contains no call and no pointer deref, so
+        it is side-effect free and safe to re-evaluate for the counter fixup }
+      begin
+        result:=not foreachnodestatic(n,@fuse_bound_impure_cb,nil);
+      end;
+
+
+    type
+      tloopfusecontext = object
+        changed : boolean;
+        procedure processfuse(var n : tnode);
+      end;
+
+
+    function fuse_next_meaningful(s1 : tstatementnode) : tstatementnode;
+      { the first following statement in the list that is not an empty
+        (nothingn) placeholder, or nil -- so trailing/interleaved nothings do not
+        break adjacency but a real intervening statement does }
+      var
+        s : tnode;
+      begin
+        result:=nil;
+        s:=s1.right;
+        while assigned(s) and (s.nodetype=statementn) do
+          begin
+            if assigned(tstatementnode(s).left) and
+               (tstatementnode(s).left.nodetype<>nothingn) then
+              begin
+                result:=tstatementnode(s);
+                exit;
+              end;
+            s:=tstatementnode(s).right;
+          end;
+      end;
+
+
+    procedure tloopfusecontext.processfuse(var n : tnode);
+      var
+        s1, s2 : tstatementnode;
+        forn1, forn2 : tfornode;
+        c1, c2 : tabstractvarsym;
+        ct1, ct2 : tdef;
+        reason : string;
+        body1copy, body2copy : tnode;
+        newbody, fusedfor : tnode;
+        bstat : tstatementnode;
+        fusedany, firstpair : boolean;
+
+      function fuse_reason : string;
+        begin
+          result:='';
+          { forn1 is validated only on the first pair; on later greedy iterations
+            it is the loop we just built (whose counter c1/ct1 we still hold and
+            whose body -- concatenated from already-checked, counter-preserving
+            bodies -- is safe), and re-running fuse_loop_ok on it would fail merely
+            because the synthesized node has no per-procedure DFA info yet }
+          if firstpair then
+            begin
+              reason:=fuse_loop_ok(forn1,c1,ct1);
+              if reason<>'' then
+                exit('first '+reason);
+            end;
+          reason:=fuse_loop_ok(forn2,c2,ct2);
+          if reason<>'' then
+            exit('second '+reason);
+          { same iteration space: structurally equal bounds, pure so the value is
+            stable between the two loop entries (no body writes a scalar) }
+          if not forn1.right.isequal(forn2.right) then
+            exit('the two loops have different lower bounds');
+          if not forn1.t1.isequal(forn2.t1) then
+            exit('the two loops have different upper bounds');
+          if not fuse_bound_pure(forn1.right) or not fuse_bound_pure(forn1.t1) then
+            exit('loop bounds are not side-effect free');
+          { two distinct counters must share the ordinal type so the rewrite of
+            loop 2 onto loop 1's counter is type-correct }
+          if (c1<>c2) and not equal_defs(ct1,ct2) then
+            exit('the two loops use counters of different types');
+        end;
+
+      begin
+        if n.nodetype<>statementn then
+          exit;
+        s1:=tstatementnode(n);
+        if not assigned(s1.left) or (s1.left.nodetype<>forn) then
+          exit;
+
+        { Greedily fold every following adjacent loop into s1's loop: after a
+          successful fusion s1.left is again a single for-node, so a run
+          L1;L2;L3;... collapses to one loop in one visit.  (foreachnodestatic
+          also visits the inner statement nodes, but by the time it reaches them
+          their slot is either the survivor loop -- whose next is no longer a
+          for-node -- or an emptied/fixup slot, so they add nothing and stay
+          quiet.) }
+        { pre-initialize recognizer outputs (a nested function assigning parent
+          locals defeats per-procedure DFA; see the matching note in the distpat
+          pass). c1/ct1 are set once for the first pair and then reused across the
+          greedy iterations (the fused survivor keeps loop 1's counter). }
+        fusedany:=false;
+        firstpair:=true;
+        c1:=nil; c2:=nil; ct1:=nil; ct2:=nil;
+        repeat
+          s2:=fuse_next_meaningful(s1);
+          if not assigned(s2) or not assigned(s2.left) or (s2.left.nodetype<>forn) then
+            begin
+              { diagnose only the first, un-fused candidate, to avoid noise }
+              if not fusedany and assigned(s2) then
+                MessagePos1(tfornode(s1.left).fileinfo,cg_n_loop_not_fused,
+                  'the following statement is not a counted for-loop');
+              break;
+            end;
+
+          forn1:=tfornode(s1.left);
+          forn2:=tfornode(s2.left);
+          c2:=nil; ct2:=nil;
+
+          reason:=fuse_reason;
+          if reason<>'' then
+            begin
+              if not fusedany then
+                MessagePos1(forn1.fileinfo,cg_n_loop_not_fused,reason);
+              break;
+            end;
+
+          { ---- build the fused loop body: A(i) ; B(i) ---- }
+          body1copy:=forn1.t2.getcopy;
+          body2copy:=forn2.t2.getcopy;
+
+          newbody:=internalstatements(bstat);
+          { two distinct counters: bind loop 2's counter to loop 1's at the top of
+            each iteration (c2:=c1).  This makes loop 2's body see c2=i exactly as
+            before, and -- because the assignment runs on every taken iteration and
+            not at all when the loop is empty -- leaves c2 holding hi if the loop
+            ran and unchanged otherwise, matching a stand-alone for-loop's post-
+            value with no separate guarded fixup.  (A rename of c2->c1 would keep
+            the body scalar-write-free and thus more vectorizable, but is left out
+            here for robustness; same-counter fusions -- the common case -- carry
+            no such assignment and vectorize unchanged.) }
+          if c1<>c2 then
+            addstatement(bstat,cassignmentnode.create(
+              cloadnode.create(tsym(c2),c2.owner),
+              cloadnode.create(tsym(c1),c1.owner)));
+          addstatement(bstat,body1copy);
+          addstatement(bstat,body2copy);
+
+          fusedfor:=cfornode.create(
+            cloadnode.create(tsym(c1),c1.owner),
+            forn1.right.getcopy,
+            forn1.t1.getcopy,
+            newbody,
+            false);
+          do_firstpass(fusedfor);
+
+          MessagePos(forn1.fileinfo,cg_n_loop_fused);
+          s1.left:=fusedfor;
+          s2.left:=cnothingnode.create;
+          forn1.free;
+          forn2.free;
+          changed:=true;
+          fusedany:=true;
+          firstpair:=false;
+        until false;
+      end;
+
+
+    function loopfuse_processfuse_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      begin
+        result:=fen_false;
+        if n.nodetype=statementn then
+          tloopfusecontext(arg^).processfuse(n);
+      end;
+
+
+    function OptimizeLoopFuse(node : tnode) : boolean;
+      var
+        ctx : tloopfusecontext;
+      begin
+        Result:=false;
+        if not(pi_dfaavailable in current_procinfo.flags) then
+          exit;
+        ctx.changed:=false;
+        { postorder so a chain L1;L2;L3 fuses L2+L3 first (when its statement node
+          is visited) and then L1 with the already-merged loop, and so inner loops
+          are considered before the statement list that holds them }
+        foreachnodestatic(pm_postprocess,node,@loopfuse_processfuse_cb,@ctx);
         Result:=ctx.changed;
       end;
 

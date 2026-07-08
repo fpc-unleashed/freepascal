@@ -2914,6 +2914,18 @@ cg_n_loop_not_split=06072_N_Loop not split: $1
 % left it as a single loop. The reason it could not split the loop is given as
 % \var{$1}. This diagnostic is only emitted while the pass is enabled and is
 % shown at note verbosity (\var{-vn}).
+cg_n_loop_fused=06073_N_Two adjacent counted loops fused into one
+% The loop-fusion pass (\var{-O4 -OoLOOPFUSE}) recognized two adjacent counted
+% for-loops over the same iteration space with no forbidding dependence and
+% merged them into a single loop, so an intermediate result stays in
+% registers/cache instead of being written out by the first loop and re-streamed
+% by the second. This diagnostic is only emitted while the pass is enabled and is
+% shown at note verbosity (\var{-vn}).
+cg_n_loop_not_fused=06074_N_Loops not fused: $1
+% The loop-fusion pass (\var{-O4 -OoLOOPFUSE}) inspected a counted for-loop but
+% did not fuse it with the following statement. The reason is given as \var{$1}.
+% This diagnostic is only emitted while the pass is enabled and is shown at note
+% verbosity (\var{-vn}).
 %
 % \end{description}
 # EndOfTeX
