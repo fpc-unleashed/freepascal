@@ -19,13 +19,19 @@ If you installed via the [official installer or fpcupdeluxe](#installation), the
 /path/to/fpcunleashed/fpc/bin/x86_64-linux/fpc -O4 myprogram.pas
 ```
 
-From a source checkout, after building (`make all` with a starting FPC 3.2.x on PATH, then `make rtl packages FPC=$PWD/compiler/ppcx64`), invoke the freshly built binary directly and point it at the units built in-tree:
+From a source checkout, after building (`make all` with a starting FPC 3.2.x on PATH, then `make rtl packages FPC=$PWD/compiler/ppcx64`), use the `fpcu.sh` wrapper in the repository root - it invokes the freshly built compiler with `-O4` and the in-tree unit paths, and works from any directory:
+
+```bash
+/path/to/checkout/fpcu.sh myprogram.pas
+```
+
+Flags you pass come last and override the defaults (e.g. `fpcu.sh -O1 test.pas` for a quick unoptimized build). The wrapper expands to:
 
 ```bash
 compiler/ppcx64 -O4 -Furtl/units/x86_64-linux "-Fupackages/*/units/x86_64-linux" myprogram.pas
 ```
 
-(The `*` in the unit path is expanded by the compiler itself, hence the quotes. On Windows the binary is `compiler\ppcx64.exe` and the unit directories end in `x86_64-win64`.)
+(The `*` in the unit path is expanded by the compiler itself, hence the quotes. On Windows there is no wrapper: call `compiler\ppcx64.exe` with these flags directly, with unit directories ending in `x86_64-win64`.)
 
 Verify you got the right compiler with `fpc -iV` / `ppcx64 -iV`: it must report **3.3.1**, not the 3.2.x of a distro package.
 
