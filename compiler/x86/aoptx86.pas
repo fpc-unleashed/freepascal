@@ -251,6 +251,13 @@ unit aoptx86;
         function PostPeepholeOptRORX(var p: tai): Boolean;
         function PostPeepholeOptSARXSHLXSHRX(var p: tai): Boolean;
 
+        { Cross-jumping / tail merging (gcc -fcrossjumping): merge identical
+          trailing instruction sequences of blocks that converge on the same
+          successor. }
+        function InstructionsEqualExact(p1, p2: taicpu): Boolean;
+        procedure DoCrossJump;
+        procedure PostPeepHoleOpts; override;
+
         procedure ConvertJumpToRET(const p: tai; const ret_p: tai);
 
         function CheckJumpMovTransferOpt(var p: tai; hp1: tai; LoopCount: Integer; out Count: Integer): Boolean;
@@ -300,7 +307,7 @@ unit aoptx86;
       cpuinfo,
       procinfo,
       paramgr,
-      aasmbase,
+      aasmbase,aasmdata,
       aoptbase,aoptutils,
       symconst,symbase,symtype,symsym,symdef,
       cgx86,
@@ -18543,6 +18550,246 @@ unit aoptx86;
       end;
 {$pop}
 {$endif x86_64}
+
+
+    { Cross-jumping / tail merging (gcc -fcrossjumping).
+
+      Two instructions are compared operand-exactly: same opcode, size,
+      condition, segment prefix and every operand identical (registers,
+      constants and references bit-for-bit, references also rejected if either
+      side carries any volatility).  Because the compared instructions are
+      textually identical, redirecting control so that the very same sequence
+      still executes is always sound -- calls, RIP-relative loads and the like
+      are handled with no special casing precisely because they must match
+      textually to be merged. }
+    function TX86AsmOptimizer.InstructionsEqualExact(p1, p2: taicpu): Boolean;
+      var
+        i: Integer;
+      begin
+        Result := False;
+        if (p1.opcode <> p2.opcode) or
+           (p1.opsize <> p2.opsize) or
+           (p1.condition <> p2.condition) or
+           (p1.segprefix <> p2.segprefix) or
+           (p1.ops <> p2.ops) then
+          Exit;
+        for i := 0 to p1.ops-1 do
+          begin
+            if p1.oper[i]^.typ <> p2.oper[i]^.typ then
+              Exit;
+            case p1.oper[i]^.typ of
+              top_none: ;
+              top_reg, top_const, top_ref:
+                if not MatchOperand(p1.oper[i]^, p2.oper[i]^) then
+                  Exit;
+              else
+                { operand kinds we cannot compare operand-exactly here
+                  (top_local, top_bool, register sets, ...) -- decline }
+                Exit;
+            end;
+          end;
+        Result := True;
+      end;
+
+
+    procedure TX86AsmOptimizer.DoCrossJump;
+      const
+        { A single shared instruction is not worth a jump; require at least this
+          many identical trailing instructions (the terminal jmp/ret included). }
+        MinTailLen = 3;
+        MaxAnchors = 3000;
+      type
+        tanchor = record
+          ai: taicpu;
+          deleted: Boolean;
+        end;
+      var
+        anchors: array of tanchor;
+        acount: Integer;
+
+        function IsAnchor(ai: taicpu): Boolean;
+          begin
+            Result := (ai.opcode = A_RET) or IsJumpToLabelUncond(ai);
+          end;
+
+        procedure CollectAnchors;
+          var
+            q: tai;
+          begin
+            acount := 0;
+            SetLength(anchors, 64);
+            q := BlockStart;
+            while Assigned(q) and (q <> BlockEnd) do
+              begin
+                if (q.typ = ait_instruction) and IsAnchor(taicpu(q)) then
+                  begin
+                    if acount >= MaxAnchors then
+                      Break;
+                    if acount >= Length(anchors) then
+                      SetLength(anchors, Length(anchors) * 2);
+                    anchors[acount].ai := taicpu(q);
+                    anchors[acount].deleted := False;
+                    Inc(acount);
+                  end;
+                q := tai(q.Next);
+              end;
+          end;
+
+        { The tail we are about to delete [fromp..top] must contain nothing but
+          instructions and disposable bookkeeping.  In particular it must not
+          contain any label (labels with a zero jump-refcount can still be
+          referenced by debug line tables, CFI/EH frame data or exception
+          tables), nor any CFI directive or variable-location note, since
+          removing those would corrupt unwind/debug information. }
+        function RegionSafeToDelete(fromp, top: tai): Boolean;
+          var
+            q: tai;
+          begin
+            Result := False;
+            q := fromp;
+            while Assigned(q) do
+              begin
+                case q.typ of
+                  ait_instruction,
+                  ait_regalloc, ait_tempalloc,
+                  ait_comment:
+                    ;
+                  ait_marker:
+                    if tai_marker(q).Kind in [mark_AsmBlockStart, mark_AsmBlockEnd] then
+                      Exit;
+                  else
+                    { labels, cfi, varloc, alignments, symbols, constants, ... }
+                    Exit;
+                end;
+                if q = top then
+                  Break;
+                q := tai(q.Next);
+              end;
+            Result := True;
+          end;
+
+        { Merge the tail ending at anchor bAI (the later copy) into the
+          identical tail ending at anchor aAI (the earlier, kept copy). }
+        function TryMergePair(aAI, bAI: taicpu): Boolean;
+          var
+            ca, cb, pa, pb, lastgood_a, lastgood_b: tai;
+            matched: Integer;
+            newlabel: tasmlabel;
+            newjmp: taicpu;
+            delp, delnext: tai;
+            reachedEnd: Boolean;
+          begin
+            Result := False;
+            ca := aAI;
+            cb := bAI;
+            lastgood_a := aAI;
+            lastgood_b := bAI;
+            matched := 1;   { the anchors themselves already match }
+
+            while True do
+              begin
+                if not GetLastInstruction(ca, pa) then
+                  Break;
+                if not GetLastInstruction(cb, pb) then
+                  Break;
+                { GetLastInstruction returns referenced labels (and any non
+                  instruction tai) as a boundary -- stop there so a merged tail
+                  can never contain a side-entry label. }
+                if (pa.typ <> ait_instruction) or (pb.typ <> ait_instruction) then
+                  Break;
+                { keep the tails straight-line: an interior unconditional
+                  transfer ends the run (a conditional Jcc may be part of the
+                  tail as long as it matches operand-exactly). }
+                if IsJumpToLabelUncond(taicpu(pa)) or (taicpu(pa).opcode = A_RET) or
+                   IsJumpToLabelUncond(taicpu(pb)) or (taicpu(pb).opcode = A_RET) then
+                  Break;
+                { overlap guard: the deleted (b) region must stay strictly after
+                  the kept (a) region.  Because GetLastInstruction never skips a
+                  real instruction, cb can only reach aAI by landing on it. }
+                if (pb = aAI) or (pb = bAI) then
+                  Break;
+                if not InstructionsEqualExact(taicpu(pa), taicpu(pb)) then
+                  Break;
+
+                Inc(matched);
+                ca := pa; lastgood_a := pa;
+                cb := pb; lastgood_b := pb;
+              end;
+
+            if matched < MinTailLen then
+              Exit;
+
+            { The kept region gets only a label prepended, but the duplicated
+              region is physically removed -- refuse if it carries anything
+              whose removal could corrupt debug/unwind information. }
+            if not RegionSafeToDelete(lastgood_b, bAI) then
+              Exit;
+
+            { Insert the shared-tail entry label before the kept region. }
+            current_asmdata.getjumplabel(newlabel);
+            InsertLLItem(tai(lastgood_a.Previous), lastgood_a, tai_label.Create(newlabel));
+
+            { Build the redirect jump and place it just before the deleted
+              region (after any label that pointed into it, so those callers now
+              reach the redirect). }
+            newjmp := taicpu.op_sym(A_JMP, S_NO, newlabel);
+            newjmp.is_jmp := True;
+            newlabel.increfs;
+            InsertLLItem(tai(lastgood_b.Previous), lastgood_b, newjmp);
+
+            { Delete the duplicated tail [lastgood_b .. bAI], releasing the label
+              references of any jumps removed. }
+            delp := lastgood_b;
+            repeat
+              reachedEnd := (delp = bAI);
+              delnext := tai(delp.Next);
+              if (delp.typ = ait_instruction) and IsJumpToLabel(taicpu(delp)) then
+                TAsmLabel(JumpTargetOp(taicpu(delp))^.ref^.symbol).decrefs;
+              RemoveInstruction(delp);
+              delp := delnext;
+            until reachedEnd or not Assigned(delp);
+
+            DebugMsg(SPeepholeOptimization + 'CrossJump: merged ' + tostr(matched) +
+              ' identical trailing instructions', newjmp);
+            Result := True;
+          end;
+
+      var
+        i, j: Integer;
+      begin
+        if not CanDoJumpOpts then
+          Exit;
+
+        CollectAnchors;
+
+        { Canonical copy = the earliest anchor of each operand-exact class;
+          every later identical anchor is redirected into it. }
+        for j := 1 to acount - 1 do
+          begin
+            if anchors[j].deleted then
+              Continue;
+            for i := 0 to j - 1 do
+              begin
+                if anchors[i].deleted then
+                  Continue;
+                if not InstructionsEqualExact(anchors[i].ai, anchors[j].ai) then
+                  Continue;
+                if TryMergePair(anchors[i].ai, anchors[j].ai) then
+                  begin
+                    anchors[j].deleted := True;
+                    Break;
+                  end;
+              end;
+          end;
+      end;
+
+
+    procedure TX86AsmOptimizer.PostPeepHoleOpts;
+      begin
+        inherited PostPeepHoleOpts;
+        if (cs_opt_crossjump in current_settings.optimizerswitches) then
+          DoCrossJump;
+      end;
 
 
     function TX86AsmOptimizer.PostPeepholeOptMovzx(var p : tai) : Boolean;
