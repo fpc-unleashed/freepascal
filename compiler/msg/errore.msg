@@ -3005,6 +3005,17 @@ cg_n_loop_not_lowered=06068_N_Loop not lowered to a block memory primitive: $1
 % for-loop but left its scalar body in place. The reason it could not lower the
 % loop is given as \var{$1}. This diagnostic is only emitted while the pass is
 % enabled and is shown at note verbosity (\var{-vn}).
+cg_n_loop_peeled=06069_N_Loop fully peeled ($1 iterations of straight-line code)
+% The loop-peeling pass (\var{-O4 -OoLOOPPEEL}) recognized this counted for-loop
+% as having a small compile-time-constant trip count and replaced it with
+% \var{$1} straight-line copies of the body, deleting the induction variable,
+% the loop compare and the back-branch. This diagnostic is only emitted while
+% the pass is enabled and is shown at note verbosity (\var{-vn}).
+cg_n_loop_not_peeled=06070_N_Loop not peeled: $1
+% The loop-peeling pass (\var{-O4 -OoLOOPPEEL}) inspected this for-loop but left
+% it as a loop. The reason it could not peel the loop is given as \var{$1}. This
+% diagnostic is only emitted while the pass is enabled and is shown at note
+% verbosity (\var{-vn}).
 %
 % \end{description}
 # EndOfTeX

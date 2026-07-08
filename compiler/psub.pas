@@ -1299,6 +1299,19 @@ implementation
              and not(pi_has_label in flags) then
              RedoDFA:=OptimizeLoopDistPat(code) or RedoDFA;
 
+           { loop peeling: fully unroll a counted for-loop whose trip count is a
+             small compile-time constant into straight-line copies of the body,
+             folding the induction variable to its per-iteration constant and
+             deleting the loop control. Run here (still on for-nodes, before the
+             for->while lowering below and before strength reduction rewrites the
+             a[i] index nodes) so the peeled copies feed later constant
+             propagation. Needs valid DFA to prove the counter is unmodified in
+             the body; skips procedures with labels like the loop passes here so
+             control cannot enter a peeled copy mid-stream. }
+           if (cs_opt_looppeel in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizeLoopPeel(code) or RedoDFA;
+
            if RedoDFA then
              begin
                dfabuilder.redodfainfo(code);

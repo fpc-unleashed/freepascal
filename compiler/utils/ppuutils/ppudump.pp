@@ -2577,7 +2577,8 @@ const
          'cs_opt_rangecheckelim',
          'cs_opt_vectorize',
          'cs_opt_jumpthread',
-         'cs_opt_loopdistpat'
+         'cs_opt_loopdistpat',
+         'cs_opt_looppeel'
        );
     var
          globalswitch  : tglobalswitch;

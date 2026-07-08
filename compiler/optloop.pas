@@ -42,6 +42,7 @@ unit optloop;
     function OptimizeVectorize(node : tnode) : boolean;
     function OptimizeJumpThread(node : tnode) : boolean;
     function OptimizeLoopDistPat(node : tnode) : boolean;
+    function OptimizeLoopPeel(node : tnode) : boolean;
 
   implementation
 
@@ -3798,6 +3799,206 @@ unit optloop;
         ctx.changed:=false;
         { postorder so nested (inner) loops are considered before their parents }
         foreachnodestatic(pm_postprocess,node,@distpat_processloop_cb,@ctx);
+        Result:=ctx.changed;
+      end;
+
+
+{*****************************************************************************
+                                 Loop peeling
+*****************************************************************************}
+
+    { A node-tree port of gcc's -fpeel-loops (its full-peel case): a counted
+      for-loop whose trip count is a small compile-time constant is replaced by
+      that many straight-line copies of the body, with the induction variable
+      folded to its per-iteration constant.  This deletes the counter, the loop
+      compare and the back-branch, and exposes every iteration to the ordinary
+      constant folder / propagator (a[i] index nodes become a[k] with k const).
+
+      The stock loop unroller (unroll_loop, run in tfornode.pass_1) already fully
+      unrolls a constant-count loop when its cost heuristic says the whole loop
+      fits in its unroll budget (getridoffor).  This pass is the deliberate,
+      -O4-only complement for the loops that heuristic declines: small fixed
+      trip counts (<= 8) whose body is a little too large for the generic
+      unroller but still well inside a bounded peel budget -- exactly the short
+      fixed-extent kernels (3x3 convolution taps, per-channel Depth in 1/3/4)
+      that sit inside hot outer loops where the loop control rivals the body.
+
+      Soundness gates (a wrong peel is a miscompile):
+        * ascending or descending, but the step must be unit (loopstep unset);
+        * both bounds are ordinal constants, so the exact trip count is known;
+        * the counter is a simple non-aliased, non-address-taken, non-volatile
+          local / value parameter of an ordinal type, and DFA proves it is never
+          assigned in the body (so replacing its loads by a constant is sound and
+          replaceloadnodes never meets a write/modify/address-taken use);
+        * the body has no break / continue / goto / label / exit / raise, so
+          duplicating it cannot change control flow or which copy runs;
+        * not TP/Mac mode (there the loop var may be assigned) and not an inline
+          candidate or -Os build (peeling trades size for speed).
+
+      A statically empty loop (trip <= 0) is left untouched: a Pascal for-loop
+      that never runs leaves its counter unmodified, and declining reproduces
+      that exactly.  When the loop does run, the counter is left holding its last
+      taken value (t1, the "to" bound) just as a normal for-loop does. }
+
+    const
+      looppeel_max_trip   = 8;    { largest constant trip count we fully peel }
+      looppeel_body_max   = 40;   { per-body weighted-node cap }
+      looppeel_total_max  = 160;  { trip*body weighted-node growth cap }
+
+    type
+      tlooppeelcontext = object
+        changed : boolean;
+        procedure processloop(var n : tnode);
+      end;
+
+
+    procedure tlooppeelcontext.processloop(var n : tnode);
+      var
+        forn : tfornode;
+        counter : tabstractvarsym;
+        ctype : tdef;
+        reason : string;
+        backward : boolean;
+        lo, hi, trip, curval, k : tconstexprint;
+        bodycost : dword;
+        block : tnode;
+        stat : tstatementnode;
+        replaceinfo : treplaceinfo;
+        bodycopy : tnode;
+
+      { Recognizer: '' when the loop can be peeled (filling counter, ctype,
+        backward, lo, hi, trip), else the reason of the first failed check for
+        the -OoLOOPPEEL diagnostic. }
+      function looppeel_reason : string;
+        begin
+          result:='';
+
+          if cs_opt_size in current_settings.optimizerswitches then
+            exit('optimizing for size (-Os)');
+          if po_inline in current_procinfo.procdef.procoptions then
+            exit('enclosing routine is an inline candidate');
+          if [m_tp7,m_mac]*current_settings.modeswitches<>[] then
+            exit('TP/Mac mode allows assignment to the loop variable');
+
+          if assigned(forn.loopstep) then
+            exit('non-unit loop step');
+
+          counter:=rangeelim_simple_var(forn.left);
+          if not assigned(counter) then
+            exit('loop counter is not a simple non-aliased variable');
+          ctype:=forn.left.resultdef;
+          if not assigned(ctype) or (ctype.typ<>orddef) then
+            exit('loop counter is not an ordinal type');
+
+          if (forn.right.nodetype<>ordconstn) or (forn.t1.nodetype<>ordconstn) then
+            exit('loop bounds are not both compile-time constants');
+
+          backward:=lnf_backward in forn.loopflags;
+          lo:=tordconstnode(forn.right).value;
+          hi:=tordconstnode(forn.t1).value;
+          if backward then
+            trip:=lo-hi+1
+          else
+            trip:=hi-lo+1;
+
+          if trip<=0 then
+            exit('constant trip count is zero (statically dead loop)');
+          if trip>looppeel_max_trip then
+            exit('constant trip count exceeds the peel limit');
+
+          if foreachnodestatic(forn.t2,@checkcontrollflowstatements,nil) then
+            exit('loop body contains break/continue/goto/label/exit/raise');
+
+          bodycost:=node_count_weighted(forn.t2,looppeel_body_max+1);
+          if bodycost>looppeel_body_max then
+            exit('loop body is too large to peel');
+          if qword(bodycost)*qword(trip.svalue)>looppeel_total_max then
+            exit('peeled body would exceed the code-size budget');
+
+          { DFA: the counter must not be assigned in the body }
+          CalcDefSum(forn.t2);
+          if not assigned(forn.t2.optinfo) or not assigned(forn.left.optinfo) then
+            exit('data-flow information is unavailable for the loop body');
+          if DynSetIn(forn.t2.optinfo^.defsum,forn.left.optinfo^.index) then
+            exit('loop counter is modified inside the loop body');
+        end;
+
+      begin
+        forn:=tfornode(n);
+
+        { pre-initialize the recognizer outputs (see the matching note in
+          tdistpatcontext.processloop): a nested function assigning parent
+          locals defeats per-procedure DFA, which would otherwise warn they are
+          uninitialized on the read paths below. }
+        counter:=nil;
+        ctype:=nil;
+        backward:=false;
+        lo:=0; hi:=0; trip:=0;
+
+        reason:=looppeel_reason;
+        if reason<>'' then
+          begin
+            MessagePos1(forn.fileinfo,cg_n_loop_not_peeled,reason);
+            exit;
+          end;
+
+        { ---- build the straight-line replacement ---- }
+        block:=internalstatements(stat);
+
+        { first taken value is the "from" bound (forn.right) in both directions }
+        curval:=lo;
+        k:=1;
+        while k<=trip do
+          begin
+            bodycopy:=forn.t2.getcopy;
+            replaceinfo.node:=forn.left;
+            replaceinfo.value:=curval;
+            foreachnodestatic(bodycopy,@replaceloadnodes,@replaceinfo);
+            addstatement(stat,bodycopy);
+            if backward then
+              curval:=curval-1
+            else
+              curval:=curval+1;
+            k:=k+1;
+          end;
+
+        { leave the counter with the value a normal for-loop leaves after it ran:
+          its last taken value, which for both directions is the "to" bound hi
+          (t1). Keeps DFA seeing the counter defined and later reads unsurprised. }
+        addstatement(stat,cassignmentnode.create(
+          cloadnode.create(tsym(counter),counter.owner),
+          cordconstnode.create(hi,ctype,false)));
+
+        do_firstpass(block);
+        MessagePos1(forn.fileinfo,cg_n_loop_peeled,tostr(trip.svalue));
+        forn.free;
+        n:=block;
+        changed:=true;
+      end;
+
+
+    function looppeel_processloop_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      begin
+        result:=fen_false;
+        if n.nodetype=forn then
+          begin
+            tlooppeelcontext(arg^).processloop(n);
+            result:=fen_norecurse_false;
+          end;
+      end;
+
+
+    function OptimizeLoopPeel(node : tnode) : boolean;
+      var
+        ctx : tlooppeelcontext;
+      begin
+        Result:=false;
+        if not(pi_dfaavailable in current_procinfo.flags) then
+          exit;
+        ctx.changed:=false;
+        { postorder so an inner loop is peeled before its enclosing loop's body
+          is duplicated (the inner peel shrinks/enlarges the copies consistently) }
+        foreachnodestatic(pm_postprocess,node,@looppeel_processloop_cb,@ctx);
         Result:=ctx.changed;
       end;
 
