@@ -3308,6 +3308,21 @@ implementation
                   if not(nf_explicit in initexpr.flags) and is_integer(hdef) and
                      (torddef(hdef).ordtype in [s8bit,u8bit,s16bit,u16bit]) then
                     hdef := s32inttype;
+                  { For inline var declarations, an inferred real-literal takes
+                    the default best real type (Extended on x86_64), which is
+                    surprising -- e.g. var pi := 3.14 would have SizeOf 10, not
+                    SizeOf(Double). The array-literal path already normalizes
+                    float literals to Double (s64floattype); do the same for the
+                    scalar case so var pi := 3.14 yields a Double. Only plain real
+                    constants are promoted (not an explicit cast, not a
+                    currency/comp value, and not a value taken from a typed
+                    expression), so precision is only ever narrowed for a literal
+                    whose extra precision was an artifact of the default type. }
+                  if not(nf_explicit in initexpr.flags) and
+                     (initexpr.nodetype = realconstn) and
+                     (hdef.typ = floatdef) and
+                     (tfloatdef(hdef).floattype in [s80real,sc80real]) then
+                    hdef := s64floattype;
                   for i := 0 to sc.count - 1 do
                     begin
                       tabstractnormalvarsym(sc[i]).vardef := hdef;
