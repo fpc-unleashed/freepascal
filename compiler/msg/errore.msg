@@ -3103,6 +3103,15 @@ cg_n_case_not_switchtabled=06084_N_Case not converted to a lookup table: $1
 % left its dispatch in place. The reason it could not convert the case to static
 % lookup tables is given as \var{$1}. This diagnostic is only emitted while the
 % pass is enabled and is shown at note verbosity (\var{-vn}).
+cg_n_gvnpre_eliminated=06085_N_GVN-PRE reused $1 fully-redundant computation(s) of expression $2
+% The global value numbering / full-redundancy elimination pass
+% (\var{-OoGVNPRE}) found a side-effect-free scalar expression whose value was
+% already available on every path reaching a later occurrence (computed on a
+% dominating statement or before a branch and reused on the rejoining arms, or
+% recomputed across straight-line bodies) and replaced \var{$1} redundant
+% recomputation(s) with a reference to a temporary holding the first-computed
+% value. This diagnostic is only emitted while the pass is enabled and is shown
+% at note verbosity (\var{-vn}).
 %
 % \end{description}
 # EndOfTeX

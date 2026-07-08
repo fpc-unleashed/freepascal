@@ -1664,6 +1664,21 @@ implementation
          (code.nodetype=blockn) and (tblocknode(code).statements=nil) then
          procdef.isempty:=true;
 
+       { global value numbering + full-redundancy elimination: number
+         side-effect-free scalar expressions across control flow and reuse a
+         value already available on every path (computed on a dominating
+         statement / before a branch and reused on the rejoining arms, or
+         recomputed across straight-line bodies) from a temp instead of
+         recomputing it. Complements the intra-expression CSE (do_optcse, run
+         right after) with redundancy ACROSS statements and rejoining branches;
+         runs here in the same late node-tree phase, after the loop recognizers
+         and ConvertForLoops so it never disturbs their still-structured
+         for-nodes. Skips procedures with labels, inline assembler or exceptions
+         (partial-evaluation / regvar hazards); opt-in via -OoGVNPRE. }
+       if (cs_opt_gvnpre in current_settings.optimizerswitches) and
+         ((flags*[pi_has_assembler_block,pi_is_assembler,pi_uses_exceptions,pi_has_label])=[]) then
+         OptimizeGVNPRE(code);
+
        if cs_opt_nodecse in current_settings.optimizerswitches then
          do_optcse(code);
 
