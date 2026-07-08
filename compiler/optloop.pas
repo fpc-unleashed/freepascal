@@ -2863,37 +2863,48 @@ unit optloop;
     const
       vect_vecwidth = 4;   { single lanes per 128-bit SSE packed op }
 
+    function vect_elem_reason(n : tnode; counter : tabstractvarsym; out vec : tvecnode) : string;
+      { returns '' and sets vec to the vecn if n (after peeling typeconv wrappers)
+        is  A[i]  where A is a simple non-aliased dynamic array of single and the
+        index is exactly a plain read of the loop counter; otherwise returns a
+        human-readable reason why it is not such an access (and leaves vec nil).
+        The reason strings feed the -OoVECTORIZE diagnostic. }
+      var
+        vn, idx : tnode;
+      begin
+        result:='';
+        vec:=nil;
+        vn:=rangeelim_skip_typeconv(n);
+        if not assigned(vn) or (vn.nodetype<>vecn) then
+          exit('operand is not an array-element access');
+        if not assigned(tvecnode(vn).left) or not assigned(tvecnode(vn).left.resultdef) then
+          exit('array base has no known type');
+        { the array must be a simple non-aliased dynamic array of single }
+        if not assigned(rangeelim_simple_var(tvecnode(vn).left)) then
+          exit('array base is not a simple non-aliased variable (possible aliasing)');
+        if not is_dynamic_array(tvecnode(vn).left.resultdef) then
+          exit('array is not a dynamic array');
+        if not is_single(tarraydef(tvecnode(vn).left.resultdef).elementdef) then
+          exit('array element type is not single-precision float');
+        { the index must be exactly a plain read of the loop counter }
+        idx:=rangeelim_skip_typeconv(tvecnode(vn).right);
+        if not assigned(idx) or (idx.nodetype<>loadn) then
+          exit('array index is not a plain variable read');
+        if ([nf_write,nf_modify]*idx.flags)<>[] then
+          exit('array index expression has side effects');
+        if tloadnode(idx).symtableentry<>tsym(counter) then
+          exit('array index is not the loop counter (non-unit stride or offset)');
+        vec:=tvecnode(vn);
+      end;
+
+
     function vect_single_dynarray_elem(n : tnode; counter : tabstractvarsym) : tvecnode;
       { returns the vecn if n (after peeling typeconv wrappers) is  A[i]  where A
         is a simple non-aliased dynamic array of single and the index is exactly a
         plain read of the loop counter; nil otherwise }
-      var
-        vn, idx : tnode;
-        vec : tvecnode;
       begin
-        result:=nil;
-        vn:=rangeelim_skip_typeconv(n);
-        if not assigned(vn) or (vn.nodetype<>vecn) then
-          exit;
-        vec:=tvecnode(vn);
-        if not assigned(vec.left) or not assigned(vec.left.resultdef) then
-          exit;
-        { the array must be a simple non-aliased dynamic array of single }
-        if not assigned(rangeelim_simple_var(vec.left)) then
-          exit;
-        if not is_dynamic_array(vec.left.resultdef) then
-          exit;
-        if not is_single(tarraydef(vec.left.resultdef).elementdef) then
-          exit;
-        { the index must be exactly a plain read of the loop counter }
-        idx:=rangeelim_skip_typeconv(vec.right);
-        if not assigned(idx) or (idx.nodetype<>loadn) then
-          exit;
-        if ([nf_write,nf_modify]*idx.flags)<>[] then
-          exit;
-        if tloadnode(idx).symtableentry<>tsym(counter) then
-          exit;
-        result:=vec;
+        if vect_elem_reason(n,counter,result)<>'' then
+          result:=nil;
       end;
 
 
@@ -2964,80 +2975,106 @@ unit optloop;
         block, vecbody, scalbody : tnode;
         stat, vstat, sstat : tstatementnode;
         lotemp, hitemp : ttempcreatenode;
+        reason : string;
+
+      { Runs the full OptimizeVectorize recognizer over the current for-loop and
+        returns '' when the loop can be vectorized (also filling in counter,
+        ctype, assign, avec/bvec/cvec and vecop for the builder below), or a
+        human-readable reason string naming the first check that failed. Every
+        early exit corresponds to a distinct "why not vectorized" reason surfaced
+        by the -OoVECTORIZE diagnostic. This runs only while the vectorize pass is
+        enabled, so it costs nothing in normal builds. }
+      function vectorize_reason : string;
+        begin
+          result:='';
+
+          { only plain ascending unit-step for-loops }
+          if lnf_backward in forn.loopflags then
+            exit('descending (downto) loop');
+          if assigned(forn.loopstep) then
+            exit('non-unit loop step');
+
+          { the counter must be a simple, non-aliased, signed 32/64-bit
+            local/value-param variable (so hi-3 / i+VL cannot wrap) }
+          counter:=rangeelim_simple_var(forn.left);
+          if not assigned(counter) then
+            exit('loop counter is not a simple non-aliased variable');
+          ctype:=forn.left.resultdef;
+          if not assigned(ctype) or (ctype.typ<>orddef) then
+            exit('loop counter is not an ordinal type');
+          if not is_signed(ctype) or not(ctype.size in [4,8]) then
+            exit('loop counter is not a signed 32/64-bit integer');
+
+          { never emit the synthetic body node into an inline-candidate proc: it
+            must not be streamed into inline info / a PPU }
+          if po_inline in current_procinfo.procdef.procoptions then
+            exit('enclosing routine is an inline candidate');
+
+          { preserve bounds/overflow checking: do not vectorize checked code }
+          if ([cs_check_range,cs_check_overflow]*current_settings.localswitches)<>[] then
+            exit('range/overflow checking is enabled (-Cr/-Co)');
+
+          { the body must be exactly one plain  a[i] := b[i] op c[i]  assignment }
+          stmt:=vect_body_single_stmt(forn.t2);
+          if not assigned(stmt) then
+            exit('loop body is empty or has multiple statements');
+          if stmt.nodetype<>assignn then
+            exit('loop body is not a single assignment statement');
+          assign:=tassignmentnode(stmt);
+          if assign.assigntype<>at_normal then
+            exit('loop body assignment is not a plain assignment');
+
+          { belt-and-suspenders: bail if any body node carries a per-region
+            range/overflow check even when the proc default has none }
+          hascheck:=false;
+          foreachnodestatic(pm_postprocess,forn.t2,@vect_check_cb,@hascheck);
+          if hascheck then
+            exit('loop body contains range/overflow-checked code');
+
+          { LHS: a single-precision dynamic-array element  a[i] }
+          result:=vect_elem_reason(assign.left,counter,avec);
+          if result<>'' then
+            exit('destination '+result);
+
+          { RHS:  b[i] op c[i]  with op in + - * }
+          rhs:=rangeelim_skip_typeconv(assign.right);
+          if not assigned(rhs) or not(rhs.nodetype in [addn,subn,muln]) then
+            exit('right-hand side is not a +, - or * of two array elements (unsupported reduction/expression)');
+          if ([nf_write,nf_modify]*rhs.flags)<>[] then
+            exit('right-hand side has side effects');
+          result:=vect_elem_reason(taddnode(rhs).left,counter,bvec);
+          if result<>'' then
+            exit('first source '+result);
+          result:=vect_elem_reason(taddnode(rhs).right,counter,cvec);
+          if result<>'' then
+            exit('second source '+result);
+          case rhs.nodetype of
+            addn: vecop:=OP_ADD;
+            subn: vecop:=OP_SUB;
+            muln: vecop:=OP_IMUL;
+            else
+              exit('unsupported arithmetic operator');
+          end;
+
+          { DFA: the counter must not be assigned anywhere in the body (on top of
+            the single-assignment shape, which already implies it) }
+          CalcDefSum(forn.t2);
+          if not assigned(forn.t2.optinfo) or not assigned(forn.left.optinfo) then
+            exit('data-flow information is unavailable for the loop body');
+          if DynSetIn(forn.t2.optinfo^.defsum,forn.left.optinfo^.index) then
+            exit('loop counter is modified inside the loop body');
+        end;
+
       begin
         forn:=tfornode(n);
 
-        { only plain ascending unit-step for-loops }
-        if lnf_backward in forn.loopflags then
-          exit;
-        if assigned(forn.loopstep) then
-          exit;
-
-        { the counter must be a simple, non-aliased, signed 32/64-bit
-          local/value-param variable (so hi-3 / i+VL cannot wrap) }
-        counter:=rangeelim_simple_var(forn.left);
-        if not assigned(counter) then
-          exit;
-        ctype:=forn.left.resultdef;
-        if not assigned(ctype) or (ctype.typ<>orddef) then
-          exit;
-        if not is_signed(ctype) or not(ctype.size in [4,8]) then
-          exit;
-
-        { never emit the synthetic body node into an inline-candidate proc: it
-          must not be streamed into inline info / a PPU }
-        if po_inline in current_procinfo.procdef.procoptions then
-          exit;
-
-        { preserve bounds/overflow checking: do not vectorize checked code }
-        if ([cs_check_range,cs_check_overflow]*current_settings.localswitches)<>[] then
-          exit;
-
-        { the body must be exactly one plain  a[i] := b[i] op c[i]  assignment }
-        stmt:=vect_body_single_stmt(forn.t2);
-        if not assigned(stmt) or (stmt.nodetype<>assignn) then
-          exit;
-        assign:=tassignmentnode(stmt);
-        if assign.assigntype<>at_normal then
-          exit;
-
-        { belt-and-suspenders: bail if any body node carries a per-region
-          range/overflow check even when the proc default has none }
-        hascheck:=false;
-        foreachnodestatic(pm_postprocess,forn.t2,@vect_check_cb,@hascheck);
-        if hascheck then
-          exit;
-
-        { LHS: a single-precision dynamic-array element  a[i] }
-        avec:=vect_single_dynarray_elem(assign.left,counter);
-        if not assigned(avec) then
-          exit;
-
-        { RHS:  b[i] op c[i]  with op in + - * }
-        rhs:=rangeelim_skip_typeconv(assign.right);
-        if not assigned(rhs) or not(rhs.nodetype in [addn,subn,muln]) then
-          exit;
-        if ([nf_write,nf_modify]*rhs.flags)<>[] then
-          exit;
-        bvec:=vect_single_dynarray_elem(taddnode(rhs).left,counter);
-        cvec:=vect_single_dynarray_elem(taddnode(rhs).right,counter);
-        if not assigned(bvec) or not assigned(cvec) then
-          exit;
-        case rhs.nodetype of
-          addn: vecop:=OP_ADD;
-          subn: vecop:=OP_SUB;
-          muln: vecop:=OP_IMUL;
-          else
+        { recognize; on failure report the reason and leave codegen untouched }
+        reason:=vectorize_reason;
+        if reason<>'' then
+          begin
+            MessagePos1(forn.fileinfo,cg_n_loop_not_vectorized,reason);
             exit;
-        end;
-
-        { DFA: the counter must not be assigned anywhere in the body (on top of
-          the single-assignment shape, which already implies it) }
-        CalcDefSum(forn.t2);
-        if not assigned(forn.t2.optinfo) or not assigned(forn.left.optinfo) then
-          exit;
-        if DynSetIn(forn.t2.optinfo^.defsum,forn.left.optinfo^.index) then
-          exit;
+          end;
 
         { ---- build the replacement statement block ---- }
         block:=internalstatements(stat);
@@ -3087,6 +3124,7 @@ unit optloop;
         addstatement(stat,ctempdeletenode.create(hitemp));
 
         do_firstpass(block);
+        MessagePos1(forn.fileinfo,cg_n_loop_vectorized,tostr(vect_vecwidth));
         forn.free;
         n:=block;
         changed:=true;

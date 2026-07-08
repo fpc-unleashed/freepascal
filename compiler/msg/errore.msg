@@ -2809,7 +2809,7 @@ sym_e_wasm_ref_types_cannot_be_used_in_records=05101_E_WebAssembly reference typ
 #
 # Codegenerator
 #
-# 06062 is the last used one
+# 06066 is the last used one
 #
 % \section{Code generator messages}
 % This section lists all messages that can be displayed if the code
@@ -2983,6 +2983,16 @@ cg_f_unknown_internal_procedure_number=06063_F_Unknown internal procedure number
 cg_e_intrinsic_not_supported_by_instruction_set=06064_E_Intrinsic not supported by the currently selected instruction set
 % The intrinsic translates into an assembler instruction which is not supported by the instruction set
 % selected by \var{-Cp}
+cg_n_loop_vectorized=06065_N_Loop autovectorized (SSE, $1-wide packed single)
+% The loop-level autovectorizer (\var{-O4 -OoVECTORIZE}) recognized this
+% for-loop and replaced its scalar body with packed SSE operations plus a
+% scalar remainder loop. This diagnostic is only emitted while the vectorize
+% pass is enabled and is shown at note verbosity (\var{-vn}).
+cg_n_loop_not_vectorized=06066_N_Loop not autovectorized: $1
+% The loop-level autovectorizer (\var{-O4 -OoVECTORIZE}) inspected this
+% for-loop but fell back to scalar code. The reason it could not vectorize the
+% loop is given as \var{$1}. This diagnostic is only emitted while the
+% vectorize pass is enabled and is shown at note verbosity (\var{-vn}).
 %
 % \end{description}
 # EndOfTeX
