@@ -50,6 +50,7 @@ unit optloop;
     function OptimizePredCom(node : tnode) : boolean;
     function OptimizeCodeSink(node : tnode) : boolean;
     function OptimizeStoreMotion(node : tnode) : boolean;
+    function OptimizeVRP(node : tnode) : boolean;
 
   implementation
 
@@ -7654,6 +7655,402 @@ unit optloop;
     function OptimizeStoreMotion(node : tnode) : boolean;
       begin
         result:=foreachnodestatic(pm_preprocess,node,@_optimize_store_motion,nil);
+      end;
+
+
+{*****************************************************************************
+              Interval value-range propagation with branch folding
+*****************************************************************************}
+
+    { A node-tree port of gcc's -ftree-vrp / early-VRP.  It forward-propagates
+      integer value INTERVALS and folds every user-level  if  whose comparison
+      the intervals already decide, deleting the dead arm.  Where -OoRANGEELIM
+      computes ranges only to remove -Cr range-CHECK nodes and -OoJUMPTHREAD
+      seeds facts only from dominating branch conditions, VRP additionally seeds
+      intervals from
+
+        * a variable's declared subrange/ordinal TYPE bounds -- a  var x:0..100
+          compared  if x>150  folds to always-false regardless of control flow;
+        * a  for  loop counter's constant bounds -- inside  for x:=0 to 5  the
+          counter is in [0..5], so a nested  if x>10  folds away;
+        * straight-line facts that flow within a statement list:  V:=<const>
+          gives V=[c..c],  V:=Length(a)  gives V>=0,  V:=<a> mod <k>  gives
+          V in [-(k-1)..k-1],  V:=<a> and <k>  gives V in [0..k]  (k a positive
+          resp. non-negative constant);
+        * the interval a dominating  if V<op>c  implies in each of its arms.
+
+      SOUNDNESS.  Every recorded interval [lo..hi] for V is kept a *superset* of
+      V's true reachable value-set at that point.  Folding a comparison against
+      a superset is sound in both directions: if EVERY value of the superset
+      satisfies the comparison then so does the (contained) true set, and if NONE
+      of the superset does then neither does the true set.  A wrong fold is a
+      miscompile, so the recognizer is strict and anything not matched compiles
+      exactly as before:
+        * the compared variable is a simple, non-aliased, non-address-taken,
+          non-volatile, non-threadvar local or value-parameter (jt_recognize_cmp
+          / rangeelim_simple_var) -- so no pointer, alias, call or other-thread
+          write can move it outside its recorded interval, and an ordinary call
+          on the path cannot touch it;
+        * only ordinal-integer comparisons  V <op> const  (=,<>,<,<=,>,>=) are
+          folded -- never floats (jt_recognize_cmp requires is_ordinal);
+        * the folded-away condition is itself side-effect-free (a plain compare
+          of a var against a constant: no call, deref, index or checked
+          arithmetic), so deleting the dead arm removes nothing observable;
+        * a comparison never traps, and the mod/and value-range seeds only
+          RECORD a range for the assigned var -- the mod/and expression itself
+          still executes unchanged -- so overflow/-Cq trap behaviour is
+          untouched;
+        * intervals are invalidated conservatively: whenever a variable is (or
+          may be) written -- by an assignment, or anywhere inside a nested loop,
+          if-arm or unmodelled construct -- its interval is dropped from the
+          fact set that flows past that write (jt_writes_var), so a stale value
+          is never used.  A for-loop counter interval is asserted for the body
+          only when the counter is provably not written there. }
+
+    type
+      tvrpfact = record
+        sym    : tabstractvarsym;
+        lo, hi : tconstexprint;
+      end;
+      tvrpfactarr = array of tvrpfact;
+
+
+    { 1 if every integer V in [lo..hi] satisfies  V <op> c , 0 if none does,
+      -1 if it varies (or the interval is empty -> nothing to decide). }
+    function vrp_interval_decides(const lo, hi : tconstexprint;
+                                  op : tnodetype; const c : tconstexprint) : integer;
+      begin
+        result:=-1;
+        if lo>hi then
+          exit;
+        case op of
+          equaln:
+            if (lo=c) and (hi=c) then result:=1
+            else if (c<lo) or (c>hi) then result:=0;
+          unequaln:
+            if (c<lo) or (c>hi) then result:=1
+            else if (lo=c) and (hi=c) then result:=0;
+          ltn:
+            if hi<c then result:=1
+            else if lo>=c then result:=0;
+          lten:
+            if hi<=c then result:=1
+            else if lo>c then result:=0;
+          gtn:
+            if lo>c then result:=1
+            else if hi<=c then result:=0;
+          gten:
+            if lo>=c then result:=1
+            else if hi<c then result:=0;
+          else
+            ;
+        end;
+      end;
+
+
+    { the declared ordinal/subrange range of sym's own type, or false if sym is
+      not an ordinal-typed variable }
+    function vrp_type_range(sym : tabstractvarsym; out lo, hi : tconstexprint) : boolean;
+      begin
+        result:=false;
+        lo:=0; hi:=0;
+        if not assigned(sym) or not assigned(sym.vardef) then
+          exit;
+        if not is_ordinal(sym.vardef) then
+          exit;
+        lo:=get_min_value(sym.vardef);
+        hi:=get_max_value(sym.vardef);
+        result:=lo<=hi;
+      end;
+
+
+    { replace (or add) the interval known for sym }
+    procedure vrp_add_fact(var facts : tvrpfactarr; sym : tabstractvarsym;
+                           const lo, hi : tconstexprint);
+      var
+        i : integer;
+      begin
+        if not assigned(sym) then
+          exit;
+        for i:=0 to high(facts) do
+          if facts[i].sym=sym then
+            begin
+              facts[i].lo:=lo;
+              facts[i].hi:=hi;
+              exit;
+            end;
+        setlength(facts,length(facts)+1);
+        facts[high(facts)].sym:=sym;
+        facts[high(facts)].lo:=lo;
+        facts[high(facts)].hi:=hi;
+      end;
+
+
+    { drop every fact whose variable is (or may be) written anywhere in region }
+    function vrp_facts_without_written(const facts : tvrpfactarr; region : tnode) : tvrpfactarr;
+      var
+        i, k : integer;
+      begin
+        result:=nil;
+        setlength(result,length(facts));
+        k:=0;
+        for i:=0 to high(facts) do
+          if not jt_writes_var(region,facts[i].sym) then
+            begin
+              result[k]:=facts[i];
+              inc(k);
+            end;
+        setlength(result,k);
+      end;
+
+
+    { decide  cond  under the current intervals: 1 known-true, 0 known-false,
+      -1 undecided.  The declared type range and every flowed fact on the
+      compared variable are intersected into the tightest known interval (still
+      a superset of the true value-set) and the comparison decided once. }
+    function vrp_decide(cond : tnode; const facts : tvrpfactarr) : integer;
+      var
+        sym : tabstractvarsym;
+        op : tnodetype;
+        c : tconstexprint;
+        signed, havelo, havehi : boolean;
+        i, d : integer;
+        tlo, thi, flo, fhi : tconstexprint;
+      begin
+        result:=-1;
+        if not assigned(cond) then
+          exit;
+        if not jt_recognize_cmp(cond,sym,op,c,signed) then
+          exit;
+        havelo:=false; havehi:=false; flo:=0; fhi:=0;
+        if vrp_type_range(sym,tlo,thi) then
+          begin flo:=tlo; fhi:=thi; havelo:=true; havehi:=true; end;
+        for i:=0 to high(facts) do
+          if facts[i].sym=sym then
+            begin
+              if (not havelo) or (facts[i].lo>flo) then
+                begin flo:=facts[i].lo; havelo:=true; end;
+              if (not havehi) or (facts[i].hi<fhi) then
+                begin fhi:=facts[i].hi; havehi:=true; end;
+            end;
+        if havelo and havehi then
+          begin
+            d:=vrp_interval_decides(flo,fhi,op,c);
+            if d>=0 then
+              result:=d;
+          end;
+      end;
+
+
+    { seed an interval for  V := <rhs>  when rhs matches a range-bearing idiom.
+      Only integer-ordinal V is seeded (floats/managed excluded). }
+    function vrp_seed_from_assign(s : tnode; out sym : tabstractvarsym;
+                                  out lo, hi : tconstexprint) : boolean;
+      var
+        lhs, rhs : tnode;
+        c, k, tlo, thi : tconstexprint;
+      begin
+        result:=false;
+        sym:=nil; lo:=0; hi:=0;
+        if not assigned(s) or (s.nodetype<>assignn) then
+          exit;
+        lhs:=rangeelim_skip_typeconv(tassignmentnode(s).left);
+        sym:=rangeelim_simple_var(lhs);
+        if not assigned(sym) or not assigned(sym.vardef) or not is_ordinal(sym.vardef) then
+          begin sym:=nil; exit; end;
+        rhs:=rangeelim_skip_typeconv(tassignmentnode(s).right);
+        if not assigned(rhs) then
+          begin sym:=nil; exit; end;
+        { V := <ordinal constant> }
+        if rangeelim_const_value(rhs,c) then
+          begin lo:=c; hi:=c; result:=true; exit; end;
+        { NB a  V := Length(a)  seed of  V>=0  is deliberately NOT taken: for a
+          signed narrower-than-SizeInt V a pathologically large length would
+          truncate to a negative value (outside [0..]), and for an unsigned V the
+          [0..typemax] range is already supplied by the declared-type fold -- so
+          the seed would be either unsound or redundant. }
+        { V := <a> mod <k>, k>0 const  ->  V in [-(k-1)..k-1] (sign follows a;
+          sound even if V is narrower than the mod result: truncation only maps
+          the value into V's type range, which is contained in this symmetric
+          interval whenever truncation can occur) }
+        if rhs.nodetype=modn then
+          begin
+            if rangeelim_const_value(tbinarynode(rhs).right,k) and (k>0) then
+              begin lo:=-(k-1); hi:=k-1; result:=true; end
+            else
+              sym:=nil;
+            exit;
+          end;
+        { V := <a> and <k> (or <k> and <a>), k>=0 const  ->  V in [0..k] }
+        if rhs.nodetype=andn then
+          begin
+            if rangeelim_const_value(tbinarynode(rhs).right,k) and (k>=0) then
+              begin lo:=0; hi:=k; result:=true; end
+            else if rangeelim_const_value(tbinarynode(rhs).left,k) and (k>=0) then
+              begin lo:=0; hi:=k; result:=true; end
+            else
+              sym:=nil;
+            exit;
+          end;
+        sym:=nil;
+      end;
+
+
+    procedure vrp_walk_stmt(var n : tnode; var facts : tvrpfactarr; changed : pboolean); forward;
+
+
+    { the intervals that hold at the ENTRY of one arm of a dominating if:
+      the inherited facts plus, when the condition is a foldable  V<op>c  on a
+      variable not written in the arm, the interval it narrows V to. }
+    function vrp_branch_facts(const facts : tvrpfactarr; cond, branch : tnode;
+                              assert_true : boolean) : tvrpfactarr;
+      var
+        sym : tabstractvarsym;
+        op : tnodetype;
+        c, blo, bhi, tlo, thi : tconstexprint;
+        signed, haveiv : boolean;
+      begin
+        result:=copy(facts);
+        if not assigned(cond) then
+          exit;
+        if not jt_recognize_cmp(cond,sym,op,c,signed) then
+          exit;
+        if jt_writes_var(branch,sym) then
+          exit;
+        if not vrp_type_range(sym,tlo,thi) then
+          exit;
+        if not assert_true then
+          op:=jt_negate_relop(op);
+        blo:=tlo; bhi:=thi; haveiv:=true;
+        case op of
+          equaln: begin blo:=c; bhi:=c; end;
+          ltn:    bhi:=c-1;
+          lten:   bhi:=c;
+          gtn:    blo:=c+1;
+          gten:   blo:=c;
+          else    haveiv:=false;   { <> is a hole, not an interval }
+        end;
+        if haveiv then
+          begin
+            if blo<tlo then blo:=tlo;
+            if bhi>thi then bhi:=thi;
+            if blo<=bhi then
+              vrp_add_fact(result,sym,blo,bhi);
+          end;
+      end;
+
+
+    { Walk one statement subtree under the intervals in `facts` (in/out: on
+      return `facts` holds the intervals valid AFTER the statement), folding
+      every decided nested if and deleting its dead arm. }
+    procedure vrp_walk_stmt(var n : tnode; var facts : tvrpfactarr; changed : pboolean);
+      var
+        d : integer;
+        keep : tnode;
+        cur : tstatementnode;
+        bodyfacts, thenfacts, elsefacts : tvrpfactarr;
+        forn_ : tfornode;
+        counter, ssym : tabstractvarsym;
+        a, b, clo, chi, slo, shi : tconstexprint;
+      begin
+        if not assigned(n) then
+          exit;
+        case n.nodetype of
+          blockn:
+            begin
+              cur:=tstatementnode(tblocknode(n).left);
+              while assigned(cur) do
+                begin
+                  if (cur.nodetype=statementn) and assigned(cur.left) then
+                    begin
+                      vrp_walk_stmt(cur.left,facts,changed);
+                      { a const/length/mod/and assignment seeds a new interval
+                        for the statements that follow it in this list }
+                      if vrp_seed_from_assign(cur.left,ssym,slo,shi) then
+                        vrp_add_fact(facts,ssym,slo,shi);
+                    end;
+                  cur:=tstatementnode(cur.right);
+                end;
+            end;
+          ifn:
+            begin
+              d:=vrp_decide(tifnode(n).left,facts);
+              if d=1 then
+                begin
+                  { condition provably true: keep only the then-arm }
+                  keep:=tifnode(n).right;
+                  tifnode(n).right:=nil;
+                  if not assigned(keep) then
+                    begin keep:=cnothingnode.create; do_firstpass(keep); end;
+                  n.free; n:=keep; changed^:=true;
+                  vrp_walk_stmt(n,facts,changed);
+                  exit;
+                end
+              else if d=0 then
+                begin
+                  { condition provably false: keep only the else-arm }
+                  keep:=tifnode(n).t1;
+                  tifnode(n).t1:=nil;
+                  if not assigned(keep) then
+                    begin keep:=cnothingnode.create; do_firstpass(keep); end;
+                  n.free; n:=keep; changed^:=true;
+                  vrp_walk_stmt(n,facts,changed);
+                  exit;
+                end;
+              { undecided: descend into both arms with branch-local intervals }
+              thenfacts:=vrp_branch_facts(facts,tifnode(n).left,tifnode(n).right,true);
+              vrp_walk_stmt(tifnode(n).right,thenfacts,changed);
+              elsefacts:=vrp_branch_facts(facts,tifnode(n).left,tifnode(n).t1,false);
+              vrp_walk_stmt(tifnode(n).t1,elsefacts,changed);
+              { past the if, anything either arm may have written is unknown }
+              facts:=vrp_facts_without_written(facts,n);
+            end;
+          forn:
+            begin
+              forn_:=tfornode(n);
+              bodyfacts:=vrp_facts_without_written(facts,forn_.t2);
+              counter:=rangeelim_simple_var(forn_.left);
+              if assigned(counter) and
+                 rangeelim_const_value(forn_.right,a) and
+                 rangeelim_const_value(forn_.t1,b) and
+                 not jt_writes_var(forn_.t2,counter) then
+                begin
+                  if a<=b then begin clo:=a; chi:=b; end
+                  else begin clo:=b; chi:=a; end;
+                  vrp_add_fact(bodyfacts,counter,clo,chi);
+                end;
+              vrp_walk_stmt(forn_.t2,bodyfacts,changed);
+              facts:=vrp_facts_without_written(facts,forn_.t2);
+              facts:=vrp_facts_without_written(facts,forn_.left);
+            end;
+          whilerepeatn:
+            begin
+              { body may run 0..n times and write vars; fold nested ifs under
+                facts invariant across the whole body }
+              bodyfacts:=vrp_facts_without_written(facts,twhilerepeatnode(n).right);
+              vrp_walk_stmt(twhilerepeatnode(n).right,bodyfacts,changed);
+              facts:=vrp_facts_without_written(facts,twhilerepeatnode(n).right);
+            end;
+          else
+            { unmodelled construct (case/try/with/assignment/call/...): fold
+              nothing inside it, and drop every interval it may invalidate }
+            facts:=vrp_facts_without_written(facts,n);
+        end;
+      end;
+
+
+    function OptimizeVRP(node : tnode) : boolean;
+      var
+        changed : boolean;
+        facts : tvrpfactarr;
+        root : tnode;
+      begin
+        changed:=false;
+        setlength(facts,0);
+        { the procedure body is a block, so root stays == node; walk it }
+        root:=node;
+        vrp_walk_stmt(root,facts,@changed);
+        result:=changed;
       end;
 
 end.

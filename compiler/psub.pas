@@ -1286,6 +1286,29 @@ implementation
                  actually change any nodes }
              end;
 
+           { interval value-range propagation with branch folding: forward-
+             propagate integer value INTERVALS -- seeded from a variable's
+             declared subrange/ordinal type bounds, from for-loop counter
+             constant bounds, and from straight-line const/Length/mod/and facts
+             -- and fold every user-level if whose comparison the intervals
+             already decide, deleting the dead arm. Generalizes -OoRANGEELIM's
+             range analysis (which only removes -Cr check nodes) into a control-
+             flow consumer, distinct from -OoJUMPTHREAD (which seeds only from
+             dominating branch conditions). Runs FIRST among the loop passes,
+             BEFORE loop-splitting/peeling/lowering rewrite the still-structured
+             for-nodes' constant bounds into temps, so the counter interval can
+             be read directly; removes branches, so refresh DFA afterwards; skips
+             procedures with labels like the loop passes below. }
+           if (cs_opt_vrp in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizeVRP(code) or RedoDFA;
+
+           if RedoDFA then
+             begin
+               dfabuilder.redodfainfo(code);
+               RedoDFA:=false;
+             end;
+
            { loop splitting: when a counted for-loop's whole body is a single if
              comparing the induction variable against a loop-invariant bound
              (if i<m then A else B), split the iteration space at the crossover
