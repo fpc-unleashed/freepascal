@@ -2575,7 +2575,8 @@ const
          'cs_opt_loopunswitch',
          'cs_opt_bitidiom',
          'cs_opt_rangecheckelim',
-         'cs_opt_vectorize'
+         'cs_opt_vectorize',
+         'cs_opt_jumpthread'
        );
     var
          globalswitch  : tglobalswitch;

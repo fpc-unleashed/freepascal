@@ -1361,6 +1361,23 @@ implementation
              and not(pi_has_label in flags) then
              OptimizeRangeElim(code);
 
+           { jump threading / nested re-test elimination: fold a nested if whose
+             condition a dominating branch (or a value-range fact on a simple
+             unmodified variable) already decided straight to the taken arm,
+             deleting the redundant re-test and its dead arm. Restructures the
+             CFG (removes branches), so refresh DFA afterwards; skips procedures
+             with labels like the loop passes above so control cannot enter a
+             threaded region mid-way. }
+           if (cs_opt_jumpthread in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizeJumpThread(code) or RedoDFA;
+
+           if RedoDFA then
+             begin
+               dfabuilder.redodfainfo(code);
+               RedoDFA:=false;
+             end;
+
            if cs_opt_forloop in current_settings.optimizerswitches then
              RedoDFA:=OptimizeForLoop(code);
 
