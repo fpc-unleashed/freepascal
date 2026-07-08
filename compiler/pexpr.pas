@@ -3822,6 +3822,11 @@ implementation
                       arrlabname:=srsym.name;
                       arrlabsuffix:='';
                       arrlabisstring:=false;
+                      { only assigned on the ordinal-constant path below, but
+                        always passed to get_or_create_indexed_labelsym (which
+                        ignores it for the string case); initialize so the value
+                        is well-defined and DFA does not flag it at -O4 }
+                      arrlabidx:=0;
                       consume(_LECKKLAMMER);
                       if current_scanner.token=_CSTRING then
                         begin

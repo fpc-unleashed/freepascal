@@ -2473,6 +2473,12 @@ unit optloop;
                 pboolean(arg)^:=true;
                 result:=fen_norecurse_false;
               end;
+          else
+            { all other node types are irrelevant to the bit idioms; keep
+              scanning. An explicit else avoids the "case does not handle all
+              possible cases" warning, which -Sew turns into an error when the
+              compiler is self-compiled. }
+            ;
         end;
       end;
 
@@ -3162,6 +3168,23 @@ unit optloop;
       begin
         forn:=tfornode(n);
 
+        { The recognizer results below are filled in by the nested
+          vectorize_reason function. Per-procedure DFA cannot see that a nested
+          routine assigns these parent locals, so at -O4 it reports each of them
+          as "not initialized" where the body reads them (and -Sew turns that
+          into a build error during an -O4 self-compile). They are always set on
+          the reason='' success path; initialize them here so the DFA warning is
+          suppressed without changing behaviour. }
+        counter:=nil;
+        ctype:=nil;
+        avec:=nil;
+        bvec:=nil;
+        cvec:=nil;
+        scalarnode:=nil;
+        scalarleft:=false;
+        vecop:=OP_NONE;
+        vshape:=vok_arr_arr;
+
         { recognize; on failure report the reason and leave codegen untouched }
         reason:=vectorize_reason;
         if reason<>'' then
@@ -3414,6 +3437,11 @@ unit optloop;
             begin kind:=0; haslo:=true; lo:=c+1; end;
           gten:
             begin kind:=0; haslo:=true; lo:=c; end;
+          else
+            { other comparison node types are not passed here; the defaults set
+              above stand. Explicit else silences the case-exhaustiveness warning
+              that -Sew promotes to an error on self-compile. }
+            ;
         end;
       end;
 
@@ -3452,7 +3480,11 @@ unit optloop;
                   upperok:=(not qhashi) or (fhashi and (fhi<=qhi));
                   result:=lowerok and upperok;
                 end;
+              else
+                ; { jt_relkind only yields kind 0/1/2; keep result=false }
             end;
+          else
+            ; { jt_relkind only yields kind 0/1/2; keep result=false }
         end;
       end;
 
@@ -3713,7 +3745,11 @@ unit optloop;
             result[high(result)]:=nf;
             exit;
           end;
-        { identical-predicate fact: pure condition, no variable written here }
+        { identical-predicate fact: pure condition, no variable written here.
+          scan is a managed record (holds a dynamic array); initialize it before
+          the out-parameter call so DFA does not flag it as possibly-uninitialized
+          at -O4 (which -Sew turns into a self-compile error). }
+        scan:=default(tjtpurescan);
         if jt_pure_cond(cond,scan) and (scan.nvars>0) then
           begin
             allunwritten:=true;
