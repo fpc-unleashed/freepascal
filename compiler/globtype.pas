@@ -405,7 +405,12 @@ interface
            for-loop whose whole body is a contiguous fill/zero/copy over an
            array region into the FillChar/FillWord/FillDWord/FillQWord/Move
            block primitive the RTL already tunes per target }
-         cs_opt_loopdistpat
+         cs_opt_loopdistpat,
+         { loop peeling: fully unroll a counted for-loop whose trip count is a
+           small compile-time constant into straight-line copies of the body,
+           deleting the induction variable, compare and back-branch and exposing
+           each iteration to per-iteration constant propagation }
+         cs_opt_looppeel
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -480,7 +485,8 @@ interface
          'CONSTPROP',
          'DEADSTORE','FORCENOSTACKFRAME','USELOADMODIFYSTORE',
          'UNUSEDPARA','CONSTS','FORLOOP','LICM','LOOPUNSWITCH','BITIDIOM',
-         'RANGEELIM','VECTORIZE','JUMPTHREAD','LOOPDISTPAT'
+         'RANGEELIM','VECTORIZE','JUMPTHREAD','LOOPDISTPAT',
+         'LOOPPEEL'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
@@ -515,7 +521,7 @@ interface
        genericlevel3optimizerswitches = [cs_opt_level3,cs_opt_constant_propagate,cs_opt_nodedfa,cs_opt_loopstrength
                                          {$ifndef llvm},cs_opt_use_load_modify_store{$endif},
                                          cs_opt_loopunroll,cs_opt_forloop];
-       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat];
+       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel];
 
        { whole program optimizations whose information generation requires
          information from all loaded units
