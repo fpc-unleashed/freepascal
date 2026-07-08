@@ -84,6 +84,15 @@ interface
           procedure genlinearlist(hp : pcaselabel); virtual;
           procedure genlinearcmplist(hp : pcaselabel); virtual;
 
+          { gcc-style clustered case lowering (-OoCASECLUSTER, ported from
+            gcc/tree-switch-conversion.cc): partition the sorted labels into
+            an optimal mix of jump-table clusters, bit-test clusters and
+            plain-compare singletons, dispatched via a balanced binary
+            comparison tree.  Returns false when no clustering that beats the
+            classic single-strategy lowering was found; the caller must then
+            fall back to the default strategy selection. }
+          function  gencaseclusters(hp : pcaselabel) : boolean; virtual;
+
          procedure genjmptreeentry(p : pcaselabel;parentvalue : TConstExprInt); virtual;
          procedure genjmptree(root : pcaselabel); virtual;
        end;
@@ -1090,6 +1099,366 @@ implementation
       end;
 
 
+    function tcgcasenode.gencaseclusters(hp : pcaselabel) : boolean;
+      { gcc-style case clustering (gcc/tree-switch-conversion.cc).
+
+        The sorted case labels are partitioned by dynamic programming into a
+        minimal number of clusters, where each cluster is one of
+          - a jump table   : a dense run of labels (bounds-checked indirect
+                             jump through a table, holes -> else),
+          - a bit test     : several labels within a word-sized span with at
+                             most MAXBITTESTTARGETS distinct target blocks;
+                             lowered to one range check + "1 shl (x-low)"
+                             + AND-mask test per target,
+          - a plain compare: a single label (value or range).
+        Dispatch between the clusters is a balanced binary comparison tree,
+        so a case statement with c clusters needs O(log c) compares before
+        the final cluster-local test.
+
+        Cost model (deterministic, mirrors gcc's clustering DP): every
+        cluster costs 1, the DP minimizes the number of clusters; a slice may
+        form a jump-table cluster only if it has at least MINJUMPTABLELABELS
+        labels, spans at most MAXJUMPTABLESPAN table slots and its density
+        (covered values / span) is at least 40% (gcc uses ~40% for small
+        tables); a slice may form a bit-test cluster only under gcc's
+        is_beneficial rule (1 target: >=3 labels, 2 targets: >=5 labels,
+        3 targets: >=6 labels) with the span limited to the ALU word size.
+        Ties prefer jump tables (checked first, later kinds must be strictly
+        cheaper), then bit tests, then plain compares. }
+      type
+        tclusterkind = (ck_single,ck_jumptable,ck_bittest);
+        tcaseclusterentry = record
+          _low,_high : TConstExprInt;
+          blockid : longint;
+        end;
+        tcasecluster = record
+          first,last : longint;
+          kind : tclusterkind;
+        end;
+      const
+        { maximum number of slots (covered values + holes) of a jump-table
+          cluster; matches the existing whole-statement jump table cap }
+        MAXJUMPTABLESPAN = 2048;
+        { minimum number of case labels needed before a jump-table cluster
+          pays off (gcc case_values_threshold territory) }
+        MINJUMPTABLELABELS = 4;
+        { maximum number of distinct target blocks of a bit-test cluster
+          (gcc m_max_case_bit_tests) }
+        MAXBITTESTTARGETS = 3;
+      var
+        entries : array of tcaseclusterentry;
+        n,nclusters : longint;
+        cost,bestj : array of longint;
+        bestkind : array of tclusterkind;
+        clusters : array of tcasecluster;
+        jumptableok : boolean;
+        maskbits : longint;
+
+      procedure collect(t : pcaselabel);
+        begin
+          if assigned(t^.less) then
+            collect(t^.less);
+          entries[n]._low:=t^._low;
+          entries[n]._high:=t^._high;
+          entries[n].blockid:=t^.blockid;
+          inc(n);
+          if assigned(t^.greater) then
+            collect(t^.greater);
+        end;
+
+      { true if the label slice [j..i] (1-based) qualifies as a bit-test
+        cluster per gcc's can_be_handled/is_beneficial }
+      function bittest_beneficial(uniq,cnt : longint) : boolean;
+        begin
+          result:=((uniq=1) and (cnt>=3)) or
+                  ((uniq=2) and (cnt>=5)) or
+                  ((uniq=3) and (cnt>=6));
+        end;
+
+      procedure emitcluster(ci : longint);
+        var
+          chain : array of tcaselabel;
+          targetids : array[0..MAXBITTESTTARGETS-1] of longint;
+          targetmasks : array[0..MAXBITTESTTARGETS-1] of qword;
+          ntargets,k,t : longint;
+          bit : qword;
+          low,v,span : TConstExprInt;
+          lv,hv : TConstExprInt;
+          oldnorange : boolean;
+          scratch_reg,idxreg,bitreg,testreg,saved_hreg : tregister;
+          found : boolean;
+        begin
+          case clusters[ci].kind of
+            ck_single:
+              with entries[clusters[ci].first] do
+                begin
+                  if _low=_high then
+                    hlcg.a_cmp_const_reg_label(current_asmdata.CurrAsmList,opsize,OC_EQ,tcgint(_low.svalue),hregister,blocklabel(blockid))
+                  else
+                    begin
+                      hlcg.a_cmp_const_reg_label(current_asmdata.CurrAsmList,opsize,jmp_lt,tcgint(_low.svalue),hregister,elselabel);
+                      hlcg.a_cmp_const_reg_label(current_asmdata.CurrAsmList,opsize,jmp_le,tcgint(_high.svalue),hregister,blocklabel(blockid));
+                    end;
+                  hlcg.a_jmp_always(current_asmdata.CurrAsmList,elselabel);
+                end;
+            ck_jumptable:
+              begin
+                { rebuild the cluster slice as a degenerate (right-leaning)
+                  case label tree for the target's genjumptable }
+                chain:=nil;
+                setlength(chain,clusters[ci].last-clusters[ci].first+1);
+                for k:=0 to high(chain) do
+                  begin
+                    chain[k].blockid:=entries[clusters[ci].first+k].blockid;
+                    chain[k].less:=nil;
+                    if k<high(chain) then
+                      chain[k].greater:=@chain[k+1]
+                    else
+                      chain[k].greater:=nil;
+                    chain[k].labellabel:=nil;
+                    chain[k].label_type:=ltOrdinal;
+                    chain[k]._low:=entries[clusters[ci].first+k]._low;
+                    chain[k]._high:=entries[clusters[ci].first+k]._high;
+                  end;
+                { the table's bounds check may only be omitted if this single
+                  cluster covers the whole selector type range }
+                oldnorange:=jumptable_no_range;
+                getrange(left.resultdef,lv,hv);
+                jumptable_no_range:=(lv=entries[clusters[ci].first]._low) and
+                                    (hv=entries[clusters[ci].last]._high);
+                { protect the shared selector register: the x86 genjumptable
+                  rewrites hregister in place (SUB min), which must not clobber
+                  the value the other dispatch-tree paths still read.  Work on
+                  a private copy and restore hregister afterwards. }
+                saved_hreg:=hregister;
+                scratch_reg:=hlcg.getintregister(current_asmdata.CurrAsmList,opsize);
+                hlcg.a_load_reg_reg(current_asmdata.CurrAsmList,opsize,opsize,hregister,scratch_reg);
+                hregister:=scratch_reg;
+                genjumptable(@chain[0],
+                  entries[clusters[ci].first]._low.svalue,
+                  entries[clusters[ci].last]._high.svalue);
+                hregister:=saved_hreg;
+                jumptable_no_range:=oldnorange;
+              end;
+            ck_bittest:
+              begin
+                low:=entries[clusters[ci].first]._low;
+                span:=entries[clusters[ci].last]._high-low+1;
+                { collect the distinct target blocks and their bit masks
+                  (bit b of a mask = selector value low+b) }
+                ntargets:=0;
+                FillChar(targetids,sizeof(targetids),0);
+                FillChar(targetmasks,sizeof(targetmasks),0);
+                for k:=clusters[ci].first to clusters[ci].last do
+                  begin
+                    t:=0;
+                    found:=false;
+                    while t<ntargets do
+                      begin
+                        if targetids[t]=entries[k].blockid then
+                          begin
+                            found:=true;
+                            break;
+                          end;
+                        inc(t);
+                      end;
+                    if not found then
+                      begin
+                        if ntargets>=MAXBITTESTTARGETS then
+                          internalerror(2026070801);
+                        targetids[ntargets]:=entries[k].blockid;
+                        targetmasks[ntargets]:=0;
+                        t:=ntargets;
+                        inc(ntargets);
+                      end;
+                    v:=entries[k]._low;
+                    while v<=entries[k]._high do
+                      begin
+                        bit:=qword(1) shl qword((v-low).uvalue);
+                        targetmasks[t]:=targetmasks[t] or bit;
+                        v:=v+1;
+                      end;
+                  end;
+                { rebase the selector to the cluster low in a scratch reg and
+                  range-check it: a <= x <= b <-> unsigned(x-a) <= b-a }
+                scratch_reg:=hlcg.getintregister(current_asmdata.CurrAsmList,opsize);
+                hlcg.a_load_reg_reg(current_asmdata.CurrAsmList,opsize,opsize,hregister,scratch_reg);
+                if low<>0 then
+                  hlcg.a_op_const_reg(current_asmdata.CurrAsmList,OP_SUB,opsize,tcgint(low.svalue),scratch_reg);
+                hlcg.a_cmp_const_reg_label(current_asmdata.CurrAsmList,opsize,OC_A,tcgint(span.svalue-1),scratch_reg,elselabel);
+                { the rebased selector is now in [0..span-1], so it survives
+                  widening/truncation to the ALU word intact }
+                idxreg:=hlcg.getintregister(current_asmdata.CurrAsmList,aluuinttype);
+                hlcg.a_load_reg_reg(current_asmdata.CurrAsmList,opsize,aluuinttype,scratch_reg,idxreg);
+                { bitreg := 1 shl (x-low) }
+                bitreg:=hlcg.getintregister(current_asmdata.CurrAsmList,aluuinttype);
+                hlcg.a_load_const_reg(current_asmdata.CurrAsmList,aluuinttype,1,bitreg);
+                hlcg.a_op_reg_reg(current_asmdata.CurrAsmList,OP_SHL,aluuinttype,idxreg,bitreg);
+                { one AND-mask membership test per distinct target block }
+                for t:=0 to ntargets-1 do
+                  begin
+                    testreg:=hlcg.getintregister(current_asmdata.CurrAsmList,aluuinttype);
+                    hlcg.a_op_const_reg_reg(current_asmdata.CurrAsmList,OP_AND,aluuinttype,tcgint(targetmasks[t]),bitreg,testreg);
+                    hlcg.a_cmp_const_reg_label(current_asmdata.CurrAsmList,aluuinttype,OC_NE,0,testreg,blocklabel(targetids[t]));
+                  end;
+                hlcg.a_jmp_always(current_asmdata.CurrAsmList,elselabel);
+              end;
+          end;
+        end;
+
+      { balanced binary comparison tree dispatching between the clusters;
+        every leaf performs the full membership test of its cluster and
+        branches to the else label itself on mismatch, so the tree only has
+        to narrow down the candidate cluster }
+      procedure emitdispatch(lo,hi : longint);
+        var
+          mid : longint;
+          lowlab : tasmlabel;
+        begin
+          if lo=hi then
+            emitcluster(lo)
+          else
+            begin
+              mid:=(lo+hi) div 2+1;
+              current_asmdata.getjumplabel(lowlab);
+              hlcg.a_cmp_const_reg_label(current_asmdata.CurrAsmList,opsize,jmp_lt,
+                tcgint(entries[clusters[mid].first]._low.svalue),hregister,lowlab);
+              emitdispatch(mid,hi);
+              hlcg.a_label(current_asmdata.CurrAsmList,lowlab);
+              emitdispatch(lo,mid-1);
+            end;
+        end;
+
+      var
+        i,j,uniq,cnt : longint;
+        span,coverage : TConstExprInt;
+        uniqids : array[0..MAXBITTESTTARGETS] of longint;
+        btdead : boolean;
+        isnew : boolean;
+        k : longint;
+      begin
+        result:=false;
+        { keep the DP bounded on pathologically huge case statements }
+        if (labelcnt<2) or (labelcnt>4000) then
+          exit;
+        n:=0;
+        entries:=nil;
+        setlength(entries,labelcnt);
+        collect(hp);
+        if n<>longint(labelcnt) then
+          internalerror(2026070802);
+        jumptableok:=has_jumptable;
+        maskbits:=sizeof(aint)*8;
+
+        { DP over the sorted labels: cost[i] = minimal number of clusters
+          for the first i labels, bestj[i]/bestkind[i] = start (1-based) and
+          kind of the last cluster of an optimal partition }
+        cost:=nil;
+        bestj:=nil;
+        bestkind:=nil;
+        setlength(cost,n+1);
+        setlength(bestj,n+1);
+        setlength(bestkind,n+1);
+        cost[0]:=0;
+        FillChar(uniqids,sizeof(uniqids),0);
+        for i:=1 to n do
+          begin
+            { default: label i forms its own plain-compare cluster }
+            cost[i]:=cost[i-1]+1;
+            bestj[i]:=i;
+            bestkind[i]:=ck_single;
+            coverage:=0;
+            uniq:=0;
+            btdead:=false;
+            for j:=i downto 1 do
+              begin
+                span:=entries[i-1]._high-entries[j-1]._low+1;
+                { the span (and, for j=i, a single label's own extent) can
+                  exceed int64 when labels straddle the type range; a wrapped
+                  value would sail past the width guards below and mint an
+                  absurd table/mask, so bail as soon as it overflows -- the
+                  span only grows as j decreases, so break is safe }
+                if span.overflow or (span>MAXJUMPTABLESPAN) then
+                  break;
+                coverage:=coverage+(entries[j-1]._high-entries[j-1]._low+1);
+                cnt:=i-j+1;
+                { jump-table cluster: dense enough, in aint bounds }
+                if jumptableok and
+                   (cnt>=MINJUMPTABLELABELS) and
+                   (entries[j-1]._low>=int64(low(aint))) and
+                   (entries[i-1]._high<=high(aint)) and
+                   (coverage*5>=span*2) and
+                   (cost[j-1]+1<cost[i]) then
+                  begin
+                    cost[i]:=cost[j-1]+1;
+                    bestj[i]:=j;
+                    bestkind[i]:=ck_jumptable;
+                  end;
+                { bit-test cluster: word-sized span, few distinct targets }
+                if not btdead then
+                  begin
+                    isnew:=true;
+                    for k:=0 to uniq-1 do
+                      if uniqids[k]=entries[j-1].blockid then
+                        begin
+                          isnew:=false;
+                          break;
+                        end;
+                    if isnew then
+                      begin
+                        if uniq>MAXBITTESTTARGETS then
+                          btdead:=true
+                        else
+                          begin
+                            uniqids[uniq]:=entries[j-1].blockid;
+                            inc(uniq);
+                          end;
+                      end;
+                    if (not btdead) and
+                       (span<=maskbits) and
+                       (uniq<=MAXBITTESTTARGETS) and
+                       bittest_beneficial(uniq,cnt) and
+                       (cost[j-1]+1<cost[i]) then
+                      begin
+                        cost[i]:=cost[j-1]+1;
+                        bestj[i]:=j;
+                        bestkind[i]:=ck_bittest;
+                      end;
+                  end;
+              end;
+          end;
+
+        { no clustering found that beats one compare per label? }
+        if cost[n]>=n then
+          exit;
+
+        { reconstruct the clusters (0-based entry indices) }
+        nclusters:=cost[n];
+        clusters:=nil;
+        setlength(clusters,nclusters);
+        i:=n;
+        j:=nclusters;
+        while i>0 do
+          begin
+            dec(j);
+            clusters[j].first:=bestj[i]-1;
+            clusters[j].last:=i-1;
+            clusters[j].kind:=bestkind[i];
+            i:=bestj[i]-1;
+          end;
+        if j<>0 then
+          internalerror(2026070803);
+
+        { a lone jump-table cluster is exactly what the classic lowering
+          emits; leave the decision to the tuned default heuristics then }
+        if (nclusters=1) and (clusters[0].kind=ck_jumptable) then
+          exit;
+
+        emitdispatch(0,nclusters-1);
+        result:=true;
+      end;
+
+
       procedure tcgcasenode.genjmptreeentry(p : pcaselabel;parentvalue : TConstExprInt);
         var
           lesslabel,greaterlabel : tasmlabel;
@@ -1283,8 +1652,22 @@ implementation
                    else
                      dist:=min(asizeuint(-distv.svalue),high(dist));
 
+                   { gcc-style clustered lowering (-OoCASECLUSTER): partition
+                     the labels into a mix of jump-table / bit-test / compare
+                     clusters dispatched by a balanced comparison tree.  Tried
+                     before the classic single-strategy selection; falls back
+                     to it when it finds nothing that beats one compare per
+                     label (or only a lone jump table the tuned heuristics
+                     below already handle).  All the state it needs -- hregister,
+                     opsize, elselabel, jmp_lt/jmp_le, jumptable_no_range -- is
+                     set up above. }
+                   if (cs_opt_casecluster in current_settings.optimizerswitches) and
+                      gencaseclusters(labels) then
+                     begin
+                       { clustered lowering emitted }
+                     end
                    { optimize for size ? }
-                   if cs_opt_size in current_settings.optimizerswitches  then
+                   else if cs_opt_size in current_settings.optimizerswitches  then
                      begin
                        if has_jumptable and
                           (min_label>=int64(low(aint))) and
