@@ -328,6 +328,7 @@ unit optloop;
         docalcatend : boolean;
         function findpreviousstrengthreduction(var n: tnode): boolean;
         procedure addinduction(temp : ttempcreatenode; expr : tnode);
+        function is_reducible_loopvar(n : tnode) : boolean;
         function dostrengthreductiontest(var n: tnode): foreachnoderesult;
         procedure optimizeinductionvariablessingleforloop(var n: tnode);
       end;
@@ -378,6 +379,50 @@ unit optloop;
       end;
 
 
+    { True when converting a value of type fromdef to todef cannot change the
+      numeric value for any in-range source value, i.e. a strict integer
+      widening that is not a signed->unsigned reinterpretation.  Used to see
+      through the implicit index/pointer-offset conversions FPC wraps around the
+      loop counter, so that a multiply like conv(i)*stride buried inside an array
+      index can still be recognised as counter*invariant. }
+    function is_value_preserving_int_conv(fromdef,todef : tdef) : boolean;
+      begin
+        result:=is_ordinal(fromdef) and is_ordinal(todef) and
+          (todef.size>fromdef.size) and
+          { a signed source widened into an unsigned target changes negative
+            values, so that is not value preserving }
+          not(is_signed(fromdef) and not(is_signed(todef)));
+      end;
+
+
+    { Recognises the loop counter possibly wrapped in one or more
+      value-preserving integer type conversions (as emitted for array
+      index / pointer offset arithmetic).  Only a plain read of the
+      counter qualifies, and any range/overflow-checked conversion in the
+      chain disqualifies it (a checked conversion may trap and must run every
+      iteration). }
+    function toptimizeinductionvariablescontext.is_reducible_loopvar(n : tnode) : boolean;
+      begin
+        result:=false;
+        while (n.nodetype=typeconvn) do
+          begin
+            if ([cs_check_overflow,cs_check_range]*n.localswitches)<>[] then
+              exit;
+            if not is_value_preserving_int_conv(ttypeconvnode(n).left.resultdef,n.resultdef) then
+              exit;
+            { a plain type conversion only: a write/modify target is never a
+              candidate }
+            if ([nf_write,nf_modify]*n.flags)<>[] then
+              exit;
+            n:=ttypeconvnode(n).left;
+          end;
+        result:=(n.nodetype=loadn) and
+          n.isequal(currforloop.left) and
+          not(nf_write in n.flags) and
+          not(nf_modify in n.flags);
+      end;
+
+
     { checks if the strength of n can be reduced, currforloop is the tforloop being considered }
     function toptimizeinductionvariablescontext.dostrengthreductiontest(var n: tnode): foreachnoderesult;
       var
@@ -394,20 +439,22 @@ unit optloop;
             { inform for loop search routine, that it needs to search more deeply }
             containsnestedforloop:=true;
           muln:
+            { A range/overflow-checked multiply may trap and must be evaluated
+              every iteration, so never turn it into an additive accumulator.
+              This also preserves the historic behaviour that -Cr/-Co disable
+              this reduction: previously the check-emitting typeconvs happened to
+              break the loadn match; now that we deliberately see through
+              value-preserving conversions (below) we must gate explicitly. }
+            if ([cs_check_overflow,cs_check_range]*n.localswitches)=[] then
             begin
-              if (taddnode(n).right.nodetype=loadn) and
-                taddnode(n).right.isequal(currforloop.left) and
-                { plain read of the loop variable? }
-                not(nf_write in taddnode(n).right.flags) and
-                not(nf_modify in taddnode(n).right.flags) and
+              { The loop counter may appear directly, or (as in an array index /
+                pointer offset) wrapped in value-preserving integer conversions;
+                is_reducible_loopvar sees through the latter. }
+              if is_reducible_loopvar(taddnode(n).right) and
                 is_loop_invariant(currforloop,taddnode(n).left) then
                 taddnode(n).swapleftright;
 
-              if (taddnode(n).left.nodetype=loadn) and
-                taddnode(n).left.isequal(currforloop.left) and
-                { plain read of the loop variable? }
-                not(nf_write in taddnode(n).left.flags) and
-                not(nf_modify in taddnode(n).left.flags) and
+              if is_reducible_loopvar(taddnode(n).left) and
                 is_loop_invariant(currforloop,taddnode(n).right) then
                 begin
                   changedforloop:=true;
