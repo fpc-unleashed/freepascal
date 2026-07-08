@@ -2582,7 +2582,8 @@ const
          'cs_opt_loopsplit',
          'cs_opt_loopfuse',
          'cs_opt_ifconvert',
-         'cs_opt_reassoc'
+         'cs_opt_reassoc',
+         'cs_opt_unrolljam'
        );
     var
          globalswitch  : tglobalswitch;
