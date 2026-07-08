@@ -2580,7 +2580,8 @@ const
          'cs_opt_refelide',
          'cs_opt_switchtable',
          'cs_opt_ree',
-         'cs_opt_shrinkwrap'
+         'cs_opt_shrinkwrap',
+         'cs_opt_gvnpre'
        );
     var
          globalswitch  : tglobalswitch;

@@ -53,6 +53,7 @@ unit optloop;
     function OptimizeVRP(node : tnode) : boolean;
     function OptimizeRefElide(node : tnode) : boolean;
     function OptimizeSwitchTable(node : tnode) : boolean;
+    function OptimizeGVNPRE(var node : tnode) : boolean;
 
   implementation
 
@@ -8628,6 +8629,790 @@ unit optloop;
         changed:=false;
         foreachnodestatic(node,@switchtable_walk,@changed);
         result:=changed;
+      end;
+
+
+{****************************************************************************
+                    GVN-PRE  (global value numbering +
+                              full-redundancy elimination)
+****************************************************************************}
+
+    { A conservative, dominator-based full-redundancy elimination working over
+      the node tree, complementing the intra-expression CSE in optcse with
+      redundancy ACROSS statements and rejoining branches.
+
+      Value numbering is structural (tnode.isequal). An "available expression"
+      table is threaded through the straight-line statement flow; entering an if
+      /case/loop the table is copied into each sub-region, and at the rejoin the
+      entries that survived on every path are kept -- this makes availability
+      hold on every path to a use, i.e. the definition dominates the use.
+
+      When a side-effect-free scalar expression whose value is already available
+      is met again, the recomputation is replaced by a read of a temp that holds
+      the value computed at the first (dominating) occurrence. The temp is
+      DECLARED unconditionally in a proc-entry preamble and RELEASED at proc exit
+      (so create/delete are balanced and dominate/post-dominate every use), while
+      the initialising  temp:=<expr>  assignment stays at the first occurrence
+      (whose operands are, by availability, unchanged on the path to every use).
+
+      Soundness rests on:
+        * only expressions over constants, non-address-taken/non-captured/
+          non-volatile value locals & params, and memory reads (deref/vec/field)
+          with a register-able scalar result participate;
+        * a local-only expression is killed by any assignment to one of its
+          operand locals; a memory-reading expression additionally by any store
+          through memory or any call (both drop ALL memory entries);
+        * statements whose value expression itself has side effects (calls,
+          nested stores, asm, side-effecting inlines) act as barriers: no reuse
+          inside them and the whole table is cleared afterwards;
+        * the conditionally-evaluated right operand of a short-circuit and/or is
+          never GENERATED as available (only its unconditional left spine is);
+        * procedures with labels, inline assembler or exceptions are skipped
+          wholesale by the caller. }
+
+    type
+      tgvnkind = (gvn_pure, gvn_mem);
+
+      pgvnentry = ^tgvnentry;
+      tgvnentry = record
+        expr     : tnode;             { the first occurrence (representative) }
+        ploc     : pnode;             { its slot in the tree }
+        temp     : ttempcreatenode;   { nil until materialized }
+        kind     : tgvnkind;
+        readsyms : array of tsym;     { safe-local syms the expr reads }
+      end;
+
+      tgvnavail = array of pgvnentry;
+
+      tgvnsyms = array of tsym;
+
+      tgvncontext = object
+        pool       : array of pgvnentry;
+        npool      : longint;
+        preamble   : tstatementnode;
+        deletes    : tstatementnode;
+        preambleblk: tnode;
+        deleteblk  : tnode;
+        eliminated : longint;
+        firstexpr  : string;
+        procedure init;
+        procedure done;
+        function newentry(n : tnode; ploc : pnode; kind : tgvnkind; const syms : tgvnsyms) : pgvnentry;
+        procedure materialize(e : pgvnentry);
+        procedure reuse(var n : tnode; e : pgvnentry);
+      end;
+      pgvncontext = ^tgvncontext;
+
+    const
+      gvn_producers : set of tnodetype =
+        [addn,subn,muln,andn,orn,xorn,shln,shrn,notn,unaryminusn,
+         derefn,vecn,subscriptn,typeconvn];
+
+    { --- small helpers ------------------------------------------------------ }
+
+    function gvn_safe_local_sym(n : tnode) : tsym;
+      var
+        sym : tsym;
+      begin
+        result:=nil;
+        if (n=nil) or (n.nodetype<>loadn) then
+          exit;
+        sym:=tloadnode(n).symtableentry;
+        if not assigned(sym) or not(sym.typ in [localvarsym,paravarsym]) then
+          exit;
+        { address-taken or accessed from a nested procedure -> may change behind
+          our back without an assignment we can see }
+        if (tabstractvarsym(sym).varsymaccess*[vsa_addr_taken,vsa_different_scope])<>[] then
+          exit;
+        if vo_volatile in tabstractvarsym(sym).varoptions then
+          exit;
+        { by-reference parameters alias caller storage; only plain value ones
+          behave like a private scalar }
+        if (sym.typ=paravarsym) and (tparavarsym(sym).varspez<>vs_value) then
+          exit;
+        { a nested-variable load carries its access location in .left }
+        if assigned(tloadnode(n).left) then
+          exit;
+        result:=sym;
+      end;
+
+
+    function gvn_syms_have(const a : tgvnsyms; s : tsym) : boolean;
+      var
+        i : longint;
+      begin
+        result:=false;
+        for i:=0 to high(a) do
+          if a[i]=s then
+            exit(true);
+      end;
+
+
+    function gvn_syms_intersect(const a, b : tgvnsyms) : boolean;
+      var
+        i : longint;
+      begin
+        result:=false;
+        for i:=0 to high(a) do
+          if gvn_syms_have(b,a[i]) then
+            exit(true);
+      end;
+
+
+    { collector state for gvn_analyze }
+    type
+      tgvnanalyze = record
+        hasmem     : boolean;
+        hasvarread : boolean;
+        syms       : tgvnsyms;
+      end;
+      pgvnanalyze = ^tgvnanalyze;
+
+    function gvn_analyze_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      var
+        ai : pgvnanalyze;
+        s : tsym;
+      begin
+        result:=fen_false;
+        ai:=pgvnanalyze(arg);
+        case n.nodetype of
+          loadn:
+            begin
+              ai^.hasvarread:=true;
+              s:=gvn_safe_local_sym(n);
+              if assigned(s) then
+                begin
+                  if not gvn_syms_have(ai^.syms,s) then
+                    begin
+                      SetLength(ai^.syms,length(ai^.syms)+1);
+                      ai^.syms[high(ai^.syms)]:=s;
+                    end;
+                end
+              else
+                { a global/static/threadvar/by-ref/addr-taken read behaves like
+                  memory as far as invalidation goes }
+                ai^.hasmem:=true;
+            end;
+          derefn,vecn,subscriptn:
+            begin
+              ai^.hasmem:=true;
+              ai^.hasvarread:=true;
+            end;
+          else
+            ;
+        end;
+      end;
+
+
+    { Returns true if n is worth value-numbering; fills kind and the safe-local
+      syms it reads. }
+    function gvn_candidate(n : tnode; out kind : tgvnkind; out syms : tgvnsyms) : boolean;
+      var
+        ai : tgvnanalyze;
+      begin
+        result:=false;
+        syms:=nil;
+        kind:=gvn_pure;
+        if not assigned(n.resultdef) then
+          exit;
+        if not(n.nodetype in gvn_producers) then
+          exit;
+        if ([nf_write,nf_modify,nf_address_taken]*n.flags)<>[] then
+          exit;
+        { register-able scalar result only (excludes managed types, records,
+          arrays, void) }
+        if not(tstoreddef(n.resultdef).is_intregable or tstoreddef(n.resultdef).is_fpuregable) then
+          exit;
+        if is_void(n.resultdef) then
+          exit;
+        { side-effect free (no calls, stores, asm, volatile/absolute loads) }
+        if might_have_sideeffects(n,[]) then
+          exit;
+        ai.hasmem:=false;
+        ai.hasvarread:=false;
+        ai.syms:=nil;
+        foreachnodestatic(pm_postprocess,n,@gvn_analyze_cb,@ai);
+        { must read at least one variable/memory location (pure constant folds
+          already) and be non-trivial (a bare converted load is not worth a
+          temp, but any memory load is) }
+        if not ai.hasvarread then
+          exit;
+        if not ai.hasmem and (node_complexity(n)<2) then
+          exit;
+        if ai.hasmem then
+          kind:=gvn_mem
+        else
+          kind:=gvn_pure;
+        syms:=ai.syms;
+        result:=true;
+      end;
+
+
+    { --- avail set operations (each builds a fresh array) ------------------- }
+
+    function gvn_add(const a : tgvnavail; e : pgvnentry) : tgvnavail;
+      var
+        i : longint;
+      begin
+        result:=nil;
+        SetLength(result,length(a)+1);
+        for i:=0 to high(a) do
+          result[i]:=a[i];
+        result[high(result)]:=e;
+      end;
+
+
+    function gvn_avail_has(const a : tgvnavail; n : tnode) : boolean;
+      var
+        i : longint;
+      begin
+        result:=false;
+        for i:=0 to high(a) do
+          if a[i]^.expr.isequal(n) then
+            exit(true);
+      end;
+
+
+    function gvn_remove_syms(const a : tgvnavail; const syms : tgvnsyms) : tgvnavail;
+      var
+        i, j : longint;
+      begin
+        result:=nil;
+        SetLength(result,length(a));
+        j:=0;
+        for i:=0 to high(a) do
+          if not gvn_syms_intersect(a[i]^.readsyms,syms) then
+            begin
+              result[j]:=a[i];
+              inc(j);
+            end;
+        SetLength(result,j);
+      end;
+
+
+    function gvn_drop_mem(const a : tgvnavail) : tgvnavail;
+      var
+        i, j : longint;
+      begin
+        result:=nil;
+        SetLength(result,length(a));
+        j:=0;
+        for i:=0 to high(a) do
+          if a[i]^.kind<>gvn_mem then
+            begin
+              result[j]:=a[i];
+              inc(j);
+            end;
+        SetLength(result,j);
+      end;
+
+
+    function gvn_ptr_in(const a : tgvnavail; e : pgvnentry) : boolean;
+      var
+        i : longint;
+      begin
+        result:=false;
+        for i:=0 to high(a) do
+          if a[i]=e then
+            exit(true);
+      end;
+
+
+    { entries of base that also survived in branch }
+    function gvn_intersect(const base, branch : tgvnavail) : tgvnavail;
+      var
+        i, j : longint;
+      begin
+        result:=nil;
+        SetLength(result,length(base));
+        j:=0;
+        for i:=0 to high(base) do
+          if gvn_ptr_in(branch,base[i]) then
+            begin
+              result[j]:=base[i];
+              inc(j);
+            end;
+        SetLength(result,j);
+      end;
+
+
+    { --- context methods ---------------------------------------------------- }
+
+    procedure tgvncontext.init;
+      begin
+        pool:=nil;
+        npool:=0;
+        preamble:=nil;
+        deletes:=nil;
+        preambleblk:=nil;
+        deleteblk:=nil;
+        eliminated:=0;
+        firstexpr:='';
+      end;
+
+
+    procedure tgvncontext.done;
+      var
+        i : longint;
+      begin
+        for i:=0 to npool-1 do
+          begin
+            pool[i]^.readsyms:=nil;
+            dispose(pool[i]);
+          end;
+        pool:=nil;
+      end;
+
+
+    function tgvncontext.newentry(n : tnode; ploc : pnode; kind : tgvnkind; const syms : tgvnsyms) : pgvnentry;
+      var
+        e : pgvnentry;
+      begin
+        new(e);
+        e^.expr:=n;
+        e^.ploc:=ploc;
+        e^.temp:=nil;
+        e^.kind:=kind;
+        e^.readsyms:=copy(syms);
+        if npool>=length(pool) then
+          SetLength(pool,4+npool+npool shr 1);
+        pool[npool]:=e;
+        inc(npool);
+        result:=e;
+      end;
+
+
+    procedure tgvncontext.materialize(e : pgvnentry);
+      var
+        T : ttempcreatenode;
+        def : tdef;
+        F : tnode;
+        blk : tnode;
+        st : tstatementnode;
+      begin
+        if assigned(e^.temp) then
+          exit;
+        def:=e^.expr.resultdef;
+        T:=ctempcreatenode.create(def,def.size,tt_persistent,
+          tstoreddef(def).is_intregable or tstoreddef(def).is_fpuregable);
+        if not assigned(preamble) then
+          begin
+            preambleblk:=internalstatements(preamble);
+            deleteblk:=internalstatements(deletes);
+          end;
+        { declare unconditionally at entry, release at exit }
+        addstatement(preamble,T);
+        addstatement(deletes,ctempdeletenode.create(T));
+        { capture the first occurrence's value into the temp in place, yielding
+          the temp for this first use }
+        F:=e^.ploc^;
+        blk:=internalstatements(st);
+        addstatement(st,cassignmentnode.create_internal(ctemprefnode.create(T),F));
+        addstatement(st,ctemprefnode.create(T));
+        e^.ploc^:=blk;
+        do_firstpass(e^.ploc^);
+        e^.temp:=T;
+      end;
+
+
+    procedure tgvncontext.reuse(var n : tnode; e : pgvnentry);
+      begin
+        materialize(e);
+        if eliminated=0 then
+          firstexpr:=nodetype2str[e^.expr.nodetype];
+        n.free;
+        n:=ctemprefnode.create(e^.temp);
+        do_firstpass(n);
+        inc(eliminated);
+      end;
+
+
+    { --- reuse walk (callback) ---------------------------------------------- }
+
+    type
+      tgvnreusearg = record
+        ctx    : ^tgvncontext;
+        availp : ^tgvnavail;
+      end;
+      pgvnreusearg = ^tgvnreusearg;
+
+    function gvn_reuse_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      var
+        ra : pgvnreusearg;
+        i : longint;
+        av : tgvnavail;
+      begin
+        result:=fen_false;
+        ra:=pgvnreusearg(arg);
+        { never rewrite a write/address target }
+        if ([nf_write,nf_modify,nf_address_taken]*n.flags)<>[] then
+          exit;
+        if not(n.nodetype in gvn_producers) then
+          exit;
+        av:=ra^.availp^;
+        for i:=0 to high(av) do
+          if av[i]^.expr.isequal(n) then
+            begin
+              ra^.ctx^.reuse(n,av[i]);
+              result:=fen_norecurse_false;
+              exit;
+            end;
+      end;
+
+
+    { --- generation walk (manual, honours short-circuit) -------------------- }
+
+    procedure gvn_gen(var n : tnode; ctx : pgvncontext; var avail : tgvnavail;
+                      const genskip : tgvnsyms; memstore : boolean);
+      var
+        kind : tgvnkind;
+        syms : tgvnsyms;
+        e : pgvnentry;
+      begin
+        if n=nil then
+          exit;
+        if ([nf_write,nf_modify,nf_address_taken]*n.flags)<>[] then
+          exit;
+        if gvn_candidate(n,kind,syms) then
+          begin
+            if (not((kind=gvn_mem) and memstore)) and
+               (not gvn_syms_intersect(syms,genskip)) and
+               (not gvn_avail_has(avail,n)) then
+              begin
+                e:=ctx^.newentry(n,@n,kind,syms);
+                avail:=gvn_add(avail,e);
+              end;
+          end;
+        { recurse into children in evaluation order; do NOT descend into the
+          conditionally-evaluated right operand of a short-circuit and/or }
+        if (n.nodetype in [andn,orn]) and is_boolean(n.resultdef) then
+          gvn_gen(tbinarynode(n).left,ctx,avail,genskip,memstore)
+        else if n.InheritsFrom(tbinarynode) then
+          begin
+            gvn_gen(tbinarynode(n).left,ctx,avail,genskip,memstore);
+            gvn_gen(tbinarynode(n).right,ctx,avail,genskip,memstore);
+          end
+        else if n.InheritsFrom(tunarynode) then
+          gvn_gen(tunarynode(n).left,ctx,avail,genskip,memstore);
+      end;
+
+
+    { --- kill collection over a loop / region ------------------------------- }
+
+    type
+      tgvnkillinfo = record
+        syms    : tgvnsyms;
+        mem     : boolean;
+        killall : boolean;
+      end;
+      pgvnkillinfo = ^tgvnkillinfo;
+
+    procedure gvn_add_killsym(ki : pgvnkillinfo; s : tsym);
+      begin
+        if assigned(s) and not gvn_syms_have(ki^.syms,s) then
+          begin
+            SetLength(ki^.syms,length(ki^.syms)+1);
+            ki^.syms[high(ki^.syms)]:=s;
+          end;
+      end;
+
+    function gvn_kill_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      var
+        ki : pgvnkillinfo;
+        s : tsym;
+        para : tnode;
+      begin
+        result:=fen_false;
+        ki:=pgvnkillinfo(arg);
+        case n.nodetype of
+          assignn:
+            begin
+              s:=gvn_safe_local_sym(actualtargetnode(@tassignmentnode(n).left)^);
+              if assigned(s) then
+                gvn_add_killsym(ki,s)
+              else
+                ki^.mem:=true;
+            end;
+          calln:
+            ki^.mem:=true;
+          asmn:
+            ki^.killall:=true;
+          inlinen:
+            if tinlinenode(n).may_have_sideeffect_norecurse then
+              begin
+                if tinlinenode(n).inlinenumber in [in_inc_x,in_dec_x] then
+                  begin
+                    para:=tinlinenode(n).left;
+                    if assigned(para) and (para.nodetype=callparan) then
+                      begin
+                        s:=gvn_safe_local_sym(actualtargetnode(@tcallparanode(para).left)^);
+                        if assigned(s) then
+                          gvn_add_killsym(ki,s)
+                        else
+                          ki^.mem:=true;
+                      end
+                    else
+                      ki^.killall:=true;
+                  end
+                else
+                  { any other side-effecting inline: be maximally conservative }
+                  ki^.killall:=true;
+              end;
+          else
+            ;
+        end;
+      end;
+
+
+    { --- statement dispatch ------------------------------------------------- }
+
+    procedure gvn_process(var n : tnode; ctx : pgvncontext; var avail : tgvnavail); forward;
+
+    procedure gvn_do_assign(var n : tnode; ctx : pgvncontext; var avail : tgvnavail);
+      var
+        asn : tassignmentnode;
+        ra : tgvnreusearg;
+        Lt : tnode;
+        sL : tsym;
+        genskip : tgvnsyms;
+        memstore : boolean;
+      begin
+        asn:=tassignmentnode(n);
+        { a value expression with its own side effects is a barrier }
+        if might_have_sideeffects(asn.right,[]) then
+          begin
+            avail:=nil;
+            exit;
+          end;
+        { 1. reuse redundant computations in the source (still reading pre-store
+             values, so this happens before applying the store's kill) }
+        ra.ctx:=ctx;
+        ra.availp:=@avail;
+        foreachnodestatic(pm_preprocess,asn.right,@gvn_reuse_cb,@ra);
+        { 2. classify the store target }
+        Lt:=actualtargetnode(@asn.left)^;
+        sL:=gvn_safe_local_sym(Lt);
+        genskip:=nil;
+        if assigned(sL) then
+          begin
+            memstore:=false;
+            SetLength(genskip,1);
+            genskip[0]:=sL;
+          end
+        else
+          memstore:=true;
+        { 3. apply the store's kill to the incoming availability }
+        avail:=gvn_remove_syms(avail,genskip);
+        if memstore then
+          avail:=gvn_drop_mem(avail);
+        { 4. everything the (rewritten) source computes is now available }
+        gvn_gen(asn.right,ctx,avail,genskip,memstore);
+      end;
+
+
+    procedure gvn_do_if(var n : tnode; ctx : pgvncontext; var avail : tgvnavail);
+      var
+        ifn : tifnode;
+        ra : tgvnreusearg;
+        base, thenA, elseA : tgvnavail;
+        emptyskip : tgvnsyms;
+      begin
+        ifn:=tifnode(n);
+        emptyskip:=nil;
+        if not might_have_sideeffects(ifn.left,[]) then
+          begin
+            ra.ctx:=ctx;
+            ra.availp:=@avail;
+            foreachnodestatic(pm_preprocess,ifn.left,@gvn_reuse_cb,@ra);
+            { the unconditional part of the condition is available to both arms }
+            gvn_gen(ifn.left,ctx,avail,emptyskip,false);
+          end
+        else
+          { condition has side effects: clear before diverging }
+          avail:=nil;
+        base:=avail;
+        thenA:=base;
+        if assigned(ifn.right) then
+          gvn_process(tifnode(n).right,ctx,thenA);
+        elseA:=base;
+        if assigned(ifn.t1) then
+          gvn_process(tifnode(n).t1,ctx,elseA);
+        { keep only what is still available on every path out of the if }
+        if assigned(ifn.t1) then
+          avail:=gvn_intersect(gvn_intersect(base,thenA),elseA)
+        else
+          avail:=gvn_intersect(base,thenA);
+      end;
+
+
+    procedure gvn_do_loop(var n : tnode; var body : tnode; ctx : pgvncontext; var avail : tgvnavail);
+      var
+        ki : tgvnkillinfo;
+        inner, bodyA : tgvnavail;
+      begin
+        ki.syms:=nil;
+        ki.mem:=false;
+        ki.killall:=false;
+        foreachnodestatic(pm_postprocess,n,@gvn_kill_cb,@ki);
+        if ki.killall then
+          inner:=nil
+        else
+          begin
+            inner:=gvn_remove_syms(avail,ki.syms);
+            if ki.mem then
+              inner:=gvn_drop_mem(inner);
+          end;
+        { a value available on entry and not killed by the loop is available on
+          every back-edge too, so it may be reused inside the body }
+        bodyA:=inner;
+        if assigned(body) then
+          gvn_process(body,ctx,bodyA);
+        { the body may execute zero times, so nothing it computes is guaranteed
+          available afterwards; keep only the surviving entry facts }
+        avail:=inner;
+      end;
+
+
+    procedure gvn_do_case(var n : tnode; ctx : pgvncontext; var avail : tgvnavail);
+      var
+        cn : tcasenode;
+        ra : tgvnreusearg;
+        base, acc, armA : tgvnavail;
+        i : longint;
+        seenfirst : boolean;
+        emptyskip : tgvnsyms;
+      begin
+        cn:=tcasenode(n);
+        emptyskip:=nil;
+        if not might_have_sideeffects(cn.left,[]) then
+          begin
+            ra.ctx:=ctx;
+            ra.availp:=@avail;
+            foreachnodestatic(pm_preprocess,cn.left,@gvn_reuse_cb,@ra);
+            gvn_gen(cn.left,ctx,avail,emptyskip,false);
+          end
+        else
+          avail:=nil;
+        base:=avail;
+        acc:=base;
+        seenfirst:=false;
+        for i:=0 to cn.blocks.count-1 do
+          if assigned(cn.blocks[i]) then
+            begin
+              armA:=base;
+              gvn_process(pcaseblock(cn.blocks[i])^.statement,ctx,armA);
+              if seenfirst then
+                acc:=gvn_intersect(acc,armA)
+              else
+                begin
+                  acc:=gvn_intersect(base,armA);
+                  seenfirst:=true;
+                end;
+            end;
+        if assigned(cn.elseblock) then
+          begin
+            armA:=base;
+            gvn_process(tcasenode(n).elseblock,ctx,armA);
+            if seenfirst then
+              acc:=gvn_intersect(acc,armA)
+            else
+              acc:=gvn_intersect(base,armA);
+          end
+        else
+          { a value not matched by any label falls straight through with base
+            availability intact; the intersection already accounts for that }
+          ;
+        avail:=acc;
+      end;
+
+
+    procedure gvn_do_other(var n : tnode; ctx : pgvncontext; var avail : tgvnavail);
+      var
+        ra : tgvnreusearg;
+        emptyskip : tgvnsyms;
+      begin
+        emptyskip:=nil;
+        if might_have_sideeffects(n,[]) then
+          begin
+            { call / store / asm / side-effecting inline statement: barrier }
+            avail:=nil;
+            exit;
+          end;
+        ra.ctx:=ctx;
+        ra.availp:=@avail;
+        foreachnodestatic(pm_preprocess,n,@gvn_reuse_cb,@ra);
+        gvn_gen(n,ctx,avail,emptyskip,false);
+      end;
+
+
+    procedure gvn_process(var n : tnode; ctx : pgvncontext; var avail : tgvnavail);
+      var
+        cur : tnode;
+      begin
+        if n=nil then
+          exit;
+        case n.nodetype of
+          blockn:
+            begin
+              cur:=tblocknode(n).left;
+              while assigned(cur) do
+                begin
+                  gvn_process(tstatementnode(cur).left,ctx,avail);
+                  cur:=tstatementnode(cur).right;
+                end;
+            end;
+          statementn:
+            gvn_process(tstatementnode(n).left,ctx,avail);
+          assignn:
+            gvn_do_assign(n,ctx,avail);
+          ifn:
+            gvn_do_if(n,ctx,avail);
+          whilerepeatn:
+            gvn_do_loop(n,twhilerepeatnode(n).right,ctx,avail);
+          forn:
+            gvn_do_loop(n,tfornode(n).t2,ctx,avail);
+          casen:
+            gvn_do_case(n,ctx,avail);
+          { nodes that never carry reusable straight-line value flow but must not
+            leak stale availability past them }
+          labeln,goton,exitn,breakn,continuen,raisen,
+          tryexceptn,tryfinallyn,onn:
+            avail:=nil;
+          else
+            gvn_do_other(n,ctx,avail);
+        end;
+      end;
+
+
+    function OptimizeGVNPRE(var node : tnode) : boolean;
+      var
+        ctx : tgvncontext;
+        avail : tgvnavail;
+        newroot : tnode;
+        st : tstatementnode;
+      begin
+        result:=false;
+        ctx.init;
+        avail:=nil;
+        gvn_process(node,@ctx,avail);
+        if ctx.eliminated>0 then
+          begin
+            MessagePos2(current_procinfo.entrypos,cg_n_gvnpre_eliminated,
+              tostr(ctx.eliminated),ctx.firstexpr);
+            if assigned(ctx.preambleblk) then
+              begin
+                do_firstpass(ctx.preambleblk);
+                do_firstpass(ctx.deleteblk);
+                newroot:=internalstatements(st);
+                addstatement(st,ctx.preambleblk);
+                addstatement(st,node);
+                addstatement(st,ctx.deleteblk);
+                node:=newroot;
+                do_firstpass(node);
+              end;
+            result:=true;
+          end;
+        ctx.done;
       end;
 
 end.

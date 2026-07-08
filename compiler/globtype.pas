@@ -572,7 +572,27 @@ interface
            then provably preserves every callee-saved register because it neither
            saves nor clobbers one; the slow path is byte-identical. Opt-in
            (-OoSHRINKWRAP): a wrong prologue move is a miscompile }
-         cs_opt_shrinkwrap
+         cs_opt_shrinkwrap,
+         { global value numbering + full-redundancy elimination (the gcc
+           tree-fre / LLVM GVN family): number side-effect-free scalar
+           expressions across control flow and, when an expression's value is
+           already available on every path reaching a point (computed on a
+           dominating statement/before a branch and reused on the rejoining
+           arms, or recomputed across straight-line unrolled bodies), compute it
+           once into a temp and reuse that temp instead of recomputing.
+           Complements the intra-expression CSE (-OoCSE / optcse) with
+           redundancy ACROSS statements and rejoining branches, and is distinct
+           from LICM (loop-invariant motion) and strength reduction (index
+           recurrences). Conservative: only expressions over non-address-taken,
+           non-captured, non-volatile value locals/params and memory reads with
+           regable scalar type participate; a memory-reading expression is
+           invalidated by any store through memory or any call, a local-only
+           expression by any assignment to one of its operands; the conditional
+           right operand of a short-circuit and/or is never treated as
+           unconditionally available; procedures with labels, inline assembler
+           or exceptions are skipped wholesale. Opt-in (-OoGVNPRE): a wrong
+           reuse is a miscompile }
+         cs_opt_gvnpre
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -651,7 +671,7 @@ interface
          'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC','UNROLLJAM',
          'PREDCOM','SRA','STOREMERGE','CASECLUSTER','CROSSJUMP','BLOCKORDER',
          'SINK','STOREMOTION','VRP','REFELIDE','SWITCHTABLE','REE',
-         'SHRINKWRAP'
+         'SHRINKWRAP','GVNPRE'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
