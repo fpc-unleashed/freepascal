@@ -2999,6 +2999,15 @@ cg_n_gvnpre_eliminated=06085_N_GVN-PRE reused $1 fully-redundant computation(s) 
 % recomputation(s) with a reference to a temporary holding the first-computed
 % value. This diagnostic is only emitted while the pass is enabled and is shown
 % at note verbosity (\var{-vn}).
+cg_n_loop_reduction_vectorized=06086_N_Reduction loop vectorized (SSE, $1-wide packed single accumulator)
+% The loop-level autovectorizer (\var{-O4 -OoVECTORIZE}) recognized this
+% single-precision sum or dot-product reduction for-loop and replaced its scalar
+% accumulator with a \var{$1}-wide packed SSE accumulator (accumulated four lanes
+% per iteration and horizontally summed after the loop) plus a scalar remainder
+% loop. Because a partial-sum reduction reassociates the floating-point additions,
+% this only fires under fast-math (\var{-OoFASTMATH}), matching the reduction-
+% reassociation pass. This diagnostic is only emitted while the pass is enabled and
+% is shown at note verbosity (\var{-vn}).
 %
 % \end{description}
 # EndOfTeX

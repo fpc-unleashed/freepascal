@@ -369,6 +369,22 @@ interface
            vok_broadcast  splat := [s,s,s,s]   (hoisted, runs once before loop)
                           left=tempref to the 16-byte slot  right=scalar single s
 
+         Reduction shapes (single-precision sum / dot product) keep a 16-byte
+         packed accumulator slot [p0,p1,p2,p3] across the vector loop:
+
+           vok_reduce_init    acc := [s,0,0,0]   (hoisted, runs once before loop)
+                          left=tempref to the 16-byte accumulator slot
+                          right=incoming scalar single s (kept in lane 0)
+           vok_reduce_sum     acc := acc + b[i..i+3]
+                          left=tempref to acc slot  right=b[i] (vecn)  third=nil
+           vok_reduce_dot     acc := acc + b[i..i+3]*c[i..i+3]
+                          left=tempref to acc slot  right=b[i]  third=c[i] (vecn)
+           vok_reduce_finish  s := p0+p1+p2+p3   (horizontal sum, runs once after
+                          the loop; the scalar tail then continues from s)
+                          left=scalar single s (loadn, write)  right=tempref acc
+         Reassociates the FP adds, so the vectorizer only emits these under
+         fast-math -- matching the reduction-reassociation (-OoREASSOC) pass.
+
          The index nodes all read the same loop counter i; the vector loop only
          advances i while i+vecwidth-1 <= hi, so the 128-bit window never reads
          past the scalar loop's maximum index. Only the x86 backend implements
@@ -376,7 +392,8 @@ interface
          only where the VECTORIZE switch is supported, i.e. x86_64). Never
          streamed to a PPU: OptimizeVectorize refuses to run on inline-candidate
          procedures, so the node cannot leak into inline info. }
-       tvectoropkind = (vok_arr_arr, vok_arr_scalar, vok_copy, vok_broadcast, vok_minmax);
+       tvectoropkind = (vok_arr_arr, vok_arr_scalar, vok_copy, vok_broadcast, vok_minmax,
+                        vok_reduce_init, vok_reduce_sum, vok_reduce_dot, vok_reduce_finish);
        tvectoropnode = class(ttertiarynode)
           op : TOpCG;         { OP_ADD, OP_SUB or OP_IMUL (single-precision) }
           vecwidth : longint; { number of single lanes processed per iteration }
@@ -394,6 +411,12 @@ interface
             (NaN returns opB), so every lane is bit-identical to the if-converted
             scalar min/max. }
           constructor create_minmax(a,opa,opb : tnode; _ismax : boolean; _vecwidth : longint);
+          { reduction (single-precision sum / dot product): a packed accumulator
+            slot is initialised with the incoming scalar in lane 0, accumulated
+            VL-wide across the loop, then horizontally summed back into the scalar. }
+          constructor create_reduce_init(acc,scalar : tnode);
+          constructor create_reduce(acc,b,c : tnode; _isdot : boolean; _vecwidth : longint);
+          constructor create_reduce_finish(target,acc : tnode; _vecwidth : longint);
           function pass_typecheck : tnode;override;
           function pass_1 : tnode;override;
           function dogetcopy : tnode;override;
@@ -591,6 +614,39 @@ implementation
         kind:=vok_minmax;
         scalarleft:=false;
         ismax:=_ismax;
+      end;
+
+
+    constructor tvectoropnode.create_reduce_init(acc,scalar : tnode);
+      begin
+        inherited create(vectoropn,acc,scalar,nil);
+        op:=OP_NONE;
+        vecwidth:=0;
+        kind:=vok_reduce_init;
+        scalarleft:=false;
+      end;
+
+
+    constructor tvectoropnode.create_reduce(acc,b,c : tnode; _isdot : boolean; _vecwidth : longint);
+      begin
+        inherited create(vectoropn,acc,b,c);
+        op:=OP_ADD;
+        vecwidth:=_vecwidth;
+        if _isdot then
+          kind:=vok_reduce_dot
+        else
+          kind:=vok_reduce_sum;
+        scalarleft:=false;
+      end;
+
+
+    constructor tvectoropnode.create_reduce_finish(target,acc : tnode; _vecwidth : longint);
+      begin
+        inherited create(vectoropn,target,acc,nil);
+        op:=OP_ADD;
+        vecwidth:=_vecwidth;
+        kind:=vok_reduce_finish;
+        scalarleft:=false;
       end;
 
 
