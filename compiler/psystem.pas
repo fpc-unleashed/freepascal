@@ -544,7 +544,7 @@ implementation
         addtype('LongInt',s32inttype);
         addtype('QWord',u64inttype);
         addtype('Int64',s64inttype);
-{$if not defined(cpuhighleveltarget)}
+{$if not defined(cpuhighleveltarget) or defined(wasm32)}
         addtype('UInt128',u128inttype);
         addtype('Int128',s128inttype);
 {$endif}
