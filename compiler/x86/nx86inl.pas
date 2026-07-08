@@ -26,9 +26,16 @@ unit nx86inl;
 interface
 
     uses
-       node,ninl,ncginl;
+       node,nbas,ninl,ncginl;
 
     type
+       { x86 code generation for the autovectorizer body node: emit VL packed
+         single-precision loads/op/store (SSE movups+addps/subps/mulps, or the
+         AVX v-forms when the fputype has an AVX unit). }
+       tx86vectoropnode = class(tvectoropnode)
+          procedure pass_generate_code;override;
+       end;
+
        tx86inlinenode = class(tcginlinenode)
          protected
           procedure maybe_remove_round_trunc_typeconv; virtual;
@@ -102,6 +109,83 @@ implementation
       ncal,ncgutil,nld,ncon,nadd,nmat,constexp,
       tgobj,
       cga,cgutils,cgx86,cgobj,hlcgobj,cutils;
+
+
+{*****************************************************************************
+                             TX86VECTOROPNODE
+*****************************************************************************}
+
+    procedure tx86vectoropnode.pass_generate_code;
+      { Emit one packed 128-bit single-precision element-wise step:
+          movups  regb, [b+i]      ; load VL (=4) singles of b at element i
+          movups  regc, [c+i]      ; load VL singles of c at element i
+          <op>ps  regb, regc       ; regb := regb op regc  (add/sub/mul, packed)
+          movups  [a+i], regb      ; store VL results to a at element i
+        Under an AVX fputype the VEX v-forms are used. Reuses the ordinary vecn
+        secondpass to compute the element-i address of each array, then reads a
+        full 128-bit window (elements i..i+3) from it; the surrounding vector
+        loop only advances the counter to i where i+3 is still in range.
+        FP semantics are identical to the scalar path: each lane computes exactly
+        b[i+k] op c[i+k] in the same order, so results (incl. NaN/Inf and
+        negative zero) are bit-identical -- no reassociation, no fast-math gate. }
+      var
+        regb, regc : tregister;
+        opps, movop : tasmop;
+        refb, refc, refa : treference;
+        avx : boolean;
+      begin
+        avx:=UseAVX;
+        if avx then
+          movop:=A_VMOVUPS
+        else
+          movop:=A_MOVUPS;
+        case op of
+          OP_ADD:
+            if avx then opps:=A_VADDPS else opps:=A_ADDPS;
+          OP_SUB:
+            if avx then opps:=A_VSUBPS else opps:=A_SUBPS;
+          OP_MUL,OP_IMUL:
+            if avx then opps:=A_VMULPS else opps:=A_MULPS;
+          else
+            internalerror(2026070701);
+        end;
+
+        { load b[i..i+3] into regb }
+        secondpass(right);
+        if not (right.location.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
+          internalerror(2026070702);
+        refb:=right.location.reference;
+        tcgx86(cg).make_simple_ref(current_asmdata.CurrAsmList,refb);
+        regb:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
+        current_asmdata.CurrAsmList.concat(taicpu.op_ref_reg(movop,S_NO,refb,regb));
+
+        { load c[i..i+3] into regc }
+        secondpass(third);
+        if not (third.location.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
+          internalerror(2026070703);
+        refc:=third.location.reference;
+        tcgx86(cg).make_simple_ref(current_asmdata.CurrAsmList,refc);
+        regc:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
+        current_asmdata.CurrAsmList.concat(taicpu.op_ref_reg(movop,S_NO,refc,regc));
+
+        { regb := regb op regc  (packed single). For SUBPS the AT&T operand
+          order gives  regb := regb - regc  in both the 2-op (SSE) and 3-op
+          (AVX) encodings, matching b - c. }
+        if avx then
+          current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(opps,S_NO,regc,regb,regb))
+        else
+          current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(opps,S_NO,regc,regb));
+
+        { store regb to a[i..i+3] }
+        secondpass(left);
+        if not (left.location.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
+          internalerror(2026070704);
+        refa:=left.location.reference;
+        tcgx86(cg).make_simple_ref(current_asmdata.CurrAsmList,refa);
+        current_asmdata.CurrAsmList.concat(taicpu.op_reg_ref(movop,S_NO,regb,refa));
+
+        location_reset(location,LOC_VOID,OS_NO);
+      end;
 
 
 {*****************************************************************************

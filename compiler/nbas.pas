@@ -355,8 +355,33 @@ interface
         end;
        ttempdeletenodeclass = class of ttempdeletenode;
 
+       { Autovectorizer body node (backend-only, created by OptimizeVectorize in
+         optloop). Represents "process vecwidth single-precision elements of an
+         element-wise  a[i] := b[i] op c[i]  using one packed SSE/AVX op".
+         left  = destination vecn  a[i]
+         right = source vecn       b[i]
+         third = source vecn       c[i]
+         The three index nodes all read the same loop counter i; the code
+         generator loads vecwidth (=4) consecutive singles at element i from b
+         and c, applies the packed op, and stores vecwidth results to a. Only the
+         x86 backend implements pass_generate_code; the base raises an internal
+         error (the pass fires only where the VECTORIZE switch is supported, i.e.
+         x86_64). Never streamed to a PPU: OptimizeVectorize refuses to run on
+         inline-candidate procedures, so the node cannot leak into inline info. }
+       tvectoropnode = class(ttertiarynode)
+          op : TOpCG;         { OP_ADD, OP_SUB or OP_IMUL (single-precision) }
+          vecwidth : longint; { number of single lanes processed per iteration }
+          constructor create(a,b,c : tnode; _op : TOpCG; _vecwidth : longint);virtual;
+          function pass_typecheck : tnode;override;
+          function pass_1 : tnode;override;
+          function dogetcopy : tnode;override;
+          function docompare(p : tnode) : boolean;override;
+       end;
+       tvectoropnodeclass = class of tvectoropnode;
+
     var
        cnothingnode : tnothingnodeclass = tnothingnode;
+       cvectoropnode : tvectoropnodeclass = tvectoropnode;
        cdefernode : tdefernodeclass = tdefernode;
        cerrornode : terrornodeclass = terrornode;
        cspecializenode : tspecializenodeclass = tspecializenode;
@@ -490,6 +515,58 @@ implementation
       begin
         result:=nil;
         expectloc:=LOC_VOID;
+      end;
+
+{*****************************************************************************
+                             TVECTOROPNODE
+*****************************************************************************}
+
+    constructor tvectoropnode.create(a,b,c : tnode; _op : TOpCG; _vecwidth : longint);
+      begin
+        inherited create(vectoropn,a,b,c);
+        op:=_op;
+        vecwidth:=_vecwidth;
+      end;
+
+
+    function tvectoropnode.pass_typecheck : tnode;
+      begin
+        result:=nil;
+        { the child vecn nodes were already typechecked in the original loop
+          body; just make sure they carry a resultdef }
+        typecheckpass(left);
+        typecheckpass(right);
+        typecheckpass(third);
+        resultdef:=voidtype;
+      end;
+
+
+    function tvectoropnode.pass_1 : tnode;
+      begin
+        result:=nil;
+        firstpass(left);
+        firstpass(right);
+        firstpass(third);
+        expectloc:=LOC_VOID;
+      end;
+
+
+    function tvectoropnode.dogetcopy : tnode;
+      var
+        n : tvectoropnode;
+      begin
+        n:=tvectoropnode(inherited dogetcopy);
+        n.op:=op;
+        n.vecwidth:=vecwidth;
+        result:=n;
+      end;
+
+
+    function tvectoropnode.docompare(p : tnode) : boolean;
+      begin
+        result:=inherited docompare(p) and
+                (tvectoropnode(p).op=op) and
+                (tvectoropnode(p).vecwidth=vecwidth);
       end;
 
 {*****************************************************************************

@@ -1221,6 +1221,25 @@ implementation
                  actually change any nodes }
              end;
 
+           { conservative loop autovectorization: rewrite a counted single-
+             precision element-wise for-loop  for i:=lo to hi do a[i]:=b[i] op c[i]
+             into a 128-bit SSE packed main loop (4 singles/iteration) plus a
+             scalar remainder loop. Run before strength reduction so the array
+             accesses are still plain vecn index nodes -- strength reduction
+             would rewrite them into pointer walks the recognizer can't match.
+             Needs valid DFA to prove the counter and arrays are not modified in
+             the body; skips procedures with labels like the loop passes below so
+             control cannot enter the rewritten loop mid-stream. }
+           if (cs_opt_vectorize in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizeVectorize(code) or RedoDFA;
+
+           if RedoDFA then
+             begin
+               dfabuilder.redodfainfo(code);
+               RedoDFA:=false;
+             end;
+
            if (cs_opt_loopstrength in current_settings.optimizerswitches)
              { our induction variable strength reduction doesn't like
                for loops with more than one entry }

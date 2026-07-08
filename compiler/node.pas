@@ -111,7 +111,8 @@ interface
           objcprotocoln,    { node for an Objective-C @protocol() expression (returns metaclass associated with protocol) }
           specializen,      { parser-only node to handle Delphi-mode inline specializations }
           finalizetempsn,       { Internal node used to clean up code generator temps (warning: must NOT create additional tepms that may need to be finalised!) }
-          defern                { FPC Unleashed: parser-only marker for `defer STATEMENT;` - rewritten away in statement_block before typecheck }
+          defern,               { FPC Unleashed: parser-only marker for `defer STATEMENT;` - rewritten away in statement_block before typecheck }
+          vectoropn             { autovectorizer: process VL single-precision elements of an element-wise a[i]:=b[i] op c[i] with one packed SSE/AVX op (backend-only, created by OptimizeVectorize) }
        );
 
        tnodetypeset = set of tnodetype;
@@ -196,7 +197,8 @@ interface
           'objcprotocoln',
           'specializen',
           'finalizetempsn',
-          'defern');
+          'defern',
+          'vectoropn');
 
       { a set containing all const nodes }
       nodetype_const = [niln,

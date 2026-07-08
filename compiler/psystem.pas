@@ -905,6 +905,7 @@ implementation
         nodeclass[tempdeleten]:=ctempdeletenode;
         nodeclass[addoptn]:=caddnode;
         nodeclass[nothingn]:=cnothingnode;
+        nodeclass[vectoropn]:=cvectoropnode;
         nodeclass[loadvmtaddrn]:=cloadvmtaddrnode;
         nodeclass[guidconstn]:=cguidconstnode;
         nodeclass[rttin]:=crttinode;

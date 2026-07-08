@@ -562,6 +562,9 @@ unit optdfa;
             tempcreaten,
             asn,
             inlinen,
+            { autovectorizer body node: def/use are those of its vecn children
+              (a[i] written, b[i]/c[i] read), collected by AddDefUse like a call }
+            vectoropn,
             calln:
               begin
                 if not(assigned(node.optinfo^.def)) and
