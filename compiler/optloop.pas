@@ -54,7 +54,7 @@ unit optloop;
       symbase,symconst,symdef,symsym,symtype,
       defutil,
       nutils,
-      nadd,nbas,nflw,ncon,ninl,ncal,nld,nmem,ncnv,
+      nadd,nbas,nflw,ncon,ninl,ncal,nld,nmem,ncnv,nmat,
       ncgmem,
       pass_1,
       optbase,optutils,
@@ -1787,6 +1787,175 @@ unit optloop;
       end;
 
 
+{*****************************************************************************
+                  Bit-scan (tzcnt/lzcnt) idiom -- shared helpers
+*****************************************************************************}
+
+    { The following helpers recognize the two scalar bit-scan loops
+
+          while (x and 1) = 0 do begin inc(c); x := x shr 1 end;   // count trailing zeros
+          while x > 1        do begin inc(c); x := x shr 1 end;    // highest set bit / bsr
+
+      and lower them to the BsfXWord / BsrXWord intrinsics (TZCNT/BSF resp.
+      LZCNT/BSR under the CPU feature gate). They deliberately share the strict
+      soundness policy of the population-count matcher above (distinct simple
+      non-aliased ordinal locals/value-params, body is exactly the two
+      recognized statements, counter step is exactly +1), and additionally:
+
+        * the trailing-zeros loop is *infinite* for x=0, so it is lowered only
+          when it is enclosed by a dominating  if x<>0 (or unsigned x>0)  test
+          that structurally proves x<>0 at the loop -- the guard is kept
+          verbatim and only its body replaced, so the x=0 path is byte-for-byte
+          unchanged; loops without such a proof are left alone (see
+          bitidiom_tzcnt_try);
+        * the highest-bit loop is total (zero-trip for x in 0 and 1) but Bsr(0) is
+          undefined, so its rewrite is itself guarded by  if x<>0 , which also
+          reproduces the loop's x=0 no-op exactly; it is accepted only for an
+          unsigned x (a signed negative x would be zero-trip yet Bsr would count
+          its bits). }
+
+    function bitidiom_same_var(ld : tnode; v : tabstractvarsym) : boolean;
+      begin
+        ld:=bitidiom_skip_reinterpret(ld);
+        result:=assigned(ld) and (ld.nodetype=loadn) and
+                (tloadnode(ld).symtableentry=tsym(v));
+      end;
+
+
+    function bitidiom_scan_var(n : tnode) : tabstractvarsym;
+      { same policy as bitidiom_simple_var: a simple non-aliased 32/64-bit
+        ordinal local var or value parameter. Narrower (8/16-bit) operands are
+        integer-promoted by the front end so their load sits behind a widening
+        typeconv that the same-size-only reinterpret peel deliberately does not
+        cross -- they therefore fall through to the scalar loop unchanged, as in
+        the population-count matcher. }
+      var
+        sym : tsym;
+        avs : tabstractvarsym;
+      begin
+        result:=nil;
+        n:=bitidiom_skip_reinterpret(n);
+        if not assigned(n) or (n.nodetype<>loadn) then
+          exit;
+        sym:=tloadnode(n).symtableentry;
+        if not(sym is tabstractvarsym) then
+          exit;
+        avs:=tabstractvarsym(sym);
+        if not(avs.typ in [localvarsym,paravarsym]) then
+          exit;
+        if (avs.typ=paravarsym) and (avs.varspez<>vs_value) then
+          exit;
+        if avs.addr_taken or avs.different_scope then
+          exit;
+        if (vo_volatile in avs.varoptions) or (vo_is_thread_var in avs.varoptions) then
+          exit;
+        if not assigned(n.resultdef) or (n.resultdef.typ<>orddef) then
+          exit;
+        if not(n.resultdef.size in [4,8]) then
+          exit;
+        result:=avs;
+      end;
+
+
+    function bitidiom_unwrap_stmt(stmt : tnode) : tnode;
+      { descend into single-statement blocks (firstpass wraps lowered inc() and
+        the then-branch of an if in such blocks) }
+      var
+        inner : tstatementnode;
+      begin
+        while assigned(stmt) and (stmt.nodetype=blockn) do
+          begin
+            inner:=tstatementnode(tblocknode(stmt).left);
+            if not assigned(inner) or (inner.nodetype<>statementn) or
+               assigned(inner.right) or not assigned(inner.left) then
+              break;
+            stmt:=inner.left;
+          end;
+        result:=stmt;
+      end;
+
+
+    function bitidiom_counter_step1(stmt : tnode) : tabstractvarsym;
+      { the counter sym if stmt increments a simple var by exactly +1, either as
+        a plain inc(c) inline or as  c := c + 1  (inc() lowered by firstpass) }
+      var
+        cp : tcallparanode;
+        ld, r, o1, o2 : tnode;
+        k : tconstexprint;
+        cs : tabstractvarsym;
+      begin
+        result:=nil;
+        stmt:=bitidiom_unwrap_stmt(stmt);
+        if not assigned(stmt) then
+          exit;
+        if (stmt.nodetype=inlinen) and (tinlinenode(stmt).inlinenumber=in_inc_x) then
+          begin
+            cp:=tcallparanode(tinlinenode(stmt).left);
+            if not assigned(cp) or assigned(cp.right) then
+              exit;   { explicit step -> not a plain +1 }
+            result:=bitidiom_scan_var(cp.left);
+          end
+        else if stmt.nodetype=assignn then
+          begin
+            ld:=tassignmentnode(stmt).left;
+            cs:=bitidiom_scan_var(ld);
+            if not assigned(cs) then
+              exit;
+            r:=bitidiom_skip_reinterpret(tassignmentnode(stmt).right);
+            if not assigned(r) or (r.nodetype<>addn) then
+              exit;
+            o1:=taddnode(r).left;
+            o2:=taddnode(r).right;
+            if (bitidiom_same_var(o1,cs) and bitidiom_const_value(o2,k) and (k=1)) or
+               (bitidiom_same_var(o2,cs) and bitidiom_const_value(o1,k) and (k=1)) then
+              result:=cs;
+          end;
+      end;
+
+
+    function bitidiom_is_shr1(stmt : tnode; xvar : tabstractvarsym) : boolean;
+      { true if stmt is  x := x shr 1  for xvar }
+      var
+        rhs : tnode;
+        k : tconstexprint;
+      begin
+        result:=false;
+        stmt:=bitidiom_unwrap_stmt(stmt);
+        if not assigned(stmt) or (stmt.nodetype<>assignn) then
+          exit;
+        if not bitidiom_same_var(tassignmentnode(stmt).left,xvar) then
+          exit;
+        rhs:=bitidiom_skip_reinterpret(tassignmentnode(stmt).right);
+        if not assigned(rhs) or (rhs.nodetype<>shrn) then
+          exit;
+        if not bitidiom_same_var(tshlshrnode(rhs).left,xvar) then
+          exit;
+        if not(bitidiom_const_value(tshlshrnode(rhs).right,k) and (k=1)) then
+          exit;
+        result:=true;
+      end;
+
+
+    function bitidiom_scan_body(body : tnode; xvar : tabstractvarsym; out cntvar : tabstractvarsym) : boolean;
+      { body is exactly  inc(c) and  x := x shr 1  in either order; returns the
+        counter var (distinct from x) }
+      var
+        s0, s1 : tnode;
+      begin
+        result:=false;
+        cntvar:=nil;
+        if not bitidiom_two_statements(body,s0,s1) then
+          exit;
+        if bitidiom_is_shr1(s0,xvar) then
+          cntvar:=bitidiom_counter_step1(s1)
+        else if bitidiom_is_shr1(s1,xvar) then
+          cntvar:=bitidiom_counter_step1(s0)
+        else
+          exit;
+        result:=assigned(cntvar) and (cntvar<>xvar);
+      end;
+
+
     function bitidiom_try(var n : tnode) : boolean;
       var
         wr : twhilerepeatnode;
@@ -1968,15 +2137,295 @@ unit optloop;
       end;
 
 
+
+
+    function bitidiom_scan_loop_parts(node : tnode; out condnode, bodynode : tnode) : boolean;
+      { recognizes a scalar loop whose body runs while a condition holds, in
+        either the raw test-at-begin  while C do B  form or the -O2-produced
+        do-while-in-if form  if C then (do B while C) . On success condnode is
+        the loop/guard condition C and bodynode the loop body B (both still
+        owned by node -- the caller getcopy's what it keeps and frees node). }
+      var
+        inner : tnode;
+      begin
+        result:=false;
+        condnode:=nil;
+        bodynode:=nil;
+        node:=bitidiom_unwrap_stmt(node);
+        if not assigned(node) then
+          exit;
+        if node.nodetype=whilerepeatn then
+          begin
+            { raw  while C do B : test-at-begin, while-sense }
+            if not(lnf_testatbegin in twhilerepeatnode(node).loopflags) then
+              exit;
+            if lnf_checknegate in twhilerepeatnode(node).loopflags then
+              exit;
+            condnode:=twhilerepeatnode(node).left;
+            bodynode:=twhilerepeatnode(node).right;
+            result:=assigned(condnode) and assigned(bodynode);
+          end
+        else if node.nodetype=ifn then
+          begin
+            { -O2 form:  if C then (do B while C) , no else branch }
+            if assigned(tifnode(node).t1) then
+              exit;
+            inner:=bitidiom_unwrap_stmt(tifnode(node).right);
+            if not assigned(inner) or (inner.nodetype<>whilerepeatn) then
+              exit;
+            { the inner loop must be a do-while: test-at-end, while-sense }
+            if lnf_testatbegin in twhilerepeatnode(inner).loopflags then
+              exit;
+            if lnf_checknegate in twhilerepeatnode(inner).loopflags then
+              exit;
+            condnode:=twhilerepeatnode(inner).left;
+            bodynode:=twhilerepeatnode(inner).right;
+            if not assigned(condnode) or not assigned(bodynode) then
+              exit;
+            { the entry guard must be exactly the loop condition, so the
+              do-while faithfully reproduces  while C do B  (zero-trip when C
+              is false at entry) }
+            if not assigned(tifnode(node).left) or
+               not tifnode(node).left.isequal(condnode) then
+              exit;
+            result:=true;
+          end;
+      end;
+
+
+    function bitidiom_cond_is_even(condnode : tnode; out xvar : tabstractvarsym; out xload : tnode) : boolean;
+      { condnode is  (x and 1) = 0 ; returns x's var and its (peeled) load node }
+      var
+        andpart : tnode;
+        cv, k : tconstexprint;
+      begin
+        result:=false;
+        xvar:=nil;
+        xload:=nil;
+        if not assigned(condnode) or (condnode.nodetype<>equaln) then
+          exit;
+        if bitidiom_const_value(taddnode(condnode).right,cv) and (cv=0) then
+          andpart:=taddnode(condnode).left
+        else if bitidiom_const_value(taddnode(condnode).left,cv) and (cv=0) then
+          andpart:=taddnode(condnode).right
+        else
+          exit;
+        andpart:=bitidiom_skip_reinterpret(andpart);
+        if not assigned(andpart) or (andpart.nodetype<>andn) then
+          exit;
+        if bitidiom_const_value(taddnode(andpart).right,k) and (k=1) then
+          xload:=taddnode(andpart).left
+        else if bitidiom_const_value(taddnode(andpart).left,k) and (k=1) then
+          xload:=taddnode(andpart).right
+        else
+          exit;
+        xload:=bitidiom_skip_reinterpret(xload);
+        xvar:=bitidiom_scan_var(xload);
+        result:=assigned(xvar);
+      end;
+
+
+    function bitidiom_cond_is_gt1(condnode : tnode; out xvar : tabstractvarsym; out xload : tnode) : boolean;
+      { condnode is  x > 1 ; returns x's var and its (peeled) load node }
+      var
+        cv : tconstexprint;
+      begin
+        result:=false;
+        xvar:=nil;
+        xload:=nil;
+        if not assigned(condnode) or (condnode.nodetype<>gtn) then
+          exit;
+        if not(bitidiom_const_value(taddnode(condnode).right,cv) and (cv=1)) then
+          exit;
+        xload:=bitidiom_skip_reinterpret(taddnode(condnode).left);
+        xvar:=bitidiom_scan_var(xload);
+        result:=assigned(xvar);
+      end;
+
+
+    function bitidiom_tzcnt_try(var n : tnode) : boolean;
+      { recognizes the count-trailing-zeros scan under a dominating nonzero test
+
+            if x <> 0 then
+              while (x and 1) = 0 do begin inc(c); x := x shr 1 end;
+
+        (the inner while may already be the -O2 do-while-in-if form) and
+        rewrites the guarded body to
+
+            inc(c, BsfXWord(x));  x := x shr BsfXWord(x);
+
+        The enclosing  if x<>0  (or unsigned x>0) is KEPT verbatim -- it is the
+        soundness gate: the scalar loop never terminates for x=0, so we lower to
+        a bit-scan only where a dominating nonzero test structurally proves
+        x<>0. For x<>0 the lowest set bit sits at index Bsf(x) = trailing-zero
+        count < width, so  x shr Bsf(x)  is a valid shift leaving x's remaining
+        high bits (the loop's final x), and c is bumped by that same count. Both
+        Bsf(x) read the identical pure load of x (inc touches only c). }
+      var
+        outerif : tifnode;
+        condnode, bodynode, guardcond, xload : tnode;
+        xvar, cntvar : tabstractvarsym;
+        cv : tconstexprint;
+        xdef, unsigneddef : tdef;
+        newif, newblk, bsf1, bsf2, newinc, newasgn : tnode;
+        newstmts : tstatementnode;
+      begin
+        result:=false;
+        outerif:=tifnode(n);
+        if assigned(outerif.t1) then
+          exit;   { has an else branch -> not our shape }
+        { then-branch must be the  (x and 1)=0  scan loop }
+        if not bitidiom_scan_loop_parts(outerif.right,condnode,bodynode) then
+          exit;
+        if not bitidiom_cond_is_even(condnode,xvar,xload) then
+          exit;
+        if not bitidiom_scan_body(bodynode,xvar,cntvar) then
+          exit;
+        xdef:=xload.resultdef;
+        if not assigned(xdef) or (xdef.typ<>orddef) then
+          exit;
+        { the outer guard must prove x<>0 :  x<>0  or unsigned  x>0 , same x }
+        guardcond:=outerif.left;
+        if not assigned(guardcond) then
+          exit;
+        case guardcond.nodetype of
+          unequaln:
+            if not((bitidiom_const_value(taddnode(guardcond).right,cv) and (cv=0) and
+                    bitidiom_same_var(taddnode(guardcond).left,xvar)) or
+                   (bitidiom_const_value(taddnode(guardcond).left,cv) and (cv=0) and
+                    bitidiom_same_var(taddnode(guardcond).right,xvar))) then
+              exit;
+          gtn:
+            begin
+              if is_signed(xdef) then
+                exit;
+              if not(bitidiom_const_value(taddnode(guardcond).right,cv) and (cv=0) and
+                     bitidiom_same_var(taddnode(guardcond).left,xvar)) then
+                exit;
+            end;
+          else
+            exit;
+        end;
+
+        { ===== if <guard> then begin inc(c, Bsf(x)); x := x shr Bsf(x) end ===== }
+        if xdef.size=8 then
+          unsigneddef:=u64inttype
+        else
+          unsigneddef:=u32inttype;
+
+        bsf1:=geninlinenode(in_bsf_x,false,
+          ctypeconvnode.create_internal(xload.getcopy,unsigneddef));
+        newinc:=geninlinenode(in_inc_x,false,
+          ccallparanode.create(cloadnode.create(cntvar,cntvar.owner),
+            ccallparanode.create(bsf1,nil)));
+        bsf2:=geninlinenode(in_bsf_x,false,
+          ctypeconvnode.create_internal(xload.getcopy,unsigneddef));
+        newasgn:=cassignmentnode.create(xload.getcopy,
+          cshlshrnode.create(shrn,xload.getcopy,bsf2));
+
+        newblk:=internalstatements(newstmts);
+        addstatement(newstmts,newinc);
+        addstatement(newstmts,newasgn);
+
+        newif:=cifnode.create(guardcond.getcopy,newblk,nil);
+        n:=newif;
+        do_firstpass(n);
+        outerif.free;
+        result:=true;
+      end;
+
+
+    function bitidiom_bsr_try(var n : tnode) : boolean;
+      { recognizes the unsigned highest-set-bit scan
+
+            while x > 1 do begin inc(c); x := x shr 1 end;
+
+        (raw, or the -O2 do-while-in-if form) and rewrites it to
+
+            if x <> 0 then begin inc(c, BsrXWord(x)); x := 1 end;
+
+        The loop is zero-trip for x in 0 and 1, hence total (never infinite), so
+        it needs no external guard; the emitted  if x<>0  merely avoids the
+        undefined Bsr(0) and reproduces the loop's x=0 no-op exactly (for x=1,
+        Bsr(1)=0 and x stays 1, matching the zero-trip). Restricted to unsigned
+        x: a signed negative x is zero-trip yet Bsr would still count its bits. }
+      var
+        condnode, bodynode, xload : tnode;
+        xvar, cntvar : tabstractvarsym;
+        xdef, unsigneddef : tdef;
+        bsrnode, newinc, newasgn, newblk, guard, oldn : tnode;
+        newstmts : tstatementnode;
+      begin
+        result:=false;
+        if not bitidiom_scan_loop_parts(n,condnode,bodynode) then
+          exit;
+        if not bitidiom_cond_is_gt1(condnode,xvar,xload) then
+          exit;
+        if not bitidiom_scan_body(bodynode,xvar,cntvar) then
+          exit;
+        xdef:=xload.resultdef;
+        if not assigned(xdef) or (xdef.typ<>orddef) then
+          exit;
+        if is_signed(xdef) then
+          exit;
+
+        { ===== if x<>0 then begin inc(c, Bsr(x)); x := 1 end ===== }
+        if xdef.size=8 then
+          unsigneddef:=u64inttype
+        else
+          unsigneddef:=u32inttype;
+
+        bsrnode:=geninlinenode(in_bsr_x,false,
+          ctypeconvnode.create_internal(xload.getcopy,unsigneddef));
+        newinc:=geninlinenode(in_inc_x,false,
+          ccallparanode.create(cloadnode.create(cntvar,cntvar.owner),
+            ccallparanode.create(bsrnode,nil)));
+        newasgn:=cassignmentnode.create(xload.getcopy,
+          cordconstnode.create(1,xdef,false));
+
+        newblk:=internalstatements(newstmts);
+        addstatement(newstmts,newinc);
+        addstatement(newstmts,newasgn);
+
+        guard:=cifnode.create(
+          caddnode.create(unequaln,xload.getcopy,
+            cordconstnode.create(0,xdef,false)),
+          newblk,nil);
+        oldn:=n;
+        n:=guard;
+        do_firstpass(n);
+        oldn.free;
+        result:=true;
+      end;
+
+
     function bitidiom_callback(var n: tnode; arg: pointer) : foreachnoderesult;
       begin
         result:=fen_false;
-        if n.nodetype=whilerepeatn then
-          if bitidiom_try(n) then
-            begin
-              pboolean(arg)^:=true;
-              result:=fen_norecurse_false;
-            end;
+        case n.nodetype of
+          whilerepeatn:
+            if bitidiom_try(n) then
+              begin
+                pboolean(arg)^:=true;
+                result:=fen_norecurse_false;
+              end
+            else if bitidiom_bsr_try(n) then
+              begin
+                pboolean(arg)^:=true;
+                result:=fen_norecurse_false;
+              end;
+          ifn:
+            if bitidiom_tzcnt_try(n) then
+              begin
+                pboolean(arg)^:=true;
+                result:=fen_norecurse_false;
+              end
+            else if bitidiom_bsr_try(n) then
+              begin
+                pboolean(arg)^:=true;
+                result:=fen_norecurse_false;
+              end;
+        end;
       end;
 
 
