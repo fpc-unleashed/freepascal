@@ -5477,7 +5477,7 @@ implementation
                           p1:=cordconstnode.create(qc,hdef,true);
                        end;
                    end;
-{$if defined(cpu64bitalu) or defined(i386)}
+{$if (defined(cpu64bitalu) or defined(cpu32bitalu)) and not defined(cpuhighleveltarget)}
                  if (code<>0) and (m_int128 in current_settings.modeswitches) then
                    begin
                      { try 128 bit }
@@ -5490,7 +5490,7 @@ implementation
                           p1:=cordconstnode.create(ic128,hdef,true);
                        end;
                    end;
-{$endif defined(cpu64bitalu) or defined(i386)}
+{$endif (defined(cpu64bitalu) or defined(cpu32bitalu)) and not defined(cpuhighleveltarget)}
                  if code<>0 then
                    begin
                      { finally float }
