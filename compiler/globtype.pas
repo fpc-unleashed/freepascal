@@ -416,7 +416,13 @@ interface
            iteration space into two consecutive loops at the crossover so the
            in-loop branch disappears (a branch-free interior loop plus a short
            border loop) }
-         cs_opt_loopsplit
+         cs_opt_loopsplit,
+         { loop fusion: merge two adjacent counted for-loops over the same
+           iteration space into a single loop body when no dependence forbids it,
+           so an intermediate result stays in registers/cache instead of being
+           written out by the first loop and re-streamed from memory by the
+           second }
+         cs_opt_loopfuse
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -492,7 +498,7 @@ interface
          'DEADSTORE','FORCENOSTACKFRAME','USELOADMODIFYSTORE',
          'UNUSEDPARA','CONSTS','FORLOOP','LICM','LOOPUNSWITCH','BITIDIOM',
          'RANGEELIM','VECTORIZE','JUMPTHREAD','LOOPDISTPAT',
-         'LOOPPEEL','LOOPSPLIT'
+         'LOOPPEEL','LOOPSPLIT','LOOPFUSE'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
@@ -527,7 +533,7 @@ interface
        genericlevel3optimizerswitches = [cs_opt_level3,cs_opt_constant_propagate,cs_opt_nodedfa,cs_opt_loopstrength
                                          {$ifndef llvm},cs_opt_use_load_modify_store{$endif},
                                          cs_opt_loopunroll,cs_opt_forloop];
-       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit];
+       genericlevel4optimizerswitches = [cs_opt_level4,cs_opt_reorder_fields,cs_opt_dead_values,cs_opt_fastmath,cs_opt_loopmotion,cs_opt_loopunswitch,cs_opt_bitidiom,cs_opt_rangecheckelim,cs_opt_jumpthread,cs_opt_loopdistpat,cs_opt_looppeel,cs_opt_loopsplit,cs_opt_loopfuse];
 
        { whole program optimizations whose information generation requires
          information from all loaded units

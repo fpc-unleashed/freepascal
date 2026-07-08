@@ -2579,7 +2579,8 @@ const
          'cs_opt_jumpthread',
          'cs_opt_loopdistpat',
          'cs_opt_looppeel',
-         'cs_opt_loopsplit'
+         'cs_opt_loopsplit',
+         'cs_opt_loopfuse'
        );
     var
          globalswitch  : tglobalswitch;
