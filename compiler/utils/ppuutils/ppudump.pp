@@ -2581,7 +2581,8 @@ const
          'cs_opt_switchtable',
          'cs_opt_ree',
          'cs_opt_shrinkwrap',
-         'cs_opt_gvnpre'
+         'cs_opt_gvnpre',
+         'cs_opt_pure'
        );
     var
          globalswitch  : tglobalswitch;
