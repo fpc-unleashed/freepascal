@@ -336,6 +336,19 @@ implementation
           end;
       end;
 
+    procedure check_finalize_block_syms(p:TObject;arg:pointer);
+      begin
+        { block-scoped inline vars are finalized by the routine itself; in
+          the main program body they are static syms, so accept both kinds }
+        if (tsym(p).typ in [localvarsym,staticvarsym]) and
+           (tabstractnormalvarsym(p).refs>0) and
+           is_managed_type(tabstractnormalvarsym(p).vardef) then
+          begin
+            include(current_procinfo.flags,pi_needs_implicit_finally);
+            include(current_procinfo.flags,pi_do_call);
+          end;
+      end;
+
     procedure init_main_block_syms(block: tnode);
       var
          oldfilepos: tfileposinfo;
@@ -2058,7 +2071,7 @@ implementation
             { also check block-scoped inline vars }
             if assigned(procdef.blocklocalsymtables) then
               for blk_i:=0 to procdef.blocklocalsymtables.count-1 do
-                TSymtable(procdef.blocklocalsymtables[blk_i]).SymList.ForEachCall(@check_finalize_locals,nil);
+                TSymtable(procdef.blocklocalsymtables[blk_i]).SymList.ForEachCall(@check_finalize_block_syms,nil);
           end;
 
 {$ifdef SUPPORT_SAFECALL}

@@ -95,6 +95,37 @@ implementation
         result:=arr;
       end;
 
+    { block scopes at main-program level (program body, unit init) hold
+      static vars like every other main-program variable, so a closure can
+      capture them directly - a parent-frame access from a nested routine
+      into the main frame cannot be expressed (IE 2020050302). Block scopes
+      inside routines hold ordinary locals }
+    function inline_var_sym_is_local: boolean;
+      begin
+        result:=(symtablestack.top.symtabletype=localsymtable) or
+                ((symtablestack.top.symtabletype=blocksymtable) and
+                 (symtablestack.top.symtablelevel>=normal_function_level));
+      end;
+
+    { create the sym for an inline var declaration. sibling main-body block
+      scopes may reuse a name, so block statics get the declaration position
+      mangled in to keep their asm labels unique. the full mangled name is
+      anchored at the routine's static symtable because make_mangledname
+      cannot walk a block chain that leads through a with-symtable }
+    function create_inline_var_sym(const n: string; def: tdef): tabstractnormalvarsym;
+      begin
+        if inline_var_sym_is_local then
+          result:=clocalvarsym.create(n,vs_value,def,[])
+        else
+          begin
+            result:=cstaticvarsym.create(n,vs_value,def,[]);
+            if symtablestack.top.symtabletype=blocksymtable then
+              tstaticvarsym(result).set_mangledname(
+                make_mangledname('U',current_procinfo.procdef.localst,
+                  n+'$blk'+tostr(current_tokenpos.line)+'_'+tostr(current_tokenpos.column)));
+          end;
+      end;
+
     function branch_type(olddef, branchdef: tdef): tdef; inline;
       begin
         olddef:=constructor_to_dynarray(olddef);
@@ -1549,10 +1580,7 @@ implementation
 
               { hidden loop variable holds each collection element }
               str(current_tokenpos.line, uniq);
-              if symtablestack.top.symtabletype in [localsymtable,blocksymtable] then
-                itempvs := clocalvarsym.create('$forTup'+uniq, vs_value, elemdef, [])
-              else
-                itempvs := cstaticvarsym.create('$forTup'+uniq, vs_value, elemdef, []);
+              itempvs := create_inline_var_sym('$forTup'+uniq, elemdef);
               itempvs.register_sym;
               symtablestack.top.insertsym(itempvs);
               if itempvs.typ = staticvarsym then
@@ -1565,10 +1593,7 @@ implementation
                 begin
                   if tnames[i]='_' then
                     continue;
-                  if symtablestack.top.symtabletype in [localsymtable,blocksymtable] then
-                    uservs := clocalvarsym.create(tnames[i], vs_value, fieldsyms[i].vardef, [])
-                  else
-                    uservs := cstaticvarsym.create(tnames[i], vs_value, fieldsyms[i].vardef, []);
+                  uservs := create_inline_var_sym(tnames[i], fieldsyms[i].vardef);
                   uservs.register_sym;
                   symtablestack.top.insertsym(uservs);
                   if uservs.typ = staticvarsym then
@@ -2254,10 +2279,7 @@ implementation
                end;
 
              { Create the loop variable – type may be set explicitly or inferred. }
-             if symtablestack.top.symtabletype in [localsymtable,blocksymtable] then
-               vs := clocalvarsym.create(current_scanner.orgpattern, vs_value, generrordef, [])
-             else
-               vs := cstaticvarsym.create(current_scanner.orgpattern, vs_value, generrordef, []);
+             vs := create_inline_var_sym(current_scanner.orgpattern, generrordef);
              vs.register_sym;
              symtablestack.top.insertsym(vs);
              consume(_ID);
@@ -2636,18 +2658,9 @@ implementation
                `withblockst` pushed, symtablestack.top is the block symtable
                that gets popped at the end of `with`, so a sibling `with var
                NAME` can reuse the same name. }
-             if assigned(withblockst) then
-               begin
-                 lifetime_var := clocalvarsym.create(lifetime_name, vs_value, hdef, []);
-                 lifetime_var.register_sym;
-                 symtablestack.top.insertsym(lifetime_var);
-               end
-             else
-               begin
-                 lifetime_var := cstaticvarsym.create(lifetime_name, vs_value, hdef, []);
-                 lifetime_var.register_sym;
-                 symtablestack.top.insertsym(lifetime_var);
-               end;
+             lifetime_var := create_inline_var_sym(lifetime_name, hdef);
+             lifetime_var.register_sym;
+             symtablestack.top.insertsym(lifetime_var);
              { Form C/A get an init expression so the var is effectively
                initialized; Form D leaves it at vs_declared so first read
                without write still triggers the usual uninitialized warning. }
@@ -3844,10 +3857,7 @@ implementation
               begin
                 if names[j]='_' then
                   continue;
-                if symtablestack.top.symtabletype in [localsymtable,blocksymtable] then
-                  destruct_var := clocalvarsym.create(names[j], vs_value, fieldsyms[j].vardef, [])
-                else
-                  destruct_var := cstaticvarsym.create(names[j], vs_value, fieldsyms[j].vardef, []);
+                destruct_var := create_inline_var_sym(names[j], fieldsyms[j].vardef);
                 destruct_var.register_sym;
                 symtablestack.top.insertsym(destruct_var);
                 destruct_var.varstate := vs_initialised;
@@ -3875,11 +3885,7 @@ implementation
         try
           { --- collect one or more variable names -------------------------------- }
           repeat
-            { blocksymtable is always inside a procedure (local scope) }
-            if symtablestack.top.symtabletype in [localsymtable,blocksymtable] then
-              vs := clocalvarsym.create(current_scanner.orgpattern, vs_value, generrordef, [])
-            else
-              vs := cstaticvarsym.create(current_scanner.orgpattern, vs_value, generrordef, []);
+            vs := create_inline_var_sym(current_scanner.orgpattern, generrordef);
             vs.register_sym;
             symtablestack.top.insertsym(vs);
             sc.add(vs);

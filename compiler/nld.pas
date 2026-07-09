@@ -383,8 +383,10 @@ implementation
                  variable needs to be in memory.
                  It is too hard and the benefit is too small to detect whether a
                  variable is only used in the finalization to add support for it (PFV) }
+               { blocksymtable covers main-program block-scoped inline vars,
+                 which are static and may be referenced from closures }
                if assigned(current_procinfo) and
-                  (symtable.symtabletype=staticsymtable) and
+                  (symtable.symtabletype in [staticsymtable,blocksymtable]) and
                   (
                     (symtable.symtablelevel<>current_procinfo.procdef.localst.symtablelevel) or
                     (current_procinfo.procdef.proctypeoption=potype_unitfinalize)

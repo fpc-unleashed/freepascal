@@ -574,7 +574,12 @@ implementation
            begin
              if assigned(pd.blocklocalsymtables) then
                for blk_i:=0 to pd.blocklocalsymtables.count-1 do
-                 TSymtable(pd.blocklocalsymtables[blk_i]).SymList.ForEachCall(@local_varsyms_finalize,@stat);
+                 begin
+                   TSymtable(pd.blocklocalsymtables[blk_i]).SymList.ForEachCall(@local_varsyms_finalize,@stat);
+                   { main-body block-scoped inline vars are static syms and
+                     live outside the staticsymtable walked at unit finalize }
+                   TSymtable(pd.blocklocalsymtables[blk_i]).SymList.ForEachCall(@static_syms_finalize,@stat);
+                 end;
            end;
          else
            begin
