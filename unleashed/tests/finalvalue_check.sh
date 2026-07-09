@@ -34,11 +34,16 @@ fail() { echo "FAIL: $*"; rc=1; }
 # ---------------------------------------------------------------------------
 cat > "$tmp/k.pp" <<'EOF'
 unit k;
-{$mode objfpc}{$H+}
+{$mode objfpc}{$H+}{$POINTERMATH ON}
 interface
+type PLongint = ^Longint;
 function accum(n: longint): longint;
 function emptyloop(n: longint): longint;
 function withbreak(n: longint): longint;
+function ptrinc(base: PLongint; n: longint): PtrInt;    { pointer stride -> deleted }
+function multiacc(n: longint): longint;                 { two accumulators -> deleted }
+function dupacc(n: longint): longint;                   { same acc twice -> kept }
+function ptrassign(base: PLongint; n: longint): PtrInt; { p:=p+stride form -> kept }
 implementation
 function accum(n: longint): longint;
 var i,s: longint;
@@ -49,6 +54,18 @@ begin for i:=1 to n do ; emptyloop:=42; end;
 function withbreak(n: longint): longint;
 var i,s: longint;
 begin s:=0; for i:=1 to n do begin inc(s,3); if i=3 then break; end; withbreak:=s; end;
+function ptrinc(base: PLongint; n: longint): PtrInt;
+var i: longint; p: PLongint;
+begin p:=base; for i:=1 to n do inc(p,2); ptrinc:=PtrInt(p)-PtrInt(base); end;
+function multiacc(n: longint): longint;
+var i,s,t: longint;
+begin s:=0; t:=0; for i:=1 to n do begin inc(s,3); dec(t,2); end; multiacc:=s+t; end;
+function dupacc(n: longint): longint;
+var i,s: longint;
+begin s:=0; for i:=1 to n do begin inc(s,3); inc(s,5); end; dupacc:=s; end;
+function ptrassign(base: PLongint; n: longint): PtrInt;
+var i: longint; p: PLongint;
+begin p:=base; for i:=1 to n do p:=p+2; ptrassign:=PtrInt(p)-PtrInt(base); end;
 end.
 EOF
 
@@ -81,24 +98,33 @@ asm_for() {  # $1=flags $2=tag ; sets globals via echo "acc empty brk"
   mkdir -p "$d"; cp "$tmp/k.pp" "$d/"
   ( cd "$d" && "$CC" -Fu"$RTL" $1 -al -s k.pp >/dev/null 2>&1 )
   local f="$d/k.s"
-  echo "$(branches_in "$f" 'ACCUM') $(branches_in "$f" 'EMPTYLOOP') $(branches_in "$f" 'WITHBREAK')"
+  # accum empty break  ptrinc multiacc  dupacc ptrassign
+  echo "$(branches_in "$f" 'ACCUM') $(branches_in "$f" 'EMPTYLOOP') $(branches_in "$f" 'WITHBREAK') $(branches_in "$f" 'PTRINC') $(branches_in "$f" 'MULTIACC') $(branches_in "$f" 'DUPACC') $(branches_in "$f" 'PTRASSIGN')"
 }
 
-read on_acc  on_empty  on_brk  < <(asm_for "-O2 -OoFINALVALUE" on)
-read off_acc off_empty off_brk < <(asm_for "-O2"              off)
+read on_acc  on_empty  on_brk  on_pinc  on_multi  on_dup  on_passign  < <(asm_for "-O2 -OoFINALVALUE" on)
+read off_acc off_empty off_brk off_pinc off_multi off_dup off_passign < <(asm_for "-O2"              off)
 
-echo "ON  : accum_backedges=$on_acc  empty_backedges=$on_empty  break_backedges=$on_brk"
-echo "OFF : accum_backedges=$off_acc empty_backedges=$off_empty break_backedges=$off_brk"
+echo "ON  : accum=$on_acc empty=$on_empty break=$on_brk ptrinc=$on_pinc multiacc=$on_multi dupacc=$on_dup ptrassign=$on_passign"
+echo "OFF : accum=$off_acc empty=$off_empty break=$off_brk ptrinc=$off_pinc multiacc=$off_multi dupacc=$off_dup ptrassign=$off_passign"
 
-# ON: the accumulator loop and the empty loop are deleted -> no loop back-edge.
+# ON: eligible loops deleted -> no loop back-edge.
 [ "$on_acc"   -eq 0  ] || fail "accumulator loop not deleted under -OoFINALVALUE (back-edges=$on_acc)"
 [ "$on_empty" -eq 0  ] || fail "empty loop not deleted under -OoFINALVALUE (back-edges=$on_empty)"
-# OFF: both loops are present -> a back-edge each.
+[ "$on_pinc"  -eq 0  ] || fail "pointer-stride loop not deleted under -OoFINALVALUE (back-edges=$on_pinc)"
+[ "$on_multi" -eq 0  ] || fail "multi-accumulator loop not deleted under -OoFINALVALUE (back-edges=$on_multi)"
+# OFF: every loop is present -> a back-edge each.
 [ "$off_acc"   -ge 1 ] || fail "accumulator loop unexpectedly absent with switch OFF"
 [ "$off_empty" -ge 1 ] || fail "empty loop unexpectedly absent with switch OFF"
-# The break loop is rejected by the gates -> kept identically on and off.
-[ "$on_brk"    -ge 1 ] || fail "loop with break lost its back-edge (should be kept)"
-[ "$on_brk"   -eq "$off_brk" ] || fail "loop with break altered under -OoFINALVALUE (on=$on_brk off=$off_brk)"
+[ "$off_pinc"  -ge 1 ] || fail "pointer-stride loop unexpectedly absent with switch OFF"
+[ "$off_multi" -ge 1 ] || fail "multi-accumulator loop unexpectedly absent with switch OFF"
+# Rejected loops -> kept identically on and off.
+[ "$on_brk"     -ge 1 ] || fail "loop with break lost its back-edge (should be kept)"
+[ "$on_brk"     -eq "$off_brk" ]     || fail "loop with break altered under -OoFINALVALUE (on=$on_brk off=$off_brk)"
+[ "$on_dup"     -ge 1 ] || fail "duplicate-accumulator loop lost its back-edge (should be kept)"
+[ "$on_dup"     -eq "$off_dup" ]     || fail "duplicate-accumulator loop altered under -OoFINALVALUE (on=$on_dup off=$off_dup)"
+[ "$on_passign" -ge 1 ] || fail "pointer-assign loop lost its back-edge (should be kept)"
+[ "$on_passign" -eq "$off_passign" ] || fail "pointer-assign loop altered under -OoFINALVALUE (on=$on_passign off=$off_passign)"
 
 # ---------------------------------------------------------------------------
 # Part B: semantics (ON vs OFF byte-identical stdout, both exit 0)

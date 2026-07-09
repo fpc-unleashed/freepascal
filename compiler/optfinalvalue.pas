@@ -6,50 +6,69 @@
     performs, to FPC.  Operates on one routine's node tree, on the still-
     structured tfor-nodes, before -OoFORLOOP / ConvertForLoops lower them.
 
-    Transform (conservative first landing):
+    Transform (conservative first landing + follow-ups):
 
       A counted for-loop
 
           for i := a to b do inc(s,c);        // or  s := s + c
           use(s);
 
-      whose whole body is a SINGLE accumulator update of a plain local
-      integer  s  by a loop-invariant amount  c  is replaced by the closed
-      form of s's exit value and the loop is deleted:
+      whose whole body is one or more INDEPENDENT accumulator updates, each
+      of a distinct plain local integer OR pointer  s  by a loop-invariant
+      amount  c , is replaced by the closed form of every accumulator's exit
+      value and the loop is deleted:
 
-          if a <= b then s := s + (b-a+1)*c;
-          use(s);
+          for i := a to b do begin s := s + cs;  p := p + cp end;   // body
+      ->  if a <= b then begin
+            s := s + (b-a+1)*cs;
+            p := p + (b-a+1)*cp;                 // pointer: advances by
+          end;                                   // (b-a+1)*cp elements
+          use(s); use(p);
 
       For a downto loop the guard/trip count use  to <= from .  A loop with
       an EMPTY body (and an unused counter) is deleted outright.  Because the
-      loop no longer updates s, every post-loop use of s reads the closed
-      form directly -- i.e. final-value replacement without touching the use
-      sites.
+      loop no longer updates the accumulators, every post-loop use reads the
+      closed form directly -- i.e. final-value replacement without touching
+      the use sites.
+
+    Follow-ups landed on top of the integer single-statement first cut:
+
+      * POINTER-STRIDE accumulators (p := p + stride / inc(p,stride)): the
+        closed form  p + (iters*stride)  is built as a pointer+integer
+        addnode, so the compiler applies the same element-size scaling the
+        loop body did; iters*stride (mod 2^64) scaled by the element size
+        equals the repeated pointer advance bit-for-bit;
+      * MULTI-STATEMENT bodies: a body that is several statements, each an
+        independent accumulator update of a DISTINCT variable, matches -- one
+        closed form per accumulator under the shared trip-count guard.  The
+        accumulators are distinct and no increment references another, so
+        they evolve independently and statement order is irrelevant.
 
     Soundness (correctness over coverage):
 
-      * only integer inductions; the loop counter is a plain local integer
-        of at most 32 bits, so the symbolic trip count  b-a+1  is exact in
-        64-bit arithmetic (max ~2^32);
-      * the accumulator s is a plain local integer, distinct from the
-        counter, updated exactly once per iteration by s := s +/- c;
-      * c and the bounds a,b are loop-invariant, side-effect free integer
-        expressions referencing neither i nor s (so no double-evaluation or
-        aliasing hazard -- the bounds are read once at the loop position just
-        as the for-loop would, before s is stored);
+      * the loop counter is a plain local integer of at most 32 bits, so the
+        symbolic trip count  b-a+1  is exact in 64-bit arithmetic (max ~2^32);
+      * each accumulator s is a plain local integer or pointer, distinct from
+        the counter AND from every other accumulator, updated exactly once
+        per iteration by s := s +/- c;
+      * every c and the bounds a,b are loop-invariant, side-effect free
+        integer expressions referencing neither i nor ANY accumulator (so no
+        double-evaluation or aliasing hazard -- the bounds are read once at
+        the loop position just as the for-loop would, before any s is stored);
       * the counter is not referenced anywhere outside the loop (its exit
         value is dead), so deleting the loop changes no observable use;
       * ZERO-TRIP loops (b<a ascending, a<b downto) are handled by the
-        a<=b / to<=from guard: s is then left unchanged, exactly like the
-        loop running zero times;
+        a<=b / to<=from guard: the accumulators are then left unchanged,
+        exactly like the loop running zero times;
       * two's-complement wraparound is preserved: without overflow checking
         s0 + iters*c (mod 2^n) equals the repeated addition, so the closed
         form is bit-identical.  Under -Co (overflow) or -Cr (range) the loop
         would trap on the overflowing iteration while the closed form would
         not, so the whole pass is DISABLED under either;
-      * a body that is anything other than the single accumulator update
-        (calls, stores, control flow, breaks/continues/exits, nested loops)
-        never matches, so such loops are never deleted.
+      * a body containing anything other than accumulator updates (calls,
+        stores, control flow, breaks/continues/exits, nested loops), or two
+        updates of the SAME accumulator, never matches, so such loops are
+        never deleted.
 
     Opt-in via -OoFINALVALUE; NOT part of the -O4 defaults.  A wrong final
     value or a wrongly-deleted loop is a miscompile, hence the conservatism.
@@ -100,26 +119,37 @@ implementation
       end;
 
 
-    { count the effective (non-nothing) leaf statements of a loop body and,
-      when there is exactly one, return it in SINGLE }
-    procedure count_effective(n : tnode; var cnt : integer; var single : tnode);
+    const
+      { at most this many independent accumulator updates in one loop body }
+      MAXACC = 64;
+
+    type
+      tnodearr = array[0..MAXACC-1] of tnode;
+      tsymarr  = array[0..MAXACC] of tsym;    { isym + up to MAXACC accs }
+
+    { collect the effective (non-nothing) leaf statements of a loop body into
+      ARR.  CNT is the running count; it is set to -1 if the body has more than
+      MAXACC effective statements (caller then bails out). }
+    procedure collect_stmts(n : tnode; var arr : tnodearr; var cnt : integer);
       begin
-        if not assigned(n) then
+        if (cnt<0) or not assigned(n) then
           exit;
         case n.nodetype of
           blockn:
-            count_effective(tblocknode(n).left,cnt,single);
+            collect_stmts(tblocknode(n).left,arr,cnt);
           statementn:
             begin
-              count_effective(tstatementnode(n).left,cnt,single);
-              count_effective(tstatementnode(n).right,cnt,single);
+              collect_stmts(tstatementnode(n).left,arr,cnt);
+              collect_stmts(tstatementnode(n).right,arr,cnt);
             end;
           nothingn:
             ; { ignore }
           else
             begin
+              if cnt>=MAXACC then
+                begin cnt:=-1; exit; end;
+              arr[cnt]:=n;
               inc(cnt);
-              single:=n;
             end;
         end;
       end;
@@ -130,13 +160,16 @@ implementation
     type
       pinvctx = ^tinvctx;
       tinvctx = record
-        isym,ssym : tsym;
+        forbidden : ^tsymarr;   { syms the expression must not reference }
+        nforbidden : integer;
         ok : boolean;
       end;
 
     function inv_check(var n : tnode; arg : pointer) : foreachnoderesult;
       var
         ctx : pinvctx;
+        sym : tsym;
+        k : integer;
       begin
         result:=fen_false;
         ctx:=pinvctx(arg);
@@ -144,9 +177,15 @@ implementation
           ordconstn,addn,subn,muln,unaryminusn,typeconvn:
             ; { pure integer arithmetic over invariants: fine }
           loadn:
-            if (tloadnode(n).symtableentry=ctx^.isym) or
-               (tloadnode(n).symtableentry=ctx^.ssym) then
-              ctx^.ok:=false;
+            begin
+              sym:=tloadnode(n).symtableentry;
+              for k:=0 to ctx^.nforbidden-1 do
+                if ctx^.forbidden^[k]=sym then
+                  begin
+                    ctx^.ok:=false;
+                    break;
+                  end;
+            end;
           else
             { anything else (calls, inline intrinsics, derefs, indexing,
               address-of, assignments, ...) is not provably invariant /
@@ -159,16 +198,25 @@ implementation
 
 
     { is EXPR a loop-invariant, side-effect-free integer expression that
-      references neither the counter ISYM nor the accumulator SSYM ? }
-    function is_simple_invariant(expr : tnode; isym,ssym : tsym) : boolean;
+      references none of the NFORBIDDEN syms in FORBIDDEN (counter + accs) ? }
+    function is_invariant(expr : tnode; var forbidden : tsymarr; nforbidden : integer) : boolean;
       var
         ctx : tinvctx;
       begin
-        ctx.isym:=isym;
-        ctx.ssym:=ssym;
+        ctx.forbidden:=@forbidden;
+        ctx.nforbidden:=nforbidden;
         ctx.ok:=true;
         foreachnodestatic(expr,@inv_check,@ctx);
         result:=ctx.ok;
+      end;
+
+    { convenience: invariance against a single symbol (the counter) }
+    function is_invariant1(expr : tnode; sym : tsym) : boolean;
+      var
+        one : tsymarr;
+      begin
+        one[0]:=sym;
+        result:=is_invariant(expr,one,1);
       end;
 
 
@@ -210,15 +258,17 @@ implementation
       end;
 
 
-    { A plain local integer variable usable as counter/accumulator: a local
-      var, integer, at most MAXSIZE bytes (0 = no limit), and NOT address-taken,
-      captured by a nested scope, or volatile -- so the whole-routine scans see
-      every one of its uses and no alias can change it behind our back. }
-    function simple_local_int(n : tnode; maxsize : longint) : boolean;
+    { A plain local variable usable as counter/accumulator: a local var, NOT
+      address-taken, captured by a nested scope, or volatile -- so the whole-
+      routine scans see every one of its uses and no alias can change it behind
+      our back.  It must be an integer of at most MAXSIZE bytes (0 = no limit),
+      or -- when ALLOW_POINTER -- a pointer (ISPTR is set accordingly). }
+    function simple_local_var(n : tnode; maxsize : longint; allow_pointer : boolean; out isptr : boolean) : boolean;
       var
         sym : tsym;
       begin
         result:=false;
+        isptr:=false;
         n:=strip_conv(n);
         if not (assigned(n) and (n.nodetype=loadn)) then
           exit;
@@ -229,10 +279,130 @@ implementation
            tabstractnormalvarsym(sym).different_scope or
            (vo_volatile in tabstractnormalvarsym(sym).varoptions) then
           exit;
-        if not is_integer(n.resultdef) then
+        if is_integer(n.resultdef) then
+          { plain integer: ok }
+        else if allow_pointer and is_pointer(n.resultdef) then
+          isptr:=true
+        else
           exit;
         if (maxsize<>0) and (n.resultdef.size>maxsize) then
           exit;
+        result:=true;
+      end;
+
+    { integer-only shorthand (the loop counter must be an integer) }
+    function simple_local_int(n : tnode; maxsize : longint) : boolean;
+      var
+        dummy : boolean;
+      begin
+        result:=simple_local_var(n,maxsize,false,dummy);
+      end;
+
+
+    { one matched accumulator update  s := s +/- c  ( c=nil means step 1 ) }
+    type
+      taccrec = record
+        sym : tsym;      { the accumulated variable }
+        cexpr : tnode;   { increment amount (nil => 1); NOT copied, owned by loop }
+        negative : boolean;
+        isptr : boolean; { s is a pointer -> pointer-stride final value }
+        sdef : tdef;     { s's type (integer truncation target) }
+      end;
+
+
+    { match STMT against a single accumulator update of a plain local integer or
+      pointer distinct from the counter ISYM; on success fill ACC and return
+      true.  Does NOT check cexpr invariance (needs the full accumulator set). }
+    function match_accumulator(stmt : tnode; isym : tsym; out acc : taccrec) : boolean;
+      var
+        lhs,r,o1,o2 : tnode;
+      begin
+        result:=false;
+        acc.sym:=nil; acc.cexpr:=nil; acc.negative:=false; acc.isptr:=false; acc.sdef:=nil;
+
+        case stmt.nodetype of
+          assignn:
+            begin
+              { source form  s := s + c / s := c + s / s := s - c
+                (also inc/dec after lowering to an assignment) }
+              lhs:=strip_conv(tassignmentnode(stmt).left);
+              if not simple_local_var(lhs,0,true,acc.isptr) then
+                exit;
+              { the pointer  p := p + stride  form is rejected here: by the
+                time this pass runs the add has been typechecked, so stride is
+                already multiplied by the element size, and rebuilding a
+                pointer+integer closed form would scale it a second time.  The
+                still-unlowered  inc(p,stride)  form below carries the raw
+                (unscaled) element stride and IS supported. }
+              if acc.isptr then
+                exit;
+              acc.sym:=tloadnode(lhs).symtableentry;
+              if acc.sym=isym then
+                exit;
+              r:=strip_conv(tassignmentnode(stmt).right);
+              case r.nodetype of
+                addn:
+                  begin
+                    o1:=taddnode(r).left;
+                    o2:=taddnode(r).right;
+                    if is_load_of(o1,acc.sym) then
+                      acc.cexpr:=o2
+                    else if is_load_of(o2,acc.sym) then
+                      acc.cexpr:=o1
+                    else
+                      exit;
+                  end;
+                subn:
+                  begin
+                    o1:=taddnode(r).left;
+                    o2:=taddnode(r).right;
+                    if is_load_of(o1,acc.sym) then
+                      begin
+                        acc.cexpr:=o2;
+                        acc.negative:=true;
+                      end
+                    else
+                      exit;
+                  end;
+                else
+                  exit;
+              end;
+            end;
+          inlinen:
+            begin
+              { still-unlowered  inc(s[,c]) / dec(s[,c])  -- a for-loop body's
+                inc node is not lowered to an assignment until after this pass }
+              if not (tinlinenode(stmt).inlinenumber in [in_inc_x,in_dec_x]) then
+                exit;
+              acc.negative:=tinlinenode(stmt).inlinenumber=in_dec_x;
+              o1:=tinlinenode(stmt).left;  { first callparanode }
+              if not (assigned(o1) and (o1.nodetype=callparan)) then
+                exit;
+              lhs:=strip_conv(tcallparanode(o1).left);   { the accumulator var }
+              if not simple_local_var(lhs,0,true,acc.isptr) then
+                exit;
+              acc.sym:=tloadnode(lhs).symtableentry;
+              if acc.sym=isym then
+                exit;
+              { increment amount: the optional second parameter (default 1) }
+              o2:=tcallparanode(o1).right;
+              if assigned(o2) then
+                begin
+                  if o2.nodetype<>callparan then
+                    exit;
+                  { reject inc(s,a,b,...) with extra params }
+                  if assigned(tcallparanode(o2).right) then
+                    exit;
+                  acc.cexpr:=tcallparanode(o2).left;
+                end
+              else
+                acc.cexpr:=nil;   { step of 1 }
+            end;
+          else
+            exit;
+        end;
+
+        acc.sdef:=lhs.resultdef;
         result:=true;
       end;
 
@@ -241,14 +411,16 @@ implementation
       var
         fn : tfornode;
         backward : boolean;
-        isym,ssym : tsym;
-        sdef : tdef;
-        cnt : integer;
-        stmt,lhs,r,o1,o2,cexpr : tnode;
-        negative : boolean;
+        isym : tsym;
+        cnt,k,j : integer;
+        stmts : tnodearr;
+        accs : array[0..MAXACC-1] of taccrec;
+        forbidden : tsymarr;      { isym + every accumulator sym }
+        nforbidden : integer;
         loexpr,hiexpr : tnode;
-        count,product,newval,guard,assign : tnode;
-        single : tnode;
+        count,product,newval : tnode;
+        guard,blk : tnode;
+        laststmt : tstatementnode;
       begin
         result:=false;
         fn:=tfornode(n);
@@ -273,10 +445,10 @@ implementation
         isym:=tloadnode(strip_conv(fn.left)).symtableentry;
 
         { bounds must be invariant, side-effect free, and independent of the
-          counter (they are evaluated once, before s is stored) }
-        if not is_simple_invariant(fn.right,isym,nil) then
+          counter (they are evaluated once, before any s is stored) }
+        if not is_invariant1(fn.right,isym) then
           exit;
-        if not is_simple_invariant(fn.t1,isym,nil) then
+        if not is_invariant1(fn.t1,isym) then
           exit;
 
         { counter's exit value must be dead: no reference outside the loop.
@@ -285,10 +457,9 @@ implementation
         if loads_of(ctx^.code,isym)<>loads_of(fn,isym) then
           exit;
 
-        { classify the body }
+        { classify the body: collect the effective leaf statements }
         cnt:=0;
-        single:=nil;
-        count_effective(fn.t2,cnt,single);
+        collect_stmts(fn.t2,stmts,cnt);
 
         if cnt=0 then
           begin
@@ -299,94 +470,31 @@ implementation
             exit(true);
           end;
 
-        if cnt<>1 then
+        if cnt<0 then     { more than MAXACC statements: give up }
           exit;
-        stmt:=single;
 
-        negative:=false;
-        cexpr:=nil;
-        lhs:=nil;
+        { every statement must be an independent accumulator update }
+        forbidden[0]:=isym;
+        nforbidden:=1;
+        for k:=0 to cnt-1 do
+          begin
+            if not match_accumulator(stmts[k],isym,accs[k]) then
+              exit;
+            { each accumulator must be distinct from all earlier ones (two
+              updates of the same variable would double-count) }
+            for j:=0 to k-1 do
+              if accs[j].sym=accs[k].sym then
+                exit;
+            forbidden[nforbidden]:=accs[k].sym;
+            inc(nforbidden);
+          end;
 
-        case stmt.nodetype of
-          assignn:
-            begin
-              { source form  s := s + c / s := c + s / s := s - c
-                (also inc/dec after lowering to an assignment) }
-              lhs:=strip_conv(tassignmentnode(stmt).left);
-              if not simple_local_int(lhs,0) then
-                exit;
-              ssym:=tloadnode(lhs).symtableentry;
-              if ssym=isym then
-                exit;
-              r:=strip_conv(tassignmentnode(stmt).right);
-              case r.nodetype of
-                addn:
-                  begin
-                    o1:=taddnode(r).left;
-                    o2:=taddnode(r).right;
-                    if is_load_of(o1,ssym) then
-                      cexpr:=o2
-                    else if is_load_of(o2,ssym) then
-                      cexpr:=o1
-                    else
-                      exit;
-                  end;
-                subn:
-                  begin
-                    o1:=taddnode(r).left;
-                    o2:=taddnode(r).right;
-                    if is_load_of(o1,ssym) then
-                      begin
-                        cexpr:=o2;
-                        negative:=true;
-                      end
-                    else
-                      exit;
-                  end;
-                else
-                  exit;
-              end;
-            end;
-          inlinen:
-            begin
-              { still-unlowered  inc(s[,c]) / dec(s[,c])  -- a for-loop body's
-                inc node is not lowered to an assignment until after this pass }
-              if not (tinlinenode(stmt).inlinenumber in [in_inc_x,in_dec_x]) then
-                exit;
-              negative:=tinlinenode(stmt).inlinenumber=in_dec_x;
-              o1:=tinlinenode(stmt).left;  { first callparanode }
-              if not (assigned(o1) and (o1.nodetype=callparan)) then
-                exit;
-              lhs:=strip_conv(tcallparanode(o1).left);   { the counter/accumulator var }
-              if not simple_local_int(lhs,0) then
-                exit;
-              ssym:=tloadnode(lhs).symtableentry;
-              if ssym=isym then
-                exit;
-              { increment amount: the optional second parameter (default 1) }
-              o2:=tcallparanode(o1).right;
-              if assigned(o2) then
-                begin
-                  if o2.nodetype<>callparan then
-                    exit;
-                  { reject inc(s,a,b,...) with extra params }
-                  if assigned(tcallparanode(o2).right) then
-                    exit;
-                  cexpr:=tcallparanode(o2).left;
-                end
-              else
-                cexpr:=nil;   { step of 1 }
-            end;
-          else
+        { every increment c must be loop-invariant and reference neither the
+          counter nor ANY accumulator (nil means an implicit step of 1) }
+        for k:=0 to cnt-1 do
+          if assigned(accs[k].cexpr) and
+             not is_invariant(accs[k].cexpr,forbidden,nforbidden) then
             exit;
-        end;
-
-        sdef:=lhs.resultdef;
-
-        { the increment c must be loop-invariant and independent of i and s
-          (nil means an implicit step of 1) }
-        if assigned(cexpr) and not is_simple_invariant(cexpr,isym,ssym) then
-          exit;
 
         { --- all checks passed: build the closed form --------------------- }
 
@@ -402,38 +510,60 @@ implementation
             hiexpr:=fn.t1;
           end;
 
-        { count = hi - lo + 1  (in 64-bit, exact for <=32-bit counters) }
-        count:=caddnode.create_internal(addn,
-                 caddnode.create_internal(subn,
-                   ctypeconvnode.create_internal(hiexpr.getcopy,s64inttype),
-                   ctypeconvnode.create_internal(loexpr.getcopy,s64inttype)),
-                 cordconstnode.create(1,s64inttype,false));
+        { one closed-form assignment per accumulator, all under one guard }
+        blk:=internalstatements(laststmt);
+        for k:=0 to cnt-1 do
+          begin
+            { count = hi - lo + 1  (in 64-bit, exact for <=32-bit counters) }
+            count:=caddnode.create_internal(addn,
+                     caddnode.create_internal(subn,
+                       ctypeconvnode.create_internal(hiexpr.getcopy,s64inttype),
+                       ctypeconvnode.create_internal(loexpr.getcopy,s64inttype)),
+                     cordconstnode.create(1,s64inttype,false));
 
-        { product = count * c  (mod 2^64: low bits match the repeated adds).
-          For an implicit step of 1 (cexpr=nil) the product is just count. }
-        if assigned(cexpr) then
-          product:=caddnode.create_internal(muln,count,
-                     ctypeconvnode.create_internal(cexpr.getcopy,s64inttype))
-        else
-          product:=count;
+            { product = count * c  (mod 2^64: low bits match the repeated adds).
+              For an implicit step of 1 (cexpr=nil) the product is just count. }
+            if assigned(accs[k].cexpr) then
+              product:=caddnode.create_internal(muln,count,
+                         ctypeconvnode.create_internal(accs[k].cexpr.getcopy,s64inttype))
+            else
+              product:=count;
 
-        { newval = s +/- (product truncated to s's type) }
-        if negative then
-          newval:=caddnode.create_internal(subn,
-                    cloadnode.create(ssym,ssym.owner),
-                    ctypeconvnode.create_internal(product,sdef))
-        else
-          newval:=caddnode.create_internal(addn,
-                    cloadnode.create(ssym,ssym.owner),
-                    ctypeconvnode.create_internal(product,sdef));
+            if accs[k].isptr then
+              begin
+                { pointer stride: newval = p +/- product, built as a
+                  pointer+integer add so the compiler scales the element count
+                  (product) by the pointed-to element size exactly as the loop
+                  body's  inc(p,stride) / p:=p+stride  did }
+                if accs[k].negative then
+                  newval:=caddnode.create_internal(subn,
+                            cloadnode.create(accs[k].sym,accs[k].sym.owner),product)
+                else
+                  newval:=caddnode.create_internal(addn,
+                            cloadnode.create(accs[k].sym,accs[k].sym.owner),product);
+              end
+            else
+              begin
+                { integer: newval = s +/- (product truncated to s's type) }
+                if accs[k].negative then
+                  newval:=caddnode.create_internal(subn,
+                            cloadnode.create(accs[k].sym,accs[k].sym.owner),
+                            ctypeconvnode.create_internal(product,accs[k].sdef))
+                else
+                  newval:=caddnode.create_internal(addn,
+                            cloadnode.create(accs[k].sym,accs[k].sym.owner),
+                            ctypeconvnode.create_internal(product,accs[k].sdef));
+              end;
 
-        assign:=cassignmentnode.create(cloadnode.create(ssym,ssym.owner),newval);
+            addstatement(laststmt,
+              cassignmentnode.create(cloadnode.create(accs[k].sym,accs[k].sym.owner),newval));
+          end;
 
         { guard: only assign when the loop would have run (lo <= hi) so a
-          zero-trip loop leaves s unchanged }
+          zero-trip loop leaves the accumulators unchanged }
         guard:=cifnode.create(
                  caddnode.create_internal(lten,loexpr.getcopy,hiexpr.getcopy),
-                 assign,nil);
+                 blk,nil);
 
         n:=guard;
         fn.free;

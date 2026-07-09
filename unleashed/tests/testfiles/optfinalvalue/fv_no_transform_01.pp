@@ -2,12 +2,37 @@
 { -OoFINALVALUE must NOT transform (and must leave correct results for) loops it
   cannot prove sound: a body containing a break, a body with a live call/store,
   a global (non-local) accumulator, a loop whose counter's exit value is used
-  afterwards, and a body doing more than one statement. All must still produce
-  their normal counted-loop results. }
+  afterwards, a body that updates the SAME accumulator twice (would be double-
+  counted), and a pointer  p := p + stride  assignment form (the stride is
+  already element-size-scaled at this point). All must still produce their
+  normal counted-loop results. }
 program fv_no_transform_01;
-{$mode objfpc}{$H+}
+{$mode objfpc}{$H+}{$POINTERMATH ON}
+
+type PLongint = ^Longint;
 
 var gs: longint;
+
+{ SAME accumulator updated twice per iteration -> not independent, would be
+  double-counted by a per-statement closed form, so the pass must reject it }
+function dup_acc(n: longint): longint;
+var i,s: longint;
+begin
+  s:=0;
+  for i:=1 to n do begin inc(s,3); inc(s,5); end;   { net +8 / iter }
+  dup_acc:=s;
+end;
+
+{ pointer p := p + stride assignment form: after typecheck the stride is
+  already element-size-scaled, so the pass deliberately rejects it (only the
+  still-unlowered inc/dec pointer form is transformed) }
+function ptr_assign(base: PLongint; n: longint): PtrInt;
+var i: longint; p: PLongint;
+begin
+  p:=base;
+  for i:=1 to n do p:=p+2;
+  ptr_assign:=PtrInt(p)-PtrInt(base);
+end;
 
 { break in body -> not a plain accumulator loop }
 function with_break(n: longint): longint;
@@ -45,7 +70,7 @@ begin
   with_store:=s + a[n and 63];
 end;
 
-var n: longint;
+var n: longint; buf: array[0..64] of longint;
 begin
   { break: stops after i=3 when n>=3 }
   if with_break(10) <> 9 then Halt(1);
@@ -56,5 +81,10 @@ begin
   for n:=1 to 20 do
     if counter_live(n) <> (2*n)*100 + n then Halt(5);
   if with_store(10) <> 10 + 10 then Halt(6);
+  for n:=0 to 20 do
+    begin
+      if dup_acc(n) <> 8*n then Halt(7);
+      if ptr_assign(@buf[0], n) <> n*2*SizeOf(Longint) then Halt(8);
+    end;
   Halt(0);
 end.
