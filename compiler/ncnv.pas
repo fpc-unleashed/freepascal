@@ -1000,6 +1000,14 @@ implementation
       begin
          self.create(node,voidtype);
          convtype:=tc_proc_2_procvar;
+         { -OoICF: a proc->procvar conversion is the canonical way a routine's
+           address becomes a value (@proc, procvar assignment, procvar argument,
+           @proc as a raw pointer). Record it so identical code folding never
+           collapses that routine to a zero-byte symbol alias (which would make
+           @f=@g observably true); it must keep its address-preserving thunk. }
+         if assigned(node) and assigned(node.resultdef) and
+            (node.resultdef.typ=procdef) then
+           tprocdef(node.resultdef).icf_addrtaken:=true;
       end;
 
 

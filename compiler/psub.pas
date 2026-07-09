@@ -176,6 +176,7 @@ implementation
        optpure,
        optpartialinline,
        optipara,
+       opticf,
        optsra,
        optconstprop,
        optdeadstore,
@@ -2857,6 +2858,13 @@ implementation
                not(cs_no_regalloc in current_settings.globalswitches) then
               RecordProcClobbers(current_procinfo.procdef,current_procinfo.flags);
 {$endif x86_64}
+
+            { -OoICF: associate this routine's mangled name with its procdef so
+              the identical code folding pass (run later, at create_objectfile)
+              can consult the procdef for its address-taken/visibility status and
+              store its cross-unit canonical digest. }
+            if cs_opt_icf in current_settings.optimizerswitches then
+              ICFRegisterRoutine(current_procinfo.procdef.mangledname,current_procinfo.procdef);
 
             hlcg.record_generated_code_for_procdef(current_procinfo.procdef,aktproccode,aktlocaldata);
 

@@ -274,6 +274,12 @@ implementation
          symtableentry:=v;
          symtable:=st;
          fprocdef:=d;
+         { -OoICF: loading a routine's address as a value (@proc / procvar
+           assignment / block invoke) makes @proc observable, so the identical
+           code folder must never collapse this routine to a zero-byte symbol
+           alias -- record it so it falls back to the address-preserving thunk. }
+         if assigned(d) then
+           d.icf_addrtaken:=true;
       end;
 
 
