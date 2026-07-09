@@ -40,6 +40,7 @@ unit optloop;
     function OptimizeBitIdiom(node : tnode) : boolean;
     function OptimizeRangeElim(node : tnode) : boolean;
     function OptimizeVectorize(node : tnode) : boolean;
+    function OptimizeSLP(node : tnode) : boolean;
     function OptimizeJumpThread(node : tnode) : boolean;
     function OptimizeLoopDistPat(node : tnode) : boolean;
     function OptimizeLoopPeel(node : tnode) : boolean;
@@ -3683,6 +3684,472 @@ unit optloop;
         ctx.changed:=false;
         { postorder so nested (inner) loops are considered before their parents }
         foreachnodestatic(pm_postprocess,node,@vect_processloop_cb,@ctx);
+        Result:=ctx.changed;
+      end;
+
+
+{*****************************************************************************
+       SLP (superword-level parallelism) straight-line vectorization
+*****************************************************************************}
+
+    { A node-level port of gcc's -ftree-slp-vectorize / LLVM's SLPVectorizer:
+      packs a run of >=4 adjacent, isomorphic scalar single-precision
+      assignments over consecutive elements of the same array base -- hand-
+      unrolled straight-line code with NO surrounding loop, which the loop
+      autovectorizer (OptimizeVectorize) never sees -- into one 128-bit SSE
+      packed op, reusing that pass's backend node (tvectoropnode / the x86
+      override in nx86inl).  It runs only under -OoSLP.
+
+      Supported statement shapes mirror OptimizeVectorize's element-wise ones:
+        a[k] := b[k] op c[k]      (op one of + - *, single precision)  vok_arr_arr
+        a[k] := b[k]              (copy)                              vok_copy
+        a[k] := b[k] op s / s op b[k]  (loop-invariant single s)     vok_arr_scalar
+      where within each statement EVERY array access uses the SAME index k
+      (element-wise).  Across the 4 packed statements k runs base, base+1,
+      base+2, base+3 (a constant, or a variable-plus-constant offset that
+      increments by exactly one), so each array's four accessed slots form a
+      contiguous 128-bit window -- exactly what the packed movups reads.
+
+      Soundness (a wrong pack is a miscompile, so the recognizer is strict;
+      anything not matched compiles exactly as before):
+        * ELEMENT-WISE indexing makes the pack alias-safe regardless of whether
+          a, b and c share a block: for every lane k the read and the write use
+          the identical slot k, and no later statement in the pack reads a slot
+          an earlier one wrote (packed loads all inputs, then stores all
+          outputs) -- exactly the argument OptimizeVectorize makes for its
+          same-index element-wise loops, which need no distinctness / overlap
+          guard.  Any non-element-wise group (an intra-pack dependence such as
+          a[k]:=a[k-1]+c[k]) fails the same-index gate and is left scalar.
+        * SINGLE PRECISION only: identical per-lane op in identical order, no
+          reassociation, so the result is bit-identical to scalar for NaN/Inf
+          and negative zero (no fast-math gate needed).
+        * The packed window reads exactly the four slots the four scalar
+          statements already touch, so no out-of-bounds over-read is introduced.
+        * Range/overflow checking (-Cr/-Co) disables the transform (checked code
+          keeps its scalar form), gated on current_settings and by scanning the
+          packed statements for a per-region check localswitch.
+        * ARRAY BASES and the broadcast SCALAR must be simple non-aliased
+          (non-global, non-address-taken, non-volatile) locals / value-params or
+          constants; the index base var, being an ordinal, cannot alias a single
+          array store, and no statement in the (straight-line, consecutive) pack
+          reassigns it.  Arrays are dynamic or plain (non-open, non-bitpacked)
+          static arrays of single.
+        * Only x86_64 implements the backend node's pass_generate_code; like
+          OptimizeVectorize the synthetic node is never streamed to a PPU (it is
+          driven from psub on the body of the routine being compiled, and inline
+          candidates are declined). }
+
+    const
+      slp_vecwidth = 4;   { single lanes per 128-bit SSE packed op }
+
+    type
+      tslpidx = record
+        base : tsym;            { nil for a pure constant index }
+        off  : tconstexprint;   { constant part of the index }
+        ok   : boolean;
+      end;
+
+      tslpparse = record
+        ok         : boolean;
+        shape      : tvectoropkind;   { vok_arr_arr / vok_copy / vok_arr_scalar }
+        op         : TOpCG;
+        scalarleft : boolean;
+        idx        : tslpidx;         { LHS index == every RHS array index }
+        a_base, b_base, c_base : tsym;
+        avec, bvec, cvec : tvecnode;
+        scalarnode : tnode;
+      end;
+
+
+    function slp_parse_index(vn : tvecnode) : tslpidx;
+      { classify the index of an array-element access as either a constant or a
+        variable-plus-constant offset (base var + off); nil base means constant }
+      var
+        idx, l, r : tnode;
+      begin
+        result.ok:=false;
+        result.base:=nil;
+        result.off:=0;
+        idx:=rangeelim_skip_typeconv(vn.right);
+        if not assigned(idx) then
+          exit;
+        if ([nf_write,nf_modify]*idx.flags)<>[] then
+          exit;
+        case idx.nodetype of
+          ordconstn:
+            begin
+              result.off:=tordconstnode(idx).value;
+              result.ok:=true;
+            end;
+          loadn:
+            begin
+              result.base:=tloadnode(idx).symtableentry;
+              result.off:=0;
+              result.ok:=true;
+            end;
+          addn:
+            begin
+              l:=rangeelim_skip_typeconv(taddnode(idx).left);
+              r:=rangeelim_skip_typeconv(taddnode(idx).right);
+              if assigned(l) and assigned(r) then
+                if (l.nodetype=loadn) and (r.nodetype=ordconstn) then
+                  begin
+                    result.base:=tloadnode(l).symtableentry;
+                    result.off:=tordconstnode(r).value;
+                    result.ok:=true;
+                  end
+                else if (r.nodetype=loadn) and (l.nodetype=ordconstn) then
+                  begin
+                    result.base:=tloadnode(r).symtableentry;
+                    result.off:=tordconstnode(l).value;
+                    result.ok:=true;
+                  end;
+            end;
+          subn:
+            begin
+              l:=rangeelim_skip_typeconv(taddnode(idx).left);
+              r:=rangeelim_skip_typeconv(taddnode(idx).right);
+              if assigned(l) and assigned(r) and
+                 (l.nodetype=loadn) and (r.nodetype=ordconstn) then
+                begin
+                  result.base:=tloadnode(l).symtableentry;
+                  result.off:=-tordconstnode(r).value;
+                  result.ok:=true;
+                end;
+            end;
+        end;
+      end;
+
+
+    function slp_idx_same(const x, y : tslpidx) : boolean;
+      begin
+        result:=x.ok and y.ok and (x.base=y.base) and (x.off=y.off);
+      end;
+
+
+    function slp_arr_elem(n : tnode; out vec : tvecnode; out basesym : tsym; out idx : tslpidx) : boolean;
+      { true if n (after typeconv peeling) is a[k] where a is a simple non-aliased
+        dynamic or plain static array of single; fills vec/basesym/idx }
+      var
+        vn, arr : tnode;
+        avs : tabstractvarsym;
+        rd : tdef;
+      begin
+        result:=false;
+        vec:=nil; basesym:=nil; idx.ok:=false; idx.base:=nil; idx.off:=0;
+        vn:=rangeelim_skip_typeconv(n);
+        if not assigned(vn) or (vn.nodetype<>vecn) then
+          exit;
+        arr:=tvecnode(vn).left;
+        if not assigned(arr) or not assigned(arr.resultdef) then
+          exit;
+        avs:=rangeelim_simple_var(arr);
+        if not assigned(avs) then
+          exit;
+        rd:=arr.resultdef;
+        if not (is_dynamic_array(rd) or (is_normal_array(rd) and not is_packed_array(rd))) then
+          exit;
+        if not is_single(tarraydef(rd).elementdef) then
+          exit;
+        idx:=slp_parse_index(tvecnode(vn));
+        if not idx.ok then
+          exit;
+        vec:=tvecnode(vn);
+        basesym:=tsym(avs);
+        result:=true;
+      end;
+
+
+    function slp_parse_stmt(stmt : tnode) : tslpparse;
+      { recognize one packable  a[k] := ...  assignment; result.ok=false if not }
+      var
+        assign : tassignmentnode;
+        rhs, l, r : tnode;
+        bidx, cidx : tslpidx;
+        bbase, cbase : tsym;
+        bv, cv : tvecnode;
+      begin
+        result.ok:=false;
+        result.shape:=vok_arr_arr;
+        result.op:=OP_NONE;
+        result.scalarleft:=false;
+        result.idx.ok:=false; result.idx.base:=nil; result.idx.off:=0;
+        result.avec:=nil; result.bvec:=nil; result.cvec:=nil;
+        result.scalarnode:=nil;
+        result.a_base:=nil; result.b_base:=nil; result.c_base:=nil;
+        if not assigned(stmt) or (stmt.nodetype<>assignn) then
+          exit;
+        assign:=tassignmentnode(stmt);
+        if assign.assigntype<>at_normal then
+          exit;
+        { LHS a[k] }
+        if not slp_arr_elem(assign.left,result.avec,result.a_base,result.idx) then
+          exit;
+        rhs:=rangeelim_skip_typeconv(assign.right);
+        if not assigned(rhs) then
+          exit;
+        { copy: a[k] := b[k] }
+        if slp_arr_elem(assign.right,result.bvec,result.b_base,bidx) then
+          begin
+            if not slp_idx_same(bidx,result.idx) then
+              exit;
+            result.shape:=vok_copy;
+            result.op:=OP_NONE;
+            result.ok:=true;
+            exit;
+          end;
+        { arithmetic: b[k] op c[k] / b[k] op s / s op b[k], op one of + - * }
+        if not (rhs.nodetype in [addn,subn,muln]) then
+          exit;
+        if ([nf_write,nf_modify]*rhs.flags)<>[] then
+          exit;
+        if not assigned(rhs.resultdef) or not is_single(rhs.resultdef) then
+          exit;
+        case rhs.nodetype of
+          addn: result.op:=OP_ADD;
+          subn: result.op:=OP_SUB;
+          muln: result.op:=OP_IMUL;
+          else
+            exit;
+        end;
+        l:=taddnode(rhs).left;
+        r:=taddnode(rhs).right;
+        if slp_arr_elem(l,bv,bbase,bidx) then
+          begin
+            if not slp_idx_same(bidx,result.idx) then
+              exit;
+            if slp_arr_elem(r,cv,cbase,cidx) then
+              begin
+                { b[k] op c[k] }
+                if not slp_idx_same(cidx,result.idx) then
+                  exit;
+                result.bvec:=bv; result.b_base:=bbase;
+                result.cvec:=cv; result.c_base:=cbase;
+                result.shape:=vok_arr_arr;
+                result.ok:=true;
+              end
+            else
+              begin
+                { b[k] op s }
+                if vect_invariant_scalar_reason(r,nil)<>'' then
+                  exit;
+                result.bvec:=bv; result.b_base:=bbase;
+                result.scalarnode:=r;
+                result.scalarleft:=false;
+                result.shape:=vok_arr_scalar;
+                result.ok:=true;
+              end;
+          end
+        else if slp_arr_elem(r,bv,bbase,bidx) then
+          begin
+            { s op b[k] }
+            if not slp_idx_same(bidx,result.idx) then
+              exit;
+            if vect_invariant_scalar_reason(l,nil)<>'' then
+              exit;
+            result.bvec:=bv; result.b_base:=bbase;
+            result.scalarnode:=l;
+            result.scalarleft:=true;
+            result.shape:=vok_arr_scalar;
+            result.ok:=true;
+          end;
+      end;
+
+
+    function slp_compatible(const p0, pk : tslpparse; k : longint) : boolean;
+      { true if statement pk can be lane k of a pack whose lane 0 is p0 }
+      var
+        koff : tconstexprint;
+      begin
+        result:=false;
+        if not (p0.ok and pk.ok) then exit;
+        if p0.shape<>pk.shape then exit;
+        if p0.op<>pk.op then exit;
+        if p0.scalarleft<>pk.scalarleft then exit;
+        if p0.a_base<>pk.a_base then exit;
+        if p0.b_base<>pk.b_base then exit;
+        if p0.c_base<>pk.c_base then exit;
+        if not (p0.idx.ok and pk.idx.ok) then exit;
+        if p0.idx.base<>pk.idx.base then exit;
+        koff:=int64(k);
+        if not (pk.idx.off = p0.idx.off + koff) then exit;
+        { scalar-broadcast: the invariant scalar must be identical in every lane }
+        if p0.shape=vok_arr_scalar then
+          if not (assigned(p0.scalarnode) and assigned(pk.scalarnode) and
+                  p0.scalarnode.isequal(pk.scalarnode)) then
+            exit;
+        result:=true;
+      end;
+
+
+    type
+      tslpcontext = object
+        changed : boolean;
+        procedure processblock(blk : tblocknode);
+      end;
+
+
+    procedure tslpcontext.processblock(blk : tblocknode);
+      var
+        conts  : array of tstatementnode;
+        parses : array of tslpparse;
+        n, i, j : longint;
+        sc : tstatementnode;
+        cur, opnode, bcast, tmpn : tnode;
+        wrapper : tnode;
+        wrapstat : tstatementnode;
+        packok, anypack, hascheck : boolean;
+        splattemp : ttempcreatenode;
+        deltemp : tnode;
+      begin
+        { gate: range/overflow checking off, not an inline candidate }
+        if ([cs_check_range,cs_check_overflow]*current_settings.localswitches)<>[] then
+          exit;
+        if po_inline in current_procinfo.procdef.procoptions then
+          exit;
+
+        { collect the container statementnodes of this block's direct chain }
+        n:=0;
+        sc:=tstatementnode(blk.left);
+        while assigned(sc) and (sc.nodetype=statementn) do
+          begin
+            inc(n);
+            sc:=tstatementnode(sc.right);
+          end;
+        if n<slp_vecwidth then
+          exit;
+        setlength(conts,n);
+        setlength(parses,n);
+        sc:=tstatementnode(blk.left);
+        for i:=0 to n-1 do
+          begin
+            conts[i]:=sc;
+            if assigned(sc.left) then
+              parses[i]:=slp_parse_stmt(sc.left)
+            else
+              parses[i].ok:=false;
+            sc:=tstatementnode(sc.right);
+          end;
+
+        { is there at least one 4-pack anywhere? (cheap pre-check) }
+        anypack:=false;
+        i:=0;
+        while i+slp_vecwidth<=n do
+          begin
+            if parses[i].ok and
+               slp_compatible(parses[i],parses[i+1],1) and
+               slp_compatible(parses[i],parses[i+2],2) and
+               slp_compatible(parses[i],parses[i+3],3) then
+              begin anypack:=true; break; end;
+            inc(i);
+          end;
+        if not anypack then
+          exit;
+
+        { build the replacement chain in a throwaway wrapper block }
+        wrapper:=internalstatements(wrapstat);
+        i:=0;
+        while i<n do
+          begin
+            packok:=false;
+            if i+slp_vecwidth<=n then
+              if parses[i].ok and
+                 slp_compatible(parses[i],parses[i+1],1) and
+                 slp_compatible(parses[i],parses[i+2],2) and
+                 slp_compatible(parses[i],parses[i+3],3) then
+                begin
+                  { belt-and-suspenders: decline if any packed statement carries a
+                    per-region range/overflow check even when the proc default
+                    has none }
+                  hascheck:=false;
+                  for j:=0 to slp_vecwidth-1 do
+                    foreachnodestatic(pm_postprocess,conts[i+j].left,@vect_check_cb,@hascheck);
+                  if not hascheck then
+                    packok:=true;
+                end;
+            if packok then
+              begin
+                case parses[i].shape of
+                  vok_arr_arr:
+                    begin
+                      opnode:=cvectoropnode.create(parses[i].avec.getcopy,
+                        parses[i].bvec.getcopy,parses[i].cvec.getcopy,parses[i].op,slp_vecwidth);
+                      firstpass(opnode);
+                      addstatement(wrapstat,opnode);
+                    end;
+                  vok_copy:
+                    begin
+                      opnode:=cvectoropnode.create_copy(parses[i].avec.getcopy,
+                        parses[i].bvec.getcopy,slp_vecwidth);
+                      firstpass(opnode);
+                      addstatement(wrapstat,opnode);
+                    end;
+                  vok_arr_scalar:
+                    begin
+                      { 16-byte splat slot, filled once with [s,s,s,s] just before
+                        the packed op (memory-backed: allowreg=false) }
+                      splattemp:=ctempcreatenode.create(
+                        tarraydef.getreusable_vector(s32floattype,slp_vecwidth),
+                        slp_vecwidth*s32floattype.size,tt_persistent,false);
+                      tmpn:=tnode(splattemp);
+                      firstpass(tmpn);
+                      addstatement(wrapstat,tmpn);
+                      bcast:=cvectoropnode.create_broadcast(
+                        ctemprefnode.create(splattemp),parses[i].scalarnode.getcopy);
+                      firstpass(bcast);
+                      addstatement(wrapstat,bcast);
+                      opnode:=cvectoropnode.create_scalar(parses[i].avec.getcopy,
+                        parses[i].bvec.getcopy,ctemprefnode.create(splattemp),
+                        parses[i].op,parses[i].scalarleft,slp_vecwidth);
+                      firstpass(opnode);
+                      addstatement(wrapstat,opnode);
+                      deltemp:=ctempdeletenode.create(splattemp);
+                      firstpass(deltemp);
+                      addstatement(wrapstat,deltemp);
+                    end;
+                  else
+                    internalerror(2026070720);
+                end;
+                inc(i,slp_vecwidth);
+                changed:=true;
+              end
+            else
+              begin
+                { keep this statement: steal its node into the new chain }
+                cur:=conts[i].left;
+                conts[i].left:=nil;
+                if assigned(cur) then
+                  addstatement(wrapstat,cur);
+                inc(i);
+              end;
+          end;
+
+        { splice the new chain into blk, discarding the wrapper block and the
+          old container chain (kept nodes were detached above; the consumed
+          assignments -- rebuilt via getcopy -- are freed with the old chain) }
+        blk.left.free;
+        blk.left:=tblocknode(wrapper).left;
+        tblocknode(wrapper).left:=nil;
+        wrapper.free;
+      end;
+
+
+    function slp_processblock_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      begin
+        result:=fen_false;
+        if n.nodetype=blockn then
+          tslpcontext(arg^).processblock(tblocknode(n));
+      end;
+
+
+    function OptimizeSLP(node : tnode) : boolean;
+      var
+        ctx : tslpcontext;
+      begin
+        Result:=false;
+        ctx.changed:=false;
+        { postorder so nested (inner) blocks are packed before their parents }
+        foreachnodestatic(pm_postprocess,node,@slp_processblock_cb,@ctx);
         Result:=ctx.changed;
       end;
 

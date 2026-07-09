@@ -1430,6 +1430,20 @@ implementation
              and not(pi_has_label in flags) then
              RedoDFA:=OptimizeVectorize(code) or RedoDFA;
 
+           { SLP (superword-level parallelism) straight-line vectorization:
+             pack runs of >=4 adjacent, isomorphic scalar single-precision
+             element-wise assignments over consecutive array slots (hand-unrolled
+             code with no surrounding loop, which the loop vectorizer above never
+             sees) into 128-bit SSE packed ops, reusing the loop vectorizer's
+             backend node. Purely syntactic (needs no DFA) but creates temps, so
+             it invalidates DFA like the loop passes; run before strength
+             reduction so the a[k] accesses are still plain vecn index nodes, and
+             skip procedures with labels like the loop passes so control cannot
+             enter a packed group mid-stream. }
+           if (cs_opt_slp in current_settings.optimizerswitches)
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizeSLP(code) or RedoDFA;
+
            { loop-distribution pattern idiom recognition: lower a counted
              for-loop whose whole body is a contiguous fill/zero/copy over an
              array region into a FillChar/FillWord/FillDWord/FillQWord/Move block

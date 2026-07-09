@@ -623,7 +623,25 @@ interface
            and without a separate forward/interface declaration, whose leading
            guard is side-effect-free and whose then-branch always exits.
            Opt-in (-OoPARTIALINLINE); NOT part of the -O4 defaults }
-         cs_opt_partialinline
+         cs_opt_partialinline,
+         { superword-level parallelism (SLP) vectorization (the gcc
+           tree-slp-vectorize / LLVM SLPVectorizer idea ported to FPC): pack a
+           run of >=4 adjacent, isomorphic scalar single-precision assignments
+           over consecutive elements of the same array base -- hand-unrolled
+           straight-line code the loop vectorizer never sees because there is no
+           surrounding loop -- into one 128-bit SSE packed op, reusing the loop
+           autovectorizer's backend node (tvectoropnode). Supported shapes mirror
+           the loop vectorizer's element-wise ones: a[k]:=b[k] op c[k] (op one of
+           + - *), the copy a[k]:=b[k], and the scalar-broadcast a[k]:=b[k] op s
+           / s op b[k]; within each statement every array access uses the SAME
+           index (element-wise), which -- exactly like the loop vectorizer -- makes
+           the pack alias-safe regardless of whether the arrays share a block, and
+           leaves any non-element-wise (intra-pack-dependent) group scalar. Sound
+           subset (correctness over coverage): single precision only, -Cr/-Co
+           disables, bases/scalars must be simple non-aliased vars, indices are a
+           constant or var+constant offset that increments by exactly one across
+           the pack. Opt-in (-OoSLP); NOT part of the -O4 defaults }
+         cs_opt_slp
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -702,7 +720,7 @@ interface
          'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC','UNROLLJAM',
          'PREDCOM','SRA','STOREMERGE','CASECLUSTER','CROSSJUMP','BLOCKORDER',
          'SINK','STOREMOTION','VRP','REFELIDE','SWITCHTABLE','REE',
-         'SHRINKWRAP','GVNPRE','PURE','PARTIALINLINE'
+         'SHRINKWRAP','GVNPRE','PURE','PARTIALINLINE','SLP'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'

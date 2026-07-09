@@ -2599,7 +2599,8 @@ const
          'cs_opt_shrinkwrap',
          'cs_opt_gvnpre',
          'cs_opt_pure',
-         'cs_opt_partialinline'
+         'cs_opt_partialinline',
+         'cs_opt_slp'
        );
     var
          globalswitch  : tglobalswitch;
