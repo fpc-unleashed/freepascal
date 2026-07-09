@@ -39,9 +39,9 @@ unit optdeadstore;
       verbose,globtype,cdynset,globals,
       procinfo,pass_1,
       nutils,
-      nbas,nld,nmem,
+      nbas,nld,nmem,ncal,
       defutil,
-      optbase,
+      optbase,optpure,
       symtype,symdef,symsym,symconst;
 
 
@@ -234,6 +234,110 @@ unit optdeadstore;
           );
       end;
 
+    { --- pure/const call barrier relaxation (-OoPURE consumer) --------------
+
+      The field-store scan above treats every call as a hard barrier: it may
+      read the pending store's memory (keeping it live) or write memory (an
+      aliasing effect). A call whose target -OoPURE proved PURE or CONST is far
+      weaker and need not flush the whole pending set:
+
+        * a CONST routine reads and writes NO memory at all -- it can neither
+          observe nor clobber a pending store, so it is a complete non-barrier
+          (only its argument expressions, scanned normally, perform reads);
+
+        * a PURE routine writes no memory but MAY read global/heap state, so it
+          is a potential *reader*: a pending store to a globally reachable slot
+          (a static var, or a by-reference const parameter) could be observed
+          and must be kept live, but a store to a non-address-taken local or a
+          by-value parameter is invisible to any callee (no pointer to it can
+          exist) and therefore survives the pure call.
+
+      Indirect / procvar / virtual / aggregate-returning calls stay full
+      barriers, as do deref and asm nodes. }
+
+    type
+      tcallkind = (elc_barrier, elc_pure, elc_const);
+
+    function el_classify_call(cn: tcallnode): tcallkind;
+      var
+        pd : tprocdef;
+      begin
+        result:=elc_barrier;
+        if not(cs_opt_pure in current_settings.optimizerswitches) then
+          exit;
+        { resolved direct call only (excludes indirect / procvar targets) }
+        if not assigned(cn.procdefinition) or not(cn.procdefinition is tprocdef) then
+          exit;
+        pd:=tprocdef(cn.procdefinition);
+        { a method call must dispatch to a statically known body }
+        if assigned(cn.methodpointer) and
+           ((po_virtualmethod in pd.procoptions) or
+            (po_abstractmethod in pd.procoptions)) then
+          exit;
+        { aggregate return machinery performs hidden stores -> stay a barrier }
+        if assigned(cn.funcretnode) or assigned(cn.callinitblock) or
+           assigned(cn.callcleanupblock) then
+          exit;
+        if proc_is_const(pd) then
+          result:=elc_const
+        else if proc_is_pure(pd) then
+          result:=elc_pure;
+      end;
+
+    { true if a pure callee could read this pending-store base's memory. The
+      base is guaranteed non-address-taken (el_qualifying_base); a local var or
+      a by-value parameter thus cannot be named by any callee, while a static
+      var is global memory and a by-reference const parameter aliases caller
+      storage the callee may have been handed. }
+    function el_base_globally_reachable(s: tsym): boolean;
+      begin
+        result:=true;
+        case s.typ of
+          localvarsym:
+            result:=false;
+          paravarsym:
+            result:=(tparavarsym(s).varspez<>vs_value);
+          else
+            ; { staticvarsym / anything else: assume reachable }
+        end;
+      end;
+
+    type
+      thazinfo = record
+        barrier  : boolean; { deref / asm / impure call -> hard flush }
+        purecall : boolean; { a proven-PURE (global-reading) call was seen }
+      end;
+      phazinfo = ^thazinfo;
+
+    { scan a tree for memory hazards, treating a proven pure/const call as a
+      non-barrier (recursing into its arguments so a nested hazard is still
+      caught) and recording whether any pure (global-reading) call occurred. }
+    function el_haz_scan(var n: tnode; arg: pointer): foreachnoderesult;
+      begin
+        result:=fen_true;
+        case n.nodetype of
+          derefn,asmn:
+            begin
+              phazinfo(arg)^.barrier:=true;
+              result:=fen_norecurse_true;
+            end;
+          calln:
+            case el_classify_call(tcallnode(n)) of
+              elc_barrier:
+                begin
+                  phazinfo(arg)^.barrier:=true;
+                  result:=fen_norecurse_true;
+                end;
+              elc_pure:
+                phazinfo(arg)^.purecall:=true;
+              elc_const:
+                ;
+            end;
+          else
+            ;
+        end;
+      end;
+
     procedure el_fieldstore_block(firststmt: tnode; var changed: boolean);
       type
         tpendrec = record
@@ -284,6 +388,42 @@ unit optdeadstore;
                 pend_remove(i)
               else
                 inc(i);
+            end;
+        end;
+
+      { drop pending stores a pure call may observe (globally reachable bases) }
+      procedure invalidate_globals;
+        var
+          i : longint;
+        begin
+          i:=0;
+          while i<npend do
+            if el_base_globally_reachable(pend[i].base) then
+              pend_remove(i)
+            else
+              inc(i);
+        end;
+
+      { apply a relaxed (pure/const-aware) barrier for a tree that is not a
+        DSE store candidate: an impure hazard flushes everything, otherwise the
+        syntactic reads invalidate matching pending stores and a pure call
+        additionally invalidates every globally reachable pending store. }
+      procedure apply_relaxed_barrier(tree: tnode);
+        var
+          hz  : thazinfo;
+          tmp : tnode;
+        begin
+          hz.barrier:=false;
+          hz.purecall:=false;
+          tmp:=tree;
+          foreachnodestatic(tmp,@el_haz_scan,@hz);
+          if hz.barrier then
+            pend_flush
+          else
+            begin
+              invalidate_reads(tree);
+              if hz.purecall then
+                invalidate_globals;
             end;
         end;
 
@@ -362,17 +502,17 @@ unit optdeadstore;
                 else
                   begin
                     { non-candidate assignment: scan the whole thing (incl. LHS
-                      base loads and compound-op implicit reads). Any hazard is a
-                      barrier; otherwise treat as reads of the pending bases. }
-                    haz:=false;
-                    tmp:=a;
-                    foreachnodestatic(tmp,@el_checkhazard,@haz);
-                    if haz then
-                      pend_flush
-                    else
-                      invalidate_reads(a);
+                      base loads and compound-op implicit reads). An impure
+                      hazard is a barrier; a proven pure/const call is relaxed
+                      per apply_relaxed_barrier; otherwise treat as reads of the
+                      pending bases. }
+                    apply_relaxed_barrier(a);
                   end;
               end;
+            calln:
+              { a bare call statement: full barrier unless -OoPURE proved the
+                target pure/const, in which case only its reads matter }
+              apply_relaxed_barrier(stmt);
             else
               pend_flush; { any other statement is a conservative barrier }
           end;
