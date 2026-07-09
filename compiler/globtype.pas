@@ -730,7 +730,30 @@ interface
            callee-saved registers -- for any call inside a routine that itself
            has exception handling. Both integer and XMM/MM clobbers are tracked.
            x86_64 only. Opt-in; NOT part of the -O4 defaults }
-         cs_opt_ipara
+         cs_opt_ipara,
+         { final value replacement + dead loop elimination (-OoFINALVALUE):
+           the gcc -ftree-scev-cprop scalar-evolution constant propagation
+           plus the whole-loop deletion its control-dependent DCE performs,
+           ported to FPC and run on the still-structured for-nodes. When a
+           counted for-loop's whole body is a single accumulator update of a
+           plain local integer  s := s + c  /  inc(s,c)  /  s := s - c  with a
+           loop-invariant c, and the counter's exit value is dead (unreferenced
+           outside the loop), the loop is replaced by the closed form of s's
+           exit value  if a<=b then s := s + (b-a+1)*c  (to<=from for downto)
+           and deleted; an empty-bodied dead counted loop is deleted outright.
+           Because s is no longer updated by a loop, every post-loop use of s
+           reads the closed form directly. Sound subset: integer inductions
+           only; counter a plain local integer of at most 32 bits so the
+           symbolic trip count b-a+1 is exact in 64-bit; s a plain local
+           integer distinct from the counter; c and the bounds loop-invariant,
+           side-effect-free and independent of i and s; zero-trip loops handled
+           by the a<=b guard; two's-complement wraparound preserved so the
+           result is bit-identical, hence DISABLED under -Co/-Cr (where the
+           loop would trap on the overflowing iteration). Any body that is not
+           exactly the single accumulator update (calls, stores, control flow,
+           break/continue/exit, nested loops) never matches. Opt-in; NOT part
+           of the -O4 defaults }
+         cs_opt_finalvalue
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -810,7 +833,7 @@ interface
          'PREDCOM','SRA','STOREMERGE','CASECLUSTER','CROSSJUMP','BLOCKORDER',
          'SINK','STOREMOTION','VRP','REFELIDE','SWITCHTABLE','REE',
          'SHRINKWRAP','GVNPRE','PURE','PARTIALINLINE','STACKALLOC','SLP',
-         'UNROLLDYN','PREFETCH','ICF','IPARA'
+         'UNROLLDYN','PREFETCH','ICF','IPARA','FINALVALUE'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'

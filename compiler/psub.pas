@@ -172,6 +172,7 @@ implementation
        opttail,
        optcse,
        optloop,
+       optfinalvalue,
        optpure,
        optpartialinline,
        optipara,
@@ -1267,6 +1268,21 @@ implementation
            { RedoDFA value not used here }
            RedoDFA:=false;
          end;
+
+       { final value replacement + dead loop elimination (the gcc
+         -ftree-scev-cprop idea plus whole-loop deletion): when a counted
+         for-loop's whole body is a single loop-invariant accumulator update
+         of a plain local integer and the counter's exit value is dead,
+         replace the loop by the closed form of the accumulator's exit value
+         and delete the loop, so post-loop uses read the closed form directly.
+         Runs HERE, before the DFA/loop passes and ConvertForLoops rewrite or
+         lower the still-structured for-nodes, so the counter bounds are read
+         directly; needs no DFA (a structural whole-tree check). Skips
+         routines with labels (goto could enter the loop), inline assembler
+         and exceptions. Opt-in via -OoFINALVALUE; disabled under -Co/-Cr. }
+       if (cs_opt_finalvalue in current_settings.optimizerswitches) and
+         ((flags*[pi_has_assembler_block,pi_is_assembler,pi_uses_exceptions,pi_has_label])=[]) then
+         OptimizeFinalValue(code);
 
        if (cs_opt_nodedfa in current_settings.optimizerswitches) and
          { creating dfa is not always possible }
