@@ -46,6 +46,7 @@ implementation
        symconst,symbase,symtype,symdef,symsym,symtable,defutil,symcreat,
        wpoinfo,
        aasmtai,aasmdata,aasmbase,aasmcpu,
+       opticf,
        cgbase,ngenutil,
        nbas,nutils,ncgutil,
        link,assemble,import,export,gendef,ppu,comprsrc,dbgbase,
@@ -63,6 +64,12 @@ implementation
         s               : string;
         KeepShared      : TCmdStrList;
       begin
+        { identical code folding: fold byte-identical routines in this module
+          into jump thunks before the object file is emitted (-OoICF) }
+        if (cs_opt_icf in current_settings.optimizerswitches) and
+           assigned(current_asmdata) then
+          OptimizeICF(current_asmdata.asmlists[al_procedures]);
+
         { try to create import entries from system dlls }
         if (tf_has_dllscanner in target_info.flags) and
            (not curr.linkOtherSharedLibs.Empty) then

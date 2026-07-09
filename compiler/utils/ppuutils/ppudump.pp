@@ -2586,7 +2586,8 @@ const
          'cs_opt_partialinline',
          'cs_opt_slp',
          'cs_opt_unrolldyn',
-         'cs_opt_prefetch'
+         'cs_opt_prefetch',
+         'cs_opt_icf'
        );
     var
          globalswitch  : tglobalswitch;
