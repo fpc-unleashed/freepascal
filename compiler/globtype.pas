@@ -641,7 +641,34 @@ interface
            disables, bases/scalars must be simple non-aliased vars, indices are a
            constant or var+constant offset that increments by exactly one across
            the pack. Opt-in (-OoSLP); NOT part of the -O4 defaults }
-         cs_opt_slp
+         cs_opt_slp,
+         { dynamic-trip loop unrolling (-OoUNROLLDYN): unroll a counted for-loop
+           of UNKNOWN trip count by a factor of 4 -- four back-to-back copies of
+           the body, each followed by an explicit counter increment, guarded by
+           i<=hi-3 -- with a scalar remainder while-loop for the tail. Complements
+           the stock -OoLOOPUNROLL, which only fully unrolls small COMPILE-TIME
+           constant trip counts and therefore never fires on the long counted
+           loops over dynamic arrays. Because the four body copies keep the
+           original serial evaluation order (body;inc x4), the result is
+           bit-identical to the scalar loop even for a floating-point accumulation
+           chain (a single serial accumulator, no reassociation). Sound subset
+           (correctness over coverage): ascending unit-step for-loop, simple
+           signed 32/64-bit non-aliased counter never modified in the body, body
+           is straight-line (no calls, no control flow, no nested loops, no
+           try/raise/asm), every array access is a 1-D dynamic/static array
+           element indexed by exactly the bare loop counter, and -Cr/-Co disables
+           it. Opt-in; NOT part of the -O4 defaults }
+         cs_opt_unrolldyn,
+         { software prefetch (-OoPREFETCH): in the same long counted array-walk
+           loops -OoUNROLLDYN targets, insert a PREFETCHNTA of base[i+DIST]
+           (DIST=64 elements) once per iteration (or once per unrolled iteration
+           group when combined with -OoUNROLLDYN) for each distinct dynamic-array
+           base the loop streams, hiding memory latency on bandwidth-bound
+           accumulation / element-wise passes. Semantically a no-op: an x86
+           prefetch of an out-of-range address never faults, and the prefetch only
+           fires on the contiguous dynamic-array walk pattern the loop already
+           establishes. Opt-in; NOT part of the -O4 defaults }
+         cs_opt_prefetch
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -720,7 +747,8 @@ interface
          'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC','UNROLLJAM',
          'PREDCOM','SRA','STOREMERGE','CASECLUSTER','CROSSJUMP','BLOCKORDER',
          'SINK','STOREMOTION','VRP','REFELIDE','SWITCHTABLE','REE',
-         'SHRINKWRAP','GVNPRE','PURE','PARTIALINLINE','SLP'
+         'SHRINKWRAP','GVNPRE','PURE','PARTIALINLINE','SLP',
+         'UNROLLDYN','PREFETCH'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
