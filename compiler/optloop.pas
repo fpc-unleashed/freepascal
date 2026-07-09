@@ -4303,6 +4303,8 @@ unit optloop;
                   result.ok:=true;
                 end;
             end;
+          else
+            ;
         end;
       end;
 
@@ -9683,8 +9685,12 @@ unit optloop;
                             end;
                         end;
                     end;
+                else
+                  ;
               end;
             end;
+          else
+            ;
         end;
       end;
 
