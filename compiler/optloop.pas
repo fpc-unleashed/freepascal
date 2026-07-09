@@ -2963,8 +2963,9 @@ unit optloop;
           exit('array base is not a simple non-aliased variable (possible aliasing)');
         if not is_dynamic_array(tvecnode(vn).left.resultdef) then
           exit('array is not a dynamic array');
-        if not is_single(tarraydef(tvecnode(vn).left.resultdef).elementdef) then
-          exit('array element type is not single-precision float');
+        if not is_single(tarraydef(tvecnode(vn).left.resultdef).elementdef) and
+           not is_double(tarraydef(tvecnode(vn).left.resultdef).elementdef) then
+          exit('array element type is not a single- or double-precision float');
         { the index must be exactly a plain read of the loop counter }
         idx:=rangeelim_skip_typeconv(tvecnode(vn).right);
         if not assigned(idx) or (idx.nodetype<>loadn) then
@@ -2979,32 +2980,46 @@ unit optloop;
 
     function vect_single_dynarray_elem(n : tnode; counter : tabstractvarsym) : tvecnode;
       { returns the vecn if n (after peeling typeconv wrappers) is  A[i]  where A
-        is a simple non-aliased dynamic array of single and the index is exactly a
-        plain read of the loop counter; nil otherwise }
+        is a simple non-aliased dynamic array of single/double and the index is
+        exactly a plain read of the loop counter; nil otherwise }
       begin
         if vect_elem_reason(n,counter,result)<>'' then
           result:=nil;
       end;
 
 
-    function vect_invariant_scalar_reason(n : tnode; counter : tabstractvarsym) : string;
-      { returns '' if n is a provably loop-invariant single-precision scalar that
-        can be broadcast once before the vector loop -- either a constant literal
-        or a plain read of a simple non-aliased (non-global, non-address-taken,
+    function vect_elem_isdouble(vn : tvecnode) : boolean;
+      { true if the recognized array-element access vn is over a dynamic array of
+        double (else it is single -- vect_elem_reason accepts only these two) }
+      begin
+        vect_elem_isdouble:=is_double(tarraydef(vn.left.resultdef).elementdef);
+      end;
+
+
+    function vect_invariant_scalar_reason(n : tnode; counter : tabstractvarsym; wantdouble : boolean) : string;
+      { returns '' if n is a provably loop-invariant scalar of the loop's element
+        precision (single when wantdouble=false, double when true) that can be
+        broadcast once before the vector loop -- either a constant literal or a
+        plain read of a simple non-aliased (non-global, non-address-taken,
         non-volatile) local/value-param that the single-statement body never
-        writes -- and n's *own* type is single so the packed op keeps the scalar
-        loop's exact precision. Otherwise returns a human-readable reason for the
-        -OoVECTORIZE diagnostic. }
+        writes -- and n's *own* type matches the arrays so the packed op keeps the
+        scalar loop's exact precision. Otherwise returns a human-readable reason
+        for the -OoVECTORIZE diagnostic. }
       var
         root : tnode;
       begin
         result:='';
         if not assigned(n) or not assigned(n.resultdef) then
           exit('is missing or untyped');
-        { the operand must itself be single: a double/integer scalar would make
-          the scalar loop compute in a wider precision, so the packed single op
-          would not be bit-identical }
-        if not is_single(n.resultdef) then
+        { the operand must itself match the array precision: a mismatched (or
+          integer) scalar would make the scalar loop compute in a different
+          precision, so the packed op would not be bit-identical }
+        if wantdouble then
+          begin
+            if not is_double(n.resultdef) then
+              exit('is not a double-precision value (mixed precision would change the result)');
+          end
+        else if not is_single(n.resultdef) then
           exit('is not a single-precision value (mixed precision would change the result)');
         if ([nf_write,nf_modify]*n.flags)<>[] then
           exit('has side effects');
@@ -3093,6 +3108,9 @@ unit optloop;
         avec, bvec, cvec : tvecnode;
         vecop : TOpCG;
         vshape : tvectoropkind;
+        vecdouble : boolean;   { false: single (VL=4); true: double (VL=2) }
+        eletype : tdef;        { s32floattype or s64floattype, per vecdouble }
+        elewidth : longint;    { vector lanes per window: 4 (single) / 2 (double) }
         scalarnode : tnode;
         scalarleft : boolean;
         hascheck : boolean;
@@ -3198,22 +3216,27 @@ unit optloop;
             change (and the scalar tail is a while-loop, which REASSOC ignores). }
           redlhs:=rangeelim_skip_typeconv(assign.left);
           if assigned(redlhs) and (redlhs.nodetype=loadn) and
-             assigned(redlhs.resultdef) and is_single(redlhs.resultdef) then
+             assigned(redlhs.resultdef) and
+             (is_single(redlhs.resultdef) or is_double(redlhs.resultdef)) then
             begin
+              { the whole reduction runs at the accumulator's precision }
+              vecdouble:=is_double(redlhs.resultdef);
               { the accumulator must be a simple non-aliased (non-global, non-
-                address-taken, non-volatile) local/value-param single scalar }
+                address-taken, non-volatile) local/value-param float scalar }
               accsym:=rangeelim_simple_var(redlhs);
               if not assigned(accsym) then
-                exit('reduction accumulator is not a simple non-aliased local single scalar');
+                exit('reduction accumulator is not a simple non-aliased local float scalar');
               if tloadnode(redlhs).symtableentry=tsym(counter) then
                 exit('reduction accumulator is the loop counter');
               { reassociation gate, identical to -OoREASSOC for an FP accumulator }
               if not(cs_opt_fastmath in current_settings.optimizerswitches) then
-                exit('single-precision reduction needs fast-math (-OoFASTMATH) to vectorize into a partial-sum accumulator');
+                exit('floating-point reduction needs fast-math (-OoFASTMATH) to vectorize into a partial-sum accumulator');
               rhs:=rangeelim_skip_typeconv(assign.right);
               if not assigned(rhs) then
                 exit('reduction right-hand side is missing');
-              if (rhs.nodetype=inlinen) and (tinlinenode(rhs).inlinenumber=in_fma_single) then
+              if (rhs.nodetype=inlinen) and
+                 (((not vecdouble) and (tinlinenode(rhs).inlinenumber=in_fma_single)) or
+                  (vecdouble and (tinlinenode(rhs).inlinenumber=in_fma_double))) then
                 begin
                   { FMA-contracted dot product:  s := fma(x,y,z) = x*y + z, produced
                     by -OoFASTMATH's a*b+c -> fma() contraction on FMA-capable
@@ -3253,6 +3276,10 @@ unit optloop;
                     exit('FMA dot-product factor '+leftreason);
                   if rightreason<>'' then
                     exit('FMA dot-product factor '+rightreason);
+                  { both factors must be the accumulator's precision (a mismatched
+                    array element would change the per-lane result) }
+                  if (vect_elem_isdouble(bvec)<>vecdouble) or (vect_elem_isdouble(cvec)<>vecdouble) then
+                    exit('FMA dot-product mixes single- and double-precision arrays');
                   vshape:=vok_reduce_dot;
                 end
               else
@@ -3268,14 +3295,20 @@ unit optloop;
                     redexpr:=taddnode(rhs).left
                   else
                     exit('the reduction addition does not have the accumulator as one operand');
-                  { the addend must be computed in single precision so the packed op
-                    keeps the scalar loop's exact per-element precision }
-                  if not assigned(redexpr.resultdef) or not is_single(redexpr.resultdef) then
-                    exit('reduction addend is not computed in single precision');
+                  { the addend must be computed at the accumulator's precision so the
+                    packed op keeps the scalar loop's exact per-element precision }
+                  if not assigned(redexpr.resultdef) or
+                     (vecdouble and not is_double(redexpr.resultdef)) or
+                     ((not vecdouble) and not is_single(redexpr.resultdef)) then
+                    exit('reduction addend precision differs from the accumulator');
                   redprod:=rangeelim_skip_typeconv(redexpr);
                   if vect_elem_reason(redexpr,counter,bvec)='' then
-                    { s := s + b[i] }
-                    vshape:=vok_reduce_sum
+                    begin
+                      { s := s + b[i] }
+                      if vect_elem_isdouble(bvec)<>vecdouble then
+                        exit('reduction array precision differs from the accumulator');
+                      vshape:=vok_reduce_sum;
+                    end
                   else if assigned(redprod) and (redprod.nodetype=muln) then
                     begin
                       { s := s + b[i]*c[i] : both factors array elements of i }
@@ -3285,6 +3318,8 @@ unit optloop;
                         exit('dot-product first factor '+leftreason);
                       if (rightreason<>'') then
                         exit('dot-product second factor '+rightreason);
+                      if (vect_elem_isdouble(bvec)<>vecdouble) or (vect_elem_isdouble(cvec)<>vecdouble) then
+                        exit('dot-product mixes single- and double-precision arrays');
                       vshape:=vok_reduce_dot;
                     end
                   else
@@ -3301,10 +3336,12 @@ unit optloop;
               exit('');
             end;
 
-          { LHS: a single-precision dynamic-array element  a[i] }
+          { LHS: a single- or double-precision dynamic-array element  a[i] ; its
+            element type fixes the precision (VL) of the whole vectorized body. }
           result:=vect_elem_reason(assign.left,counter,avec);
           if result<>'' then
             exit('destination '+result);
+          vecdouble:=vect_elem_isdouble(avec);
 
           { RHS: one of the recognized element-wise shapes. }
           rhs:=rangeelim_skip_typeconv(assign.right);
@@ -3321,6 +3358,10 @@ unit optloop;
             begin
               if not(cs_opt_ifconvert in current_settings.optimizerswitches) then
                 exit('min/max activation body but -OoIFCONVERT is disabled');
+              { min/max if-conversion is single-precision only; a double
+                destination with a single min/max would mix precisions }
+              if vecdouble then
+                exit('min/max if-conversion into a double-precision array is not vectorized');
               mminl:=tinlinenode(rhs);
               if not assigned(mminl.left) or (mminl.left.nodetype<>callparan) or
                  not assigned(tcallparanode(mminl.left).nextpara) or
@@ -3334,25 +3375,31 @@ unit optloop;
               { classify opB }
               if vect_elem_reason(rhs,counter,mmB_vec)<>'' then
                 begin
-                  result:=vect_invariant_scalar_reason(rhs,counter);
+                  result:=vect_invariant_scalar_reason(rhs,counter,false);
                   if result<>'' then
                     exit('min/max second operand is not an array element or loop-invariant single scalar (it '+result+')');
                   mmB_scalar:=rhs; mmB_vec:=nil;
-                end;
+                end
+              else if vect_elem_isdouble(mmB_vec) then
+                exit('min/max second operand is a double-precision array');
               rhs:=tcallparanode(tcallparanode(mminl.left).nextpara).paravalue;       { opA }
               { classify opA }
               if vect_elem_reason(rhs,counter,mmA_vec)<>'' then
                 begin
-                  result:=vect_invariant_scalar_reason(rhs,counter);
+                  result:=vect_invariant_scalar_reason(rhs,counter,false);
                   if result<>'' then
                     exit('min/max first operand is not an array element or loop-invariant single scalar (it '+result+')');
                   mmA_scalar:=rhs; mmA_vec:=nil;
-                end;
+                end
+              else if vect_elem_isdouble(mmA_vec) then
+                exit('min/max first operand is a double-precision array');
               vshape:=vok_minmax;
             end
-          { plain copy:  a[i] := b[i] }
+          { plain copy:  a[i] := b[i]  (source array must match the destination
+            precision; a mixed-type copy falls through and is rejected below) }
           else if (cs_opt_vectorize in current_settings.optimizerswitches) and
-                  (vect_elem_reason(assign.right,counter,bvec)='') then
+                  (vect_elem_reason(assign.right,counter,bvec)='') and
+                  (vect_elem_isdouble(bvec)=vecdouble) then
             begin
               vshape:=vok_copy;
             end
@@ -3366,8 +3413,10 @@ unit optloop;
                 exit('right-hand side is not an array element, a copy, or a +, - or * of an array element with an array element or loop-invariant single scalar');
               if ([nf_write,nf_modify]*rhs.flags)<>[] then
                 exit('right-hand side has side effects');
-              if not assigned(rhs.resultdef) or not is_single(rhs.resultdef) then
-                exit('right-hand side is not computed in single precision');
+              if not assigned(rhs.resultdef) or
+                 (vecdouble and not is_double(rhs.resultdef)) or
+                 ((not vecdouble) and not is_single(rhs.resultdef)) then
+                exit('right-hand side precision differs from the destination array');
               case rhs.nodetype of
                 addn: vecop:=OP_ADD;
                 subn: vecop:=OP_SUB;
@@ -3381,16 +3430,22 @@ unit optloop;
               rightreason:=vect_elem_reason(taddnode(rhs).right,counter,cvec);
 
               if (leftreason='') and (rightreason='') then
-                { array op array }
-                vshape:=vok_arr_arr
+                begin
+                  { array op array : both arrays must match the destination precision }
+                  if (vect_elem_isdouble(bvec)<>vecdouble) or (vect_elem_isdouble(cvec)<>vecdouble) then
+                    exit('operation mixes single- and double-precision arrays');
+                  vshape:=vok_arr_arr;
+                end
               else if leftreason='' then
                 begin
-                  { b[i] op s : the right operand must be a loop-invariant single
-                    scalar (broadcast once and applied per lane). bvec is already
-                    the left array element. }
-                  result:=vect_invariant_scalar_reason(taddnode(rhs).right,counter);
+                  { b[i] op s : the right operand must be a loop-invariant scalar of
+                    the destination precision (broadcast once and applied per lane).
+                    bvec is already the left array element. }
+                  if vect_elem_isdouble(bvec)<>vecdouble then
+                    exit('operation mixes single- and double-precision arrays');
+                  result:=vect_invariant_scalar_reason(taddnode(rhs).right,counter,vecdouble);
                   if result<>'' then
-                    exit('second operand is not an array element or provably loop-invariant single scalar (it '+result+')');
+                    exit('second operand is not an array element or provably loop-invariant scalar of the destination precision (it '+result+')');
                   scalarnode:=taddnode(rhs).right;
                   scalarleft:=false;
                   cvec:=nil;
@@ -3398,12 +3453,14 @@ unit optloop;
                 end
               else if rightreason='' then
                 begin
-                  { s op b[i] : the left operand must be a loop-invariant single
-                    scalar; move the (right) array element into bvec. Non-
-                    commutative subtraction stays  s - b[i]  via scalarleft. }
-                  result:=vect_invariant_scalar_reason(taddnode(rhs).left,counter);
+                  { s op b[i] : the left operand must be a loop-invariant scalar of
+                    the destination precision; move the (right) array element into
+                    bvec. Non-commutative subtraction stays  s - b[i]  via scalarleft. }
+                  if vect_elem_isdouble(cvec)<>vecdouble then
+                    exit('operation mixes single- and double-precision arrays');
+                  result:=vect_invariant_scalar_reason(taddnode(rhs).left,counter,vecdouble);
                   if result<>'' then
-                    exit('first operand is not an array element or provably loop-invariant single scalar (it '+result+')');
+                    exit('first operand is not an array element or provably loop-invariant scalar of the destination precision (it '+result+')');
                   scalarnode:=taddnode(rhs).left;
                   scalarleft:=true;
                   bvec:=cvec;
@@ -3443,6 +3500,9 @@ unit optloop;
         scalarleft:=false;
         vecop:=OP_NONE;
         vshape:=vok_arr_arr;
+        vecdouble:=false;
+        eletype:=nil;
+        elewidth:=0;
         mmA_vec:=nil;
         mmB_vec:=nil;
         mmA_scalar:=nil;
@@ -3462,6 +3522,20 @@ unit optloop;
           begin
             MessagePos1(forn.fileinfo,cg_n_loop_not_vectorized,reason);
             exit;
+          end;
+
+        { pick the packed element type and lane count for this loop's precision:
+          single -> [s32floattype x4], double -> [s64floattype x2]. All slot
+          sizes, window advances and node widths below use these. }
+        if vecdouble then
+          begin
+            eletype:=s64floattype;
+            elewidth:=2;
+          end
+        else
+          begin
+            eletype:=s32floattype;
+            elewidth:=4;
           end;
 
         { ---- build the replacement statement block ---- }
@@ -3489,44 +3563,44 @@ unit optloop;
               movups-load/store it each iteration (a register cannot persist
               across the node-per-iteration vector loop) }
             acctemp:=ctempcreatenode.create(
-              tarraydef.getreusable_vector(s32floattype,vect_vecwidth),
-              vect_vecwidth*s32floattype.size,tt_persistent,false);
+              tarraydef.getreusable_vector(eletype,elewidth),
+              elewidth*eletype.size,tt_persistent,false);
             addstatement(stat,acctemp);
 
-            { acc := [s,0,0,0]   (lane 0 keeps the incoming scalar value of s) }
+            { acc := [s,0,..]   (lane 0 keeps the incoming scalar value of s) }
             addstatement(stat,cvectoropnode.create_reduce_init(
               ctemprefnode.create(acctemp),
-              cloadnode.create(tsym(accsym),accsym.owner)));
+              cloadnode.create(tsym(accsym),accsym.owner),vecdouble));
 
             { vector loop:  while i<=hi-(VL-1) do begin acc:=acc+window; i:=i+VL end }
             vecbody:=internalstatements(vstat);
             if vshape=vok_reduce_dot then
               addstatement(vstat,cvectoropnode.create_reduce(
-                ctemprefnode.create(acctemp),bvec.getcopy,cvec.getcopy,true,vect_vecwidth))
+                ctemprefnode.create(acctemp),bvec.getcopy,cvec.getcopy,true,elewidth,vecdouble))
             else
               addstatement(vstat,cvectoropnode.create_reduce(
-                ctemprefnode.create(acctemp),bvec.getcopy,nil,false,vect_vecwidth));
+                ctemprefnode.create(acctemp),bvec.getcopy,nil,false,elewidth,vecdouble));
             addstatement(vstat,cassignmentnode.create(
               cloadnode.create(tsym(counter),counter.owner),
               caddnode.create(addn,cloadnode.create(tsym(counter),counter.owner),
-                cordconstnode.create(vect_vecwidth,ctype,false))));
+                cordconstnode.create(elewidth,ctype,false))));
             addstatement(stat,cwhilerepeatnode.create(
               caddnode.create(lten,cloadnode.create(tsym(counter),counter.owner),
                 caddnode.create(subn,ctemprefnode.create(hitemp),
-                  cordconstnode.create(vect_vecwidth-1,ctype,false))),
+                  cordconstnode.create(elewidth-1,ctype,false))),
               vecbody,true,false));
 
-            { finish:  s := p0+p1+p2+p3  (horizontal sum of the packed acc).
-              The horizontal sum is stored into a memory-backed single temp and
+            { finish:  s := p0+..  (horizontal sum of the packed acc).
+              The horizontal sum is stored into a memory-backed scalar temp and
               then written to s with an ordinary assignment: a backend node's
               store is not modelled by DFA / the register allocator, so -- like the
               broadcast/splat slot -- it must target a memory temp, and the real
               def of s stays a plain assignment the allocator understands. }
-            splattemp:=ctempcreatenode.create(s32floattype,s32floattype.size,tt_persistent,false);
+            splattemp:=ctempcreatenode.create(eletype,eletype.size,tt_persistent,false);
             addstatement(stat,splattemp);
             addstatement(stat,cvectoropnode.create_reduce_finish(
               ctemprefnode.create(splattemp),
-              ctemprefnode.create(acctemp),vect_vecwidth));
+              ctemprefnode.create(acctemp),elewidth,vecdouble));
             addstatement(stat,cassignmentnode.create(
               cloadnode.create(tsym(accsym),accsym.owner),
               ctemprefnode.create(splattemp)));
@@ -3551,7 +3625,7 @@ unit optloop;
             addstatement(stat,ctempdeletenode.create(splattemp));
 
             do_firstpass(block);
-            MessagePos1(forn.fileinfo,cg_n_loop_reduction_vectorized,tostr(vect_vecwidth));
+            MessagePos1(forn.fileinfo,cg_n_loop_reduction_vectorized,tostr(elewidth));
             forn.free;
             n:=block;
             changed:=true;
@@ -3559,7 +3633,7 @@ unit optloop;
           end;
 
         { scalar-broadcast shape: allocate a 16-byte slot and fill it ONCE with
-          [s,s,s,s] before the vector loop (hoisted), so the packed op reads the
+          [s,s,..] before the vector loop (hoisted), so the packed op reads the
           identical scalar bit pattern in every lane on every iteration }
         splattemp:=nil;
         if vshape=vok_arr_scalar then
@@ -3567,11 +3641,11 @@ unit optloop;
             { allowreg=false: the slot must be memory-backed so the hoisted
               broadcast can movups-store it and the loop body movups-load it }
             splattemp:=ctempcreatenode.create(
-              tarraydef.getreusable_vector(s32floattype,vect_vecwidth),
-              vect_vecwidth*s32floattype.size,tt_persistent,false);
+              tarraydef.getreusable_vector(eletype,elewidth),
+              elewidth*eletype.size,tt_persistent,false);
             addstatement(stat,splattemp);
             addstatement(stat,cvectoropnode.create_broadcast(
-              ctemprefnode.create(splattemp),scalarnode.getcopy));
+              ctemprefnode.create(splattemp),scalarnode.getcopy,vecdouble));
           end;
 
         { if-conversion (vok_minmax): each min/max operand is either an array
@@ -3585,11 +3659,11 @@ unit optloop;
             else
               begin
                 splata:=ctempcreatenode.create(
-                  tarraydef.getreusable_vector(s32floattype,vect_vecwidth),
-                  vect_vecwidth*s32floattype.size,tt_persistent,false);
+                  tarraydef.getreusable_vector(eletype,elewidth),
+                  elewidth*eletype.size,tt_persistent,false);
                 addstatement(stat,splata);
                 addstatement(stat,cvectoropnode.create_broadcast(
-                  ctemprefnode.create(splata),mmA_scalar.getcopy));
+                  ctemprefnode.create(splata),mmA_scalar.getcopy,vecdouble));
                 windowa:=ctemprefnode.create(splata);
               end;
             if assigned(mmB_vec) then
@@ -3597,11 +3671,11 @@ unit optloop;
             else
               begin
                 splatb:=ctempcreatenode.create(
-                  tarraydef.getreusable_vector(s32floattype,vect_vecwidth),
-                  vect_vecwidth*s32floattype.size,tt_persistent,false);
+                  tarraydef.getreusable_vector(eletype,elewidth),
+                  elewidth*eletype.size,tt_persistent,false);
                 addstatement(stat,splatb);
                 addstatement(stat,cvectoropnode.create_broadcast(
-                  ctemprefnode.create(splatb),mmB_scalar.getcopy));
+                  ctemprefnode.create(splatb),mmB_scalar.getcopy,vecdouble));
                 windowb:=ctemprefnode.create(splatb);
               end;
           end;
@@ -3610,25 +3684,25 @@ unit optloop;
         vecbody:=internalstatements(vstat);
         case vshape of
           vok_arr_arr:
-            addstatement(vstat,cvectoropnode.create(avec.getcopy,bvec.getcopy,cvec.getcopy,vecop,vect_vecwidth));
+            addstatement(vstat,cvectoropnode.create(avec.getcopy,bvec.getcopy,cvec.getcopy,vecop,elewidth,vecdouble));
           vok_arr_scalar:
             addstatement(vstat,cvectoropnode.create_scalar(avec.getcopy,bvec.getcopy,
-              ctemprefnode.create(splattemp),vecop,scalarleft,vect_vecwidth));
+              ctemprefnode.create(splattemp),vecop,scalarleft,elewidth,vecdouble));
           vok_copy:
-            addstatement(vstat,cvectoropnode.create_copy(avec.getcopy,bvec.getcopy,vect_vecwidth));
+            addstatement(vstat,cvectoropnode.create_copy(avec.getcopy,bvec.getcopy,elewidth,vecdouble));
           vok_minmax:
-            addstatement(vstat,cvectoropnode.create_minmax(avec.getcopy,windowa,windowb,ismaxop,vect_vecwidth));
+            addstatement(vstat,cvectoropnode.create_minmax(avec.getcopy,windowa,windowb,ismaxop,elewidth));
           else
             internalerror(2026070706);
         end;
         addstatement(vstat,cassignmentnode.create(
           cloadnode.create(tsym(counter),counter.owner),
           caddnode.create(addn,cloadnode.create(tsym(counter),counter.owner),
-            cordconstnode.create(vect_vecwidth,ctype,false))));
+            cordconstnode.create(elewidth,ctype,false))));
         addstatement(stat,cwhilerepeatnode.create(
           caddnode.create(lten,cloadnode.create(tsym(counter),counter.owner),
             caddnode.create(subn,ctemprefnode.create(hitemp),
-              cordconstnode.create(vect_vecwidth-1,ctype,false))),
+              cordconstnode.create(elewidth-1,ctype,false))),
           vecbody,true,false));
 
         { scalar remainder:  while i <= hi do begin <original body>; i := i+1 end }
@@ -3655,9 +3729,9 @@ unit optloop;
 
         do_firstpass(block);
         if vshape=vok_minmax then
-          MessagePos1(forn.fileinfo,cg_n_loop_ifconverted,tostr(vect_vecwidth))
+          MessagePos1(forn.fileinfo,cg_n_loop_ifconverted,tostr(elewidth))
         else
-          MessagePos1(forn.fileinfo,cg_n_loop_vectorized,tostr(vect_vecwidth));
+          MessagePos1(forn.fileinfo,cg_n_loop_vectorized,tostr(elewidth));
         forn.free;
         n:=block;
         changed:=true;
@@ -4327,7 +4401,7 @@ unit optloop;
             else
               begin
                 { b[k] op s }
-                if vect_invariant_scalar_reason(r,nil)<>'' then
+                if vect_invariant_scalar_reason(r,nil,false)<>'' then
                   exit;
                 result.bvec:=bv; result.b_base:=bbase;
                 result.scalarnode:=r;
@@ -4341,7 +4415,7 @@ unit optloop;
             { s op b[k] }
             if not slp_idx_same(bidx,result.idx) then
               exit;
-            if vect_invariant_scalar_reason(l,nil)<>'' then
+            if vect_invariant_scalar_reason(l,nil,false)<>'' then
               exit;
             result.bvec:=bv; result.b_base:=bbase;
             result.scalarnode:=l;
@@ -4469,14 +4543,14 @@ unit optloop;
                   vok_arr_arr:
                     begin
                       opnode:=cvectoropnode.create(parses[i].avec.getcopy,
-                        parses[i].bvec.getcopy,parses[i].cvec.getcopy,parses[i].op,slp_vecwidth);
+                        parses[i].bvec.getcopy,parses[i].cvec.getcopy,parses[i].op,slp_vecwidth,false);
                       firstpass(opnode);
                       addstatement(wrapstat,opnode);
                     end;
                   vok_copy:
                     begin
                       opnode:=cvectoropnode.create_copy(parses[i].avec.getcopy,
-                        parses[i].bvec.getcopy,slp_vecwidth);
+                        parses[i].bvec.getcopy,slp_vecwidth,false);
                       firstpass(opnode);
                       addstatement(wrapstat,opnode);
                     end;
@@ -4491,12 +4565,12 @@ unit optloop;
                       firstpass(tmpn);
                       addstatement(wrapstat,tmpn);
                       bcast:=cvectoropnode.create_broadcast(
-                        ctemprefnode.create(splattemp),parses[i].scalarnode.getcopy);
+                        ctemprefnode.create(splattemp),parses[i].scalarnode.getcopy,false);
                       firstpass(bcast);
                       addstatement(wrapstat,bcast);
                       opnode:=cvectoropnode.create_scalar(parses[i].avec.getcopy,
                         parses[i].bvec.getcopy,ctemprefnode.create(splattemp),
-                        parses[i].op,parses[i].scalarleft,slp_vecwidth);
+                        parses[i].op,parses[i].scalarleft,slp_vecwidth,false);
                       firstpass(opnode);
                       addstatement(wrapstat,opnode);
                       deltemp:=ctempdeletenode.create(splattemp);

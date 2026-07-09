@@ -383,8 +383,10 @@ interface
        ttempdeletenodeclass = class of ttempdeletenode;
 
        { Autovectorizer body node (backend-only, created by OptimizeVectorize in
-         optloop). Processes vecwidth (=4) single-precision elements per step
-         with one packed SSE/AVX op. It has four kinds (field `kind`):
+         optloop). Processes vecwidth floating-point elements per step with one
+         packed SSE/AVX op; the element type is single (isdouble=false, VL=4,
+         ..ps/movups) or double (isdouble=true, VL=2, ..pd/movupd). It has four
+         kinds (field `kind`):
 
            vok_arr_arr    a[i] := b[i] op c[i]
                           left=a[i]  right=b[i]  third=c[i]  (vecn each)
@@ -427,10 +429,11 @@ interface
           kind : tvectoropkind;
           scalarleft : boolean; { vok_arr_scalar: true if s is the op's left operand (s op b[i]) }
           ismax : boolean;      { vok_minmax: true for maxps (a[i]:=max(u,v)), false for minps }
-          constructor create(a,b,c : tnode; _op : TOpCG; _vecwidth : longint);virtual;
-          constructor create_scalar(a,b,splat : tnode; _op : TOpCG; _scalarleft : boolean; _vecwidth : longint);
-          constructor create_copy(a,b : tnode; _vecwidth : longint);
-          constructor create_broadcast(splat,scalar : tnode);
+          isdouble : boolean;   { false: single (VL=4, ..ps); true: double (VL=2, ..pd) }
+          constructor create(a,b,c : tnode; _op : TOpCG; _vecwidth : longint; _isdouble : boolean);virtual;
+          constructor create_scalar(a,b,splat : tnode; _op : TOpCG; _scalarleft : boolean; _vecwidth : longint; _isdouble : boolean);
+          constructor create_copy(a,b : tnode; _vecwidth : longint; _isdouble : boolean);
+          constructor create_broadcast(splat,scalar : tnode; _isdouble : boolean);
           { vok_minmax: a[i..i+VL-1] := max/min(u, v) where u (opA, loaded into the
             destination register) and v (opB, the second/NaN-preferred operand) are
             each a 16-byte window -- an array-element access or a pre-broadcast
@@ -438,12 +441,13 @@ interface
             (NaN returns opB), so every lane is bit-identical to the if-converted
             scalar min/max. }
           constructor create_minmax(a,opa,opb : tnode; _ismax : boolean; _vecwidth : longint);
-          { reduction (single-precision sum / dot product): a packed accumulator
-            slot is initialised with the incoming scalar in lane 0, accumulated
-            VL-wide across the loop, then horizontally summed back into the scalar. }
-          constructor create_reduce_init(acc,scalar : tnode);
-          constructor create_reduce(acc,b,c : tnode; _isdot : boolean; _vecwidth : longint);
-          constructor create_reduce_finish(target,acc : tnode; _vecwidth : longint);
+          { reduction (single/double-precision sum / dot product): a packed
+            accumulator slot is initialised with the incoming scalar in lane 0,
+            accumulated VL-wide across the loop, then horizontally summed back into
+            the scalar. }
+          constructor create_reduce_init(acc,scalar : tnode; _isdouble : boolean);
+          constructor create_reduce(acc,b,c : tnode; _isdot : boolean; _vecwidth : longint; _isdouble : boolean);
+          constructor create_reduce_finish(target,acc : tnode; _vecwidth : longint; _isdouble : boolean);
           function pass_typecheck : tnode;override;
           function pass_1 : tnode;override;
           function dogetcopy : tnode;override;
@@ -602,43 +606,47 @@ implementation
                              TVECTOROPNODE
 *****************************************************************************}
 
-    constructor tvectoropnode.create(a,b,c : tnode; _op : TOpCG; _vecwidth : longint);
+    constructor tvectoropnode.create(a,b,c : tnode; _op : TOpCG; _vecwidth : longint; _isdouble : boolean);
       begin
         inherited create(vectoropn,a,b,c);
         op:=_op;
         vecwidth:=_vecwidth;
         kind:=vok_arr_arr;
         scalarleft:=false;
+        isdouble:=_isdouble;
       end;
 
 
-    constructor tvectoropnode.create_scalar(a,b,splat : tnode; _op : TOpCG; _scalarleft : boolean; _vecwidth : longint);
+    constructor tvectoropnode.create_scalar(a,b,splat : tnode; _op : TOpCG; _scalarleft : boolean; _vecwidth : longint; _isdouble : boolean);
       begin
         inherited create(vectoropn,a,b,splat);
         op:=_op;
         vecwidth:=_vecwidth;
         kind:=vok_arr_scalar;
         scalarleft:=_scalarleft;
+        isdouble:=_isdouble;
       end;
 
 
-    constructor tvectoropnode.create_copy(a,b : tnode; _vecwidth : longint);
+    constructor tvectoropnode.create_copy(a,b : tnode; _vecwidth : longint; _isdouble : boolean);
       begin
         inherited create(vectoropn,a,b,nil);
         op:=OP_NONE;
         vecwidth:=_vecwidth;
         kind:=vok_copy;
         scalarleft:=false;
+        isdouble:=_isdouble;
       end;
 
 
-    constructor tvectoropnode.create_broadcast(splat,scalar : tnode);
+    constructor tvectoropnode.create_broadcast(splat,scalar : tnode; _isdouble : boolean);
       begin
         inherited create(vectoropn,splat,scalar,nil);
         op:=OP_NONE;
         vecwidth:=0;
         kind:=vok_broadcast;
         scalarleft:=false;
+        isdouble:=_isdouble;
       end;
 
 
@@ -650,20 +658,22 @@ implementation
         kind:=vok_minmax;
         scalarleft:=false;
         ismax:=_ismax;
+        isdouble:=false;   { min/max if-conversion is single-precision only }
       end;
 
 
-    constructor tvectoropnode.create_reduce_init(acc,scalar : tnode);
+    constructor tvectoropnode.create_reduce_init(acc,scalar : tnode; _isdouble : boolean);
       begin
         inherited create(vectoropn,acc,scalar,nil);
         op:=OP_NONE;
         vecwidth:=0;
         kind:=vok_reduce_init;
         scalarleft:=false;
+        isdouble:=_isdouble;
       end;
 
 
-    constructor tvectoropnode.create_reduce(acc,b,c : tnode; _isdot : boolean; _vecwidth : longint);
+    constructor tvectoropnode.create_reduce(acc,b,c : tnode; _isdot : boolean; _vecwidth : longint; _isdouble : boolean);
       begin
         inherited create(vectoropn,acc,b,c);
         op:=OP_ADD;
@@ -673,16 +683,18 @@ implementation
         else
           kind:=vok_reduce_sum;
         scalarleft:=false;
+        isdouble:=_isdouble;
       end;
 
 
-    constructor tvectoropnode.create_reduce_finish(target,acc : tnode; _vecwidth : longint);
+    constructor tvectoropnode.create_reduce_finish(target,acc : tnode; _vecwidth : longint; _isdouble : boolean);
       begin
         inherited create(vectoropn,target,acc,nil);
         op:=OP_ADD;
         vecwidth:=_vecwidth;
         kind:=vok_reduce_finish;
         scalarleft:=false;
+        isdouble:=_isdouble;
       end;
 
 
@@ -721,6 +733,7 @@ implementation
         n.kind:=kind;
         n.scalarleft:=scalarleft;
         n.ismax:=ismax;
+        n.isdouble:=isdouble;
         result:=n;
       end;
 
@@ -732,7 +745,8 @@ implementation
                 (tvectoropnode(p).vecwidth=vecwidth) and
                 (tvectoropnode(p).kind=kind) and
                 (tvectoropnode(p).scalarleft=scalarleft) and
-                (tvectoropnode(p).ismax=ismax);
+                (tvectoropnode(p).ismax=ismax) and
+                (tvectoropnode(p).isdouble=isdouble);
       end;
 
 {*****************************************************************************

@@ -147,38 +147,59 @@ implementation
         (scalarleft=true), matching the source's non-commutative order. }
       var
         regb, regc, regs, resreg, regacc, regt : tregister;
-        opps, movop : tasmop;
+        opps, movop, addop, mulop, xorop, movsop : tasmop;
         refb, refc, refa, refsplat, refacc : treference;
-        avx : boolean;
+        avx, dbl : boolean;
+        scalarsize : tcgsize;
       begin
         avx:=UseAVX;
-        if avx then
-          movop:=A_VMOVUPS
+        dbl:=isdouble;
+        { per-precision instruction and scalar-size selection: single uses the
+          ..ps / movss forms over VL=4 lanes, double the ..pd / movsd forms over
+          VL=2 lanes; VEX v-forms under an AVX fputype. }
+        if dbl then
+          scalarsize:=OS_F64
         else
-          movop:=A_MOVUPS;
+          scalarsize:=OS_F32;
+        if avx then
+          begin
+            if dbl then movop:=A_VMOVUPD else movop:=A_VMOVUPS;
+            if dbl then addop:=A_VADDPD else addop:=A_VADDPS;
+            if dbl then mulop:=A_VMULPD else mulop:=A_VMULPS;
+            if dbl then xorop:=A_VXORPD else xorop:=A_VXORPS;
+            if dbl then movsop:=A_VMOVSD else movsop:=A_VMOVSS;
+          end
+        else
+          begin
+            if dbl then movop:=A_MOVUPD else movop:=A_MOVUPS;
+            if dbl then addop:=A_ADDPD else addop:=A_ADDPS;
+            if dbl then mulop:=A_MULPD else mulop:=A_MULPS;
+            if dbl then xorop:=A_XORPD else xorop:=A_XORPS;
+            if dbl then movsop:=A_MOVSD else movsop:=A_MOVSS;
+          end;
 
         { --- reduction accumulator init: acc slot := [s,0,0,0] (runs once) --- }
         if kind=vok_reduce_init then
           begin
             { load the incoming scalar s into lane 0 of regs (upper lanes are
               don't-care here) }
-            secondpass(right);   { the incoming scalar single s }
+            secondpass(right);   { the incoming scalar single/double s }
             regs:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
-            cg.a_loadmm_loc_reg(current_asmdata.CurrAsmList,OS_F32,right.location,regs,mms_movescalar);
-            { regacc := [0,0,0,0], then merge s into lane 0 with a scalar move so
-              the upper three lanes stay exactly zero (the register-source path of
+            cg.a_loadmm_loc_reg(current_asmdata.CurrAsmList,scalarsize,right.location,regs,mms_movescalar);
+            { regacc := [0,..,0], then merge s into lane 0 with a scalar move so
+              the upper lanes stay exactly zero (the register-source path of
               a_loadmm_*_reg would movaps a full 128 bits and clobber them, so the
-              merge must be an explicit MOVSS/VMOVSS reg,reg here) }
+              merge must be an explicit MOVSS|MOVSD / v-form reg,reg here) }
             regacc:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
             if avx then
               begin
-                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(A_VXORPS,S_NO,regacc,regacc,regacc));
-                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(A_VMOVSS,S_NO,regs,regacc,regacc));
+                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(xorop,S_NO,regacc,regacc,regacc));
+                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(movsop,S_NO,regs,regacc,regacc));
               end
             else
               begin
-                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(A_XORPS,S_NO,regacc,regacc));
-                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(A_MOVSS,S_NO,regs,regacc));
+                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(xorop,S_NO,regacc,regacc));
+                current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(movsop,S_NO,regs,regacc));
               end;
             secondpass(left);
             if not (left.location.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
@@ -220,15 +241,15 @@ implementation
                 regc:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
                 current_asmdata.CurrAsmList.concat(taicpu.op_ref_reg(movop,S_NO,refc,regc));
                 if avx then
-                  current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(A_VMULPS,S_NO,regc,regb,regb))
+                  current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(mulop,S_NO,regc,regb,regb))
                 else
-                  current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(A_MULPS,S_NO,regc,regb));
+                  current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(mulop,S_NO,regc,regb));
               end;
             { acc := acc + regb }
             if avx then
-              current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(A_VADDPS,S_NO,regb,regacc,regacc))
+              current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(addop,S_NO,regb,regacc,regacc))
             else
-              current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(A_ADDPS,S_NO,regb,regacc));
+              current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(addop,S_NO,regb,regacc));
             { store the packed accumulator back to its slot }
             current_asmdata.CurrAsmList.concat(taicpu.op_reg_ref(movop,S_NO,regacc,refacc));
             location_reset(location,LOC_VOID,OS_NO);
@@ -247,7 +268,24 @@ implementation
             regacc:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
             current_asmdata.CurrAsmList.concat(taicpu.op_ref_reg(movop,S_NO,refacc,regacc));
             regt:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
-            { SSE2-only horizontal sum via shufps+addps (no SSE3 haddps needed):
+            if dbl then
+              begin
+                { SSE2 double horizontal sum of [p0,p1]:  regt := [p1,p1] via
+                  unpckhpd, then regacc[0] := p0 + p1 (scalar addsd) }
+                if avx then
+                  begin
+                    current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(A_VUNPCKHPD,S_NO,regacc,regacc,regt));
+                    current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(A_VADDSD,S_NO,regt,regacc,regacc));
+                  end
+                else
+                  begin
+                    current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(A_MOVAPD,S_NO,regacc,regt));
+                    current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(A_UNPCKHPD,S_NO,regt,regt));
+                    current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(A_ADDSD,S_NO,regt,regacc));
+                  end;
+              end
+            else
+            { SSE2-only single horizontal sum via shufps+addps (no SSE3 haddps needed):
                 regt   := [p2,p3,p2,p3]
                 regacc := regacc + regt   -> lane0=p0+p2, lane1=p1+p3
                 regt   := broadcast lane1 (p1+p3)
@@ -270,7 +308,7 @@ implementation
               end;
             { store the low lane back into the scalar accumulator s (left) }
             secondpass(left);
-            cg.a_loadmm_reg_loc(current_asmdata.CurrAsmList,OS_F32,regacc,left.location,mms_movescalar);
+            cg.a_loadmm_reg_loc(current_asmdata.CurrAsmList,scalarsize,regacc,left.location,mms_movescalar);
             location_reset(location,LOC_VOID,OS_NO);
             exit;
           end;
@@ -278,12 +316,20 @@ implementation
         { --- broadcast: fill the 16-byte splat slot with [s,s,s,s] once --- }
         if kind=vok_broadcast then
           begin
-            secondpass(right);   { the loop-invariant scalar single s }
+            secondpass(right);   { the loop-invariant scalar single/double s }
             regs:=cg.getmmregister(current_asmdata.CurrAsmList,OS_M128);
-            { load s into the low lane (movss / vmovss) }
-            cg.a_loadmm_loc_reg(current_asmdata.CurrAsmList,OS_F32,right.location,regs,mms_movescalar);
-            { splat lane 0 across all four lanes with one shuffle }
-            if avx then
+            { load s into the low lane (movss / movsd) }
+            cg.a_loadmm_loc_reg(current_asmdata.CurrAsmList,scalarsize,right.location,regs,mms_movescalar);
+            { splat lane 0 across all lanes: single -> shufps imm $00 (4 lanes);
+              double -> unpcklpd regs,regs (2 lanes) }
+            if dbl then
+              begin
+                if avx then
+                  current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg_reg(A_VUNPCKLPD,S_NO,regs,regs,regs))
+                else
+                  current_asmdata.CurrAsmList.concat(taicpu.op_reg_reg(A_UNPCKLPD,S_NO,regs,regs));
+              end
+            else if avx then
               current_asmdata.CurrAsmList.concat(taicpu.op_const_reg_reg_reg(A_VSHUFPS,S_NO,$00,regs,regs,regs))
             else
               current_asmdata.CurrAsmList.concat(taicpu.op_const_reg_reg(A_SHUFPS,S_NO,$00,regs,regs));
@@ -326,11 +372,14 @@ implementation
             else
             case op of
               OP_ADD:
-                if avx then opps:=A_VADDPS else opps:=A_ADDPS;
+                opps:=addop;
               OP_SUB:
-                if avx then opps:=A_VSUBPS else opps:=A_SUBPS;
+                if dbl then
+                  begin if avx then opps:=A_VSUBPD else opps:=A_SUBPD end
+                else
+                  begin if avx then opps:=A_VSUBPS else opps:=A_SUBPS end;
               OP_MUL,OP_IMUL:
-                if avx then opps:=A_VMULPS else opps:=A_MULPS;
+                opps:=mulop;
               else
                 internalerror(2026070701);
             end;
