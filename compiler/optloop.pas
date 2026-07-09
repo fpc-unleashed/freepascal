@@ -9838,6 +9838,92 @@ unit optloop;
 
     { --- small helpers ------------------------------------------------------ }
 
+    { true if N is a direct call to a routine proven PURE by -OoPURE (reads but
+      never writes global state, no I/O, cannot raise/trap) whose every actual
+      argument is itself a side-effect-free expression. Such a call may be value-
+      numbered: two structurally-identical occurrences with the arguments and the
+      (pure-read) global memory unchanged between them compute the same value, so
+      the second can reuse the first. Methods / indirect / procvar calls are
+      excluded (self / dynamic dispatch is not modelled here). }
+    function gvn_pure_call(n : tnode) : boolean;
+      var
+        cn : tcallnode;
+        para : tnode;
+      begin
+        result:=false;
+        if (n=nil) or (n.nodetype<>calln) then
+          exit;
+        if not(cs_opt_pure in current_settings.optimizerswitches) then
+          exit;
+        cn:=tcallnode(n);
+        { direct, non-method, real procdef only }
+        if assigned(cn.methodpointer) then
+          exit;
+        if not assigned(cn.procdefinition) or not(cn.procdefinition is tprocdef) then
+          exit;
+        { scalar result: no aggregate return machinery (funcret/init/cleanup) }
+        if assigned(cn.funcretnode) or assigned(cn.callinitblock) or
+           assigned(cn.callcleanupblock) then
+          exit;
+        if not proc_is_pure(tprocdef(cn.procdefinition)) then
+          exit;
+        { arguments must be pure expressions: no nested calls / stores / asm /
+          side-effecting inlines (a nested pure call would still make the whole
+          statement a barrier, so we simply require none here) }
+        para:=cn.left;
+        while assigned(para) do
+          begin
+            if para.nodetype<>callparan then
+              exit;
+            if assigned(tcallparanode(para).left) and
+               might_have_sideeffects(tcallparanode(para).left,[]) then
+              exit;
+            para:=tcallparanode(para).right;
+          end;
+        result:=true;
+      end;
+
+
+    function gvn_sideeffect_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      begin
+        result:=fen_false;
+        case n.nodetype of
+          calln:
+            { a proven-pure call is not a barrier -- recurse into its arguments so
+              a side effect hiding in an argument is still caught }
+            if not gvn_pure_call(n) then
+              result:=fen_norecurse_true;
+          assignn,asmn,finalizetempsn:
+            result:=fen_norecurse_true;
+          inlinen:
+            if tinlinenode(n).may_have_sideeffect_norecurse then
+              result:=fen_norecurse_true;
+          loadn:
+            if ((tloadnode(n).symtableentry.typ=absolutevarsym) and
+                (tabsolutevarsym(tloadnode(n).symtableentry).abstyp=toaddr)) or
+               ((tloadnode(n).symtableentry.typ in [paravarsym,localvarsym,staticvarsym]) and
+                (vo_volatile in tabstractvarsym(tloadnode(n).symtableentry).varoptions)) then
+              result:=fen_norecurse_true;
+          temprefn:
+            if (ti_executeinitialisation in ttemprefnode(n).tempflags) and
+               might_have_sideeffects(ttemprefnode(n).tempinfo^.tempinitcode,[]) then
+              result:=fen_norecurse_true;
+          else
+            ;
+        end;
+      end;
+
+
+    { like might_have_sideeffects(n,[]) but a call to a routine proven pure by
+      -OoPURE is treated as effect-free, so a  x := f(a)  statement (and an
+      expression containing f(a)) is not a barrier and its pure calls become
+      value-numbering candidates. }
+    function gvn_has_sideeffects(n : tnode) : boolean;
+      begin
+        result:=foreachnodestatic(n,@gvn_sideeffect_cb,nil);
+      end;
+
+
     function gvn_safe_local_sym(n : tnode) : tsym;
       var
         sym : tsym;
@@ -9943,8 +10029,6 @@ unit optloop;
         kind:=gvn_pure;
         if not assigned(n.resultdef) then
           exit;
-        if not(n.nodetype in gvn_producers) then
-          exit;
         if ([nf_write,nf_modify,nf_address_taken]*n.flags)<>[] then
           exit;
         { register-able scalar result only (excludes managed types, records,
@@ -9952,6 +10036,25 @@ unit optloop;
         if not(tstoreddef(n.resultdef).is_intregable or tstoreddef(n.resultdef).is_fpuregable) then
           exit;
         if is_void(n.resultdef) then
+          exit;
+        { a call to a routine proven pure by -OoPURE: value-number it as a memory
+          reader (a pure routine may read global state, so any store or loop that
+          writes memory invalidates it), keyed additionally on the safe locals its
+          arguments read. Always worth a temp -- a redundant call is expensive. }
+        if n.nodetype=calln then
+          begin
+            if not gvn_pure_call(n) then
+              exit;
+            ai.hasmem:=false;
+            ai.hasvarread:=false;
+            ai.syms:=nil;
+            foreachnodestatic(pm_postprocess,tcallnode(n).left,@gvn_analyze_cb,@ai);
+            kind:=gvn_mem;
+            syms:=ai.syms;
+            result:=true;
+            exit;
+          end;
+        if not(n.nodetype in gvn_producers) then
           exit;
         { side-effect free (no calls, stores, asm, volatile/absolute loads) }
         if might_have_sideeffects(n,[]) then
@@ -10175,7 +10278,7 @@ unit optloop;
         { never rewrite a write/address target }
         if ([nf_write,nf_modify,nf_address_taken]*n.flags)<>[] then
           exit;
-        if not(n.nodetype in gvn_producers) then
+        if not((n.nodetype in gvn_producers) or (n.nodetype=calln)) then
           exit;
         av:=ra^.availp^;
         for i:=0 to high(av) do
@@ -10211,6 +10314,11 @@ unit optloop;
                 avail:=gvn_add(avail,e);
               end;
           end;
+        { a pure call is generated as an atom: do not descend into its argument
+          list (a reused whole-call frees the arguments, which would dangle any
+          sub-entry pointing into them) }
+        if n.nodetype=calln then
+          exit;
         { recurse into children in evaluation order; do NOT descend into the
           conditionally-evaluated right operand of a short-circuit and/or }
         if (n.nodetype in [andn,orn]) and is_boolean(n.resultdef) then
@@ -10306,8 +10414,9 @@ unit optloop;
         memstore : boolean;
       begin
         asn:=tassignmentnode(n);
-        { a value expression with its own side effects is a barrier }
-        if might_have_sideeffects(asn.right,[]) then
+        { a value expression with its own side effects is a barrier (a proven-pure
+          call is not a side effect) }
+        if gvn_has_sideeffects(asn.right) then
           begin
             avail:=nil;
             exit;
@@ -10347,7 +10456,7 @@ unit optloop;
       begin
         ifn:=tifnode(n);
         emptyskip:=nil;
-        if not might_have_sideeffects(ifn.left,[]) then
+        if not gvn_has_sideeffects(ifn.left) then
           begin
             ra.ctx:=ctx;
             ra.availp:=@avail;
@@ -10412,7 +10521,7 @@ unit optloop;
       begin
         cn:=tcasenode(n);
         emptyskip:=nil;
-        if not might_have_sideeffects(cn.left,[]) then
+        if not gvn_has_sideeffects(cn.left) then
           begin
             ra.ctx:=ctx;
             ra.availp:=@avail;
@@ -10460,9 +10569,10 @@ unit optloop;
         emptyskip : tgvnsyms;
       begin
         emptyskip:=nil;
-        if might_have_sideeffects(n,[]) then
+        if gvn_has_sideeffects(n) then
           begin
-            { call / store / asm / side-effecting inline statement: barrier }
+            { store / asm / side-effecting inline / impure-call statement: barrier
+              (a bare proven-pure call statement is not) }
             avail:=nil;
             exit;
           end;

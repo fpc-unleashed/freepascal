@@ -52,6 +52,7 @@ implementation
       globtype,
       cclasses,
       symbase,symtype,symconst,symsym,symtable,
+      defutil,
       nutils,ncal,nld,nmem,ninl,ncnv,
       compinnr;
 
@@ -246,14 +247,35 @@ implementation
       end;
 
 
-    { does the routine's signature/shape make it eligible at all? We restrict
-      the first landing to standalone (non-method, non-nested) routines with a
-      simple scalar/pointer result and only simple by-value parameters, so that
-      the result lives in a local, no by-ref parameter can write caller memory,
-      and reading a parameter is a plain local read. }
+    { does the routine's signature/shape make it eligible at all? We restrict to
+      standalone (non-method, non-nested) routines with a simple scalar/pointer
+      result -- so the result lives in a local -- whose parameters are read-only:
+      simple by-value parameters (a plain local read) or const/constref parameters
+      (read-only, cannot write caller memory). const/constref additionally accepts
+      unmanaged record/array/set aggregates, so array/field-reading const helpers
+      qualify (their reads are pure memory reads). Methods (a mutable self alias)
+      remain out of scope. }
     function simple_purity_type(def : tdef) : boolean;
       begin
         result:=assigned(def) and (def.typ in [orddef,enumdef,floatdef,pointerdef]);
+      end;
+
+
+    { a type acceptable for a read-only (const / constref) by-reference parameter:
+      besides the simple scalars we also accept records, fixed arrays and sets, so
+      that array/field-reading const helpers (which read through the caller's
+      storage but never write it) become eligible. Managed (ref-counted / init-
+      table) aggregates are excluded because their implicit init/finalisation is a
+      hidden side effect we do not model. }
+    function const_readable_type(def : tdef) : boolean;
+      begin
+        result:=false;
+        if not assigned(def) then
+          exit;
+        if simple_purity_type(def) then
+          exit(true);
+        if def.typ in [recorddef,arraydef,setdef] then
+          result:=not is_managed_type(def);
       end;
 
 
@@ -272,10 +294,22 @@ implementation
             pv:=tparavarsym(pd.paras[i]);
             if vo_is_hidden_para in pv.varoptions then
               exit;
-            if not(pv.varspez in [vs_value,vs_const]) then
-              exit;
-            if not simple_purity_type(pv.vardef) then
-              exit;
+            case pv.varspez of
+              vs_value:
+                { by-value: the routine owns a private local copy. Keep it simple
+                  so no managed-copy finalisation sneaks in as a side effect. }
+                if not simple_purity_type(pv.vardef) then
+                  exit;
+              vs_const,vs_constref:
+                { read-only parameter. A simple const is a by-value local read; an
+                  aggregate const/constref is a pure read through caller storage.
+                  Writes to it are impossible (language) / caught as impure. }
+                if not const_readable_type(pv.vardef) then
+                  exit;
+              else
+                { vs_var / vs_out: writable alias into caller storage -> impure }
+                exit;
+            end;
           end;
         result:=true;
       end;
