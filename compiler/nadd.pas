@@ -938,58 +938,75 @@ const
                addn :
                  begin
                    v:=lv+rv;
-                   if v.overflow then
+                   if v.overflow and not(nf_internal in flags) then
                      begin
                        Message(parser_e_arithmetic_operation_overflow);
                        { Recover }
                        t:=genintconstnode(0)
                      end
-                   else if is_constpointernode(left) or is_constpointernode(right) then
-                     t := cpointerconstnode.create(qword(v),resultdef)
                    else
-                     if is_integer(ld) then
-                       t := create_simplified_ord_const(v,resultdef,forinline,cs_check_overflow in localswitches)
-                     else
-                       t := cordconstnode.create(v,resultdef,(ld.typ<>enumdef));
+                     begin
+                       { compiler-generated (nf_internal) integer arithmetic uses
+                         intentional modulo-2^n wraparound (e.g. the (v-x)<=(y-x)
+                         unsigned range-test transform); keep the wrapped value
+                         instead of raising a spurious user overflow error. }
+                       v.overflow:=false;
+                       if is_constpointernode(left) or is_constpointernode(right) then
+                         t := cpointerconstnode.create(qword(v),resultdef)
+                       else
+                         if is_integer(ld) then
+                           t := create_simplified_ord_const(v,resultdef,forinline,cs_check_overflow in localswitches)
+                         else
+                           t := cordconstnode.create(v,resultdef,(ld.typ<>enumdef));
+                     end;
                  end;
                subn :
                  begin
                    v:=lv-rv;
-                   if v.overflow then
+                   if v.overflow and not(nf_internal in flags) then
                      begin
                        Message(parser_e_arithmetic_operation_overflow);
                        { Recover }
                        t:=genintconstnode(0)
                      end
-                   else if (lt=pointerconstn) then
-                     { pointer-pointer results in an integer }
-                     if (rt=pointerconstn) then
-                       begin
-                         if (cs_typed_addresses in current_settings.localswitches) and
-                            (tpointerdef(rd).pointeddef.size>1) and
-                            not(anf_has_pointerdiv in addnodeflags) then
-                           internalerror(2008030101);
-                         t:=cpointerconstnode.create(qword(v),resultdef)
-                       end
-                     else
-                       t:=cpointerconstnode.create(qword(v),resultdef)
                    else
-                     if is_integer(ld) then
-                       t:=create_simplified_ord_const(v,resultdef,forinline,cs_check_overflow in localswitches)
-                     else
-                       t:=cordconstnode.create(v,resultdef,(ld.typ<>enumdef));
+                     begin
+                       { see addn: keep intentional wraparound for nf_internal nodes }
+                       v.overflow:=false;
+                       if (lt=pointerconstn) then
+                         { pointer-pointer results in an integer }
+                         if (rt=pointerconstn) then
+                           begin
+                             if (cs_typed_addresses in current_settings.localswitches) and
+                                (tpointerdef(rd).pointeddef.size>1) and
+                                not(anf_has_pointerdiv in addnodeflags) then
+                               internalerror(2008030101);
+                             t:=cpointerconstnode.create(qword(v),resultdef)
+                           end
+                         else
+                           t:=cpointerconstnode.create(qword(v),resultdef)
+                       else
+                         if is_integer(ld) then
+                           t:=create_simplified_ord_const(v,resultdef,forinline,cs_check_overflow in localswitches)
+                         else
+                           t:=cordconstnode.create(v,resultdef,(ld.typ<>enumdef));
+                     end;
                  end;
                muln :
                  begin
                    v:=lv*rv;
-                   if v.overflow then
+                   if v.overflow and not(nf_internal in flags) then
                      begin
                        message(parser_e_arithmetic_operation_overflow);
                        { Recover }
                        t:=genintconstnode(0)
                      end
                    else
-                     t := create_simplified_ord_const(v,resultdef,forinline,cs_check_overflow in localswitches)
+                     begin
+                       { see addn: keep intentional wraparound for nf_internal nodes }
+                       v.overflow:=false;
+                       t := create_simplified_ord_const(v,resultdef,forinline,cs_check_overflow in localswitches)
+                     end
                  end;
                xorn :
                  if is_integer(ld) then
