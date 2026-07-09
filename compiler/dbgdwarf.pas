@@ -2578,6 +2578,7 @@ implementation
         blocksize:=0;
         dreghigh:=0;
         tvlist:=nil;
+        tvsize:=0;
         { external symbols can't be resolved at link time, so we
           can't generate stabs for them
 
