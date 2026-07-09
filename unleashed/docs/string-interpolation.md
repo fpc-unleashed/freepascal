@@ -50,7 +50,9 @@ Booleans render as `TRUE` / `FALSE` (Pascal's `WriteStr` default). Enums render 
 
 ## Format masks
 
-`{expr:mask}` dispatches to a runtime function picked from the expr type and the mask shape:
+A mask that is just a field width - a plain number with a nonzero digit (`{x:6}`), optionally followed by fraction digits (`{r:8:2}`) - does not dispatch to any function: it lowers to the same width specifier `write(x:6)` / `write(r:8:2)` uses. It right-pads any type `write` can pad (integers, floats, strings, chars, booleans) and needs no `SysUtils`. An all-zero mask (`0`, `000`) is not a width; it keeps its `FormatFloat` zero-padding meaning from the table below.
+
+Any other `{expr:mask}` dispatches to a runtime function picked from the expr type and the mask shape:
 
 | Expr type                       | Mask shape                  | Dispatches to                | Requires                                |
 |---------------------------------|-----------------------------|------------------------------|-----------------------------------------|
@@ -134,6 +136,6 @@ The mask after `:` is raw text terminated by `}`. It cannot itself contain a `}`
 
 If you arrived from another language, a few things are different:
 
-- **C# / Python f-string** uses `{name,-40}` (alignment) or `{name:width}` for plain padding. Here padding lives inside the Format mask: `{name:%-40s}`.
+- **C# / Python f-string** uses `{name,-40}` (alignment) or `{name:width}` for plain padding. Here `{name:40}` right-pads like `write(name:40)`; left-alignment lives inside a Format mask: `{name:%-40s}`.
 - **C#** `{x:format}` IFormatProvider masks - closest equivalent is `{x:mask}` with the `L` locale prefix.
 - **JavaScript / Kotlin** `${...}` with `$` before each placeholder. Here `$` is on the literal once (`$'...'`), and braces alone delimit placeholders inside.

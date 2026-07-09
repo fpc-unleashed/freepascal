@@ -3922,6 +3922,52 @@ implementation
       end;
 
 
+    { recognize a write-style numeric mask: `6` or `8:2` - plain field
+      width (and fraction digits) as in write(x:8:2). an all-zero mask
+      without a colon (`0`, `000`) is not a width - it stays a FormatFloat
+      zero-padding mask }
+    function interp_mask_is_width(const mask:ansistring;out w,f:longint;out has_frac:boolean):boolean;
+      var
+        i,colonpos : longint;
+        code : integer;
+      begin
+        result:=false;
+        has_frac:=false;
+        w:=0;
+        f:=0;
+        if mask='' then
+          exit;
+        colonpos:=0;
+        for i:=1 to length(mask) do
+          case mask[i] of
+            '0'..'9': ;
+            ':':
+              begin
+                { a single colon, neither first nor last }
+                if (colonpos<>0) or (i=1) or (i=length(mask)) then
+                  exit;
+                colonpos:=i;
+              end;
+            else
+              exit;
+          end;
+        if colonpos=0 then
+          begin
+            val(mask,w,code);
+            if w=0 then
+              exit;
+          end
+        else
+          begin
+            val(copy(mask,1,colonpos-1),w,code);
+            if code=0 then
+              val(copy(mask,colonpos+1,length(mask)-colonpos),f,code);
+            has_frac:=true;
+          end;
+        result:=code=0;
+      end;
+
+
     { build a runtime call for an interpolation format spec: expr as 'mask'.
       dispatches to Format / FormatDateTime / FormatFloat / IntToHex
       based on expr type and mask shape. by default uses locale-invariant
@@ -5097,6 +5143,9 @@ implementation
          interp_temp : ttempcreatenode;
          interp_last : tnode;
          interp_inl : tinlinenode;
+         interp_mask : ansistring;
+         interp_w,interp_f : longint;
+         interp_hasf : boolean;
       begin
         { can't keep a copy of p1 and compare pointers afterwards, because
           p1 may be freed and reallocated in the same place!  }
@@ -5540,9 +5589,28 @@ implementation
                          // first `:` up to the closing `}` is the raw mask
                          if current_scanner.token=_COLON then
                            begin
-                             p1:=handle_interp_format(p1,current_scanner.read_interp_mask);
-                             interp_paras:=ccallparanode.create(p1,interp_paras);
-                             inc(interp_count);
+                             interp_mask:=current_scanner.read_interp_mask;
+                             if interp_mask_is_width(interp_mask,interp_w,interp_f,interp_hasf) then
+                               begin
+                                 { plain numeric mask - lower to the same colon
+                                   paras write(x:8:2) uses, so `x:6` pads the
+                                   value instead of going through Format }
+                                 interp_paras:=ccallparanode.create(p1,interp_paras);
+                                 inc(interp_count);
+                                 interp_paras:=ccallparanode.create(genintconstnode(interp_w),interp_paras);
+                                 include(tcallparanode(interp_paras).callparaflags,cpf_is_colon_para);
+                                 if interp_hasf then
+                                   begin
+                                     interp_paras:=ccallparanode.create(genintconstnode(interp_f),interp_paras);
+                                     include(tcallparanode(interp_paras).callparaflags,cpf_is_colon_para);
+                                   end;
+                               end
+                             else
+                               begin
+                                 p1:=handle_interp_format(p1,interp_mask);
+                                 interp_paras:=ccallparanode.create(p1,interp_paras);
+                                 inc(interp_count);
+                               end;
                            end
                          else
                            handle_interp_elem(p1,interp_paras,interp_count);
