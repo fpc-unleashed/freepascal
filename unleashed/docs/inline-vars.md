@@ -132,6 +132,8 @@ for var i := 0 to 9 do // i is LongInt
 
 The `from` expression determines the type. Sub-32-bit integers are promoted to `LongInt`, same as regular inline vars.
 
+`Int64` counters (explicit or inferred) work on 32-bit targets too - for loops lower to while loops, so the 64-bit arithmetic is ordinary node codegen. Outside unleashed mode 32-bit targets keep the stock "Ordinal expression expected" error.
+
 ### for..in with explicit type
 
 ```pas

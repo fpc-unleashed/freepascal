@@ -1036,11 +1036,14 @@ implementation
              loopvarsym:=nil;
              hstep:=nil;
 
-             { variable must be an ordinal, int64 is not allowed for 32bit targets }
+             { variable must be an ordinal, int64 is not allowed for 32bit targets
+               (for loops lower to while loops, whose 64-bit arithmetic works on
+               32-bit targets - keep the historic error outside unleashed) }
              if (
                  not(is_ordinal(hloopvar.resultdef))
     {$if not defined(cpu64bitaddr) and not defined(cpu64bitalu)}
-                 or is_64bitint(hloopvar.resultdef)
+                 or (is_64bitint(hloopvar.resultdef) and
+                     not(m_unleashed in current_settings.modeswitches))
     {$endif not cpu64bitaddr and not cpu64bitalu}
                ) and
                (hloopvar.resultdef.typ<>undefineddef)
@@ -1432,7 +1435,8 @@ implementation
                if (
                    not(is_ordinal(hloopvar.resultdef))
     {$if not defined(cpu64bitaddr) and not defined(cpu64bitalu)}
-                   or is_64bitint(hloopvar.resultdef)
+                   or (is_64bitint(hloopvar.resultdef) and
+                       not(m_unleashed in current_settings.modeswitches))
     {$endif not cpu64bitaddr and not cpu64bitalu}
                  ) and
                  (hloopvar.resultdef.typ<>undefineddef)
