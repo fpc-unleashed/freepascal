@@ -42,15 +42,33 @@
         independent accumulator update of a DISTINCT variable, matches -- one
         closed form per accumulator under the shared trip-count guard.  The
         accumulators are distinct and no increment references another, so
-        they evolve independently and statement order is irrelevant.
+        they evolve independently and statement order is irrelevant;
+      * 64-BIT COUNTERS: the counter may be any integer up to 64 bits.  The
+        trip count  b-a+1  is computed in 64-bit two's-complement, giving the
+        true iteration count reduced mod 2^64; every accumulator product is
+        truncated to the accumulator's own width w<=64, and (count*c) mod 2^w
+        is bit-identical to the repeated addition (pointer strides use the
+        product as an element count, likewise correct mod 2^64), so a 64-bit
+        counter is exactly as sound as a 32-bit one;
+      * RANGE CHECKING (-Cr, without -Co): still enabled, restricted to native
+        full-range integer accumulators (int64/qword) whose  s:=s+c  performs
+        no narrowing and so is never range-checked, matching the nf_internal
+        closed form.  -Co (overflow checking) stays fully disabled (see below);
+      * STATIC / GLOBAL accumulators: a unit-level (static) variable may be an
+        accumulator (never the counter).  The loop body has no calls and the
+        routine no exception paths, so nothing observes the intermediate
+        states cross-routine within this thread, and the closed form stores
+        the identical final value.
 
     Soundness (correctness over coverage):
 
-      * the loop counter is a plain local integer of at most 32 bits, so the
-        symbolic trip count  b-a+1  is exact in 64-bit arithmetic (max ~2^32);
-      * each accumulator s is a plain local integer or pointer, distinct from
-        the counter AND from every other accumulator, updated exactly once
-        per iteration by s := s +/- c;
+      * the loop counter is a plain LOCAL integer of at most 64 bits (a static
+        counter is rejected: the whole-routine deadness scan cannot see its
+        cross-unit uses).  The trip count is exact mod 2^64, which is all the
+        truncated products need;
+      * each accumulator s is a plain local (or, for statics, global) integer
+        or pointer, distinct from the counter AND from every other accumulator,
+        updated exactly once per iteration by s := s +/- c;
       * every c and the bounds a,b are loop-invariant, side-effect free
         integer expressions referencing neither i nor ANY accumulator (so no
         double-evaluation or aliasing hazard -- the bounds are read once at
@@ -62,9 +80,11 @@
         exactly like the loop running zero times;
       * two's-complement wraparound is preserved: without overflow checking
         s0 + iters*c (mod 2^n) equals the repeated addition, so the closed
-        form is bit-identical.  Under -Co (overflow) or -Cr (range) the loop
-        would trap on the overflowing iteration while the closed form would
-        not, so the whole pass is DISABLED under either;
+        form is bit-identical.  Under -Cr the pass runs only for native
+        full-range integer accumulators, which -Cr never range-checks; under
+        -Co (overflow) it is DISABLED, because a native accumulator would trap
+        on the overflowing iteration and reproducing that per-iteration trap
+        from a single closed-form step is not robustly sound;
       * a body containing anything other than accumulator updates (calls,
         stores, control flow, breaks/continues/exits, nested loops), or two
         updates of the SAME accumulator, never matches, so such loops are
@@ -258,12 +278,33 @@ implementation
       end;
 
 
-    { A plain local variable usable as counter/accumulator: a local var, NOT
-      address-taken, captured by a nested scope, or volatile -- so the whole-
-      routine scans see every one of its uses and no alias can change it behind
-      our back.  It must be an integer of at most MAXSIZE bytes (0 = no limit),
-      or -- when ALLOW_POINTER -- a pointer (ISPTR is set accordingly). }
-    function simple_local_var(n : tnode; maxsize : longint; allow_pointer : boolean; out isptr : boolean) : boolean;
+    { true for a native-width, full-range integer type (int64/qword on a
+      64-bit target): an  s:=s+c  in such a type performs no narrowing, so -Cr
+      inserts no range check.  Identity against the canonical type defs excludes
+      subranges (which get their own def), and is_nativeint excludes oversized
+      ints on 32-bit targets. }
+    function is_native_full_range_int(def : tdef) : boolean;
+      begin
+        result:=assigned(def) and is_nativeint(def) and
+                ((def=s64inttype) or (def=u64inttype));
+      end;
+
+
+    { A plain variable usable as counter/accumulator: NOT address-taken,
+      captured by a nested scope, or volatile -- so the whole-routine scans see
+      every one of its uses and no alias can change it behind our back.  It must
+      be an integer of at most MAXSIZE bytes (0 = no limit), or -- when
+      ALLOW_POINTER -- a pointer (ISPTR is set accordingly).
+
+      Normally the variable must be a plain LOCAL.  When ALLOW_STATIC (used for
+      accumulators only, never the loop counter) a unit-level / global (static)
+      variable is also accepted: the loop body has no calls and the enclosing
+      routine no exception paths (both enforced elsewhere), so no cross-routine
+      code observes the global's intermediate states within this thread, and the
+      closed form writes the identical final value -- the same reason FPC may
+      already keep such an accumulator in a register across the loop.  Threadvars
+      and external symbols, whose observers we cannot bound, stay rejected. }
+    function simple_local_var(n : tnode; maxsize : longint; allow_pointer, allow_static : boolean; out isptr : boolean) : boolean;
       var
         sym : tsym;
       begin
@@ -273,10 +314,25 @@ implementation
         if not (assigned(n) and (n.nodetype=loadn)) then
           exit;
         sym:=tloadnode(n).symtableentry;
-        if not (sym is tlocalvarsym) then
+        if sym is tlocalvarsym then
+          begin
+            { plain local: different_scope means it is captured by a nested
+              routine and could be modified behind our back -> reject }
+            if tabstractnormalvarsym(sym).different_scope then
+              exit;
+          end
+        else if allow_static and (sym is tstaticvarsym) then
+          begin
+            { a static/global is legitimately reached from a scope other than
+              its declaration, so different_scope is normally set and benign
+              here; reject only threadvars / externals whose observers we
+              cannot bound }
+            if ([vo_is_thread_var,vo_is_external]*tabstractvarsym(sym).varoptions)<>[] then
+              exit;
+          end
+        else
           exit;
         if tabstractnormalvarsym(sym).addr_taken or
-           tabstractnormalvarsym(sym).different_scope or
            (vo_volatile in tabstractnormalvarsym(sym).varoptions) then
           exit;
         if is_integer(n.resultdef) then
@@ -290,12 +346,14 @@ implementation
         result:=true;
       end;
 
-    { integer-only shorthand (the loop counter must be an integer) }
+    { integer-only shorthand (the loop counter must be a plain local integer --
+      never a static/global, whose cross-unit uses the whole-routine deadness
+      scan cannot see) }
     function simple_local_int(n : tnode; maxsize : longint) : boolean;
       var
         dummy : boolean;
       begin
-        result:=simple_local_var(n,maxsize,false,dummy);
+        result:=simple_local_var(n,maxsize,false,false,dummy);
       end;
 
 
@@ -326,7 +384,7 @@ implementation
               { source form  s := s + c / s := c + s / s := s - c
                 (also inc/dec after lowering to an assignment) }
               lhs:=strip_conv(tassignmentnode(stmt).left);
-              if not simple_local_var(lhs,0,true,acc.isptr) then
+              if not simple_local_var(lhs,0,true,true,acc.isptr) then
                 exit;
               { the pointer  p := p + stride  form is rejected here: by the
                 time this pass runs the add has been typechecked, so stride is
@@ -379,7 +437,7 @@ implementation
               if not (assigned(o1) and (o1.nodetype=callparan)) then
                 exit;
               lhs:=strip_conv(tcallparanode(o1).left);   { the accumulator var }
-              if not simple_local_var(lhs,0,true,acc.isptr) then
+              if not simple_local_var(lhs,0,true,true,acc.isptr) then
                 exit;
               acc.sym:=tloadnode(lhs).symtableentry;
               if acc.sym=isym then
@@ -411,6 +469,7 @@ implementation
       var
         fn : tfornode;
         backward : boolean;
+        co,cr : boolean;
         isym : tsym;
         cnt,k,j : integer;
         stmts : tnodearr;
@@ -429,20 +488,50 @@ implementation
         if assigned(fn.loopstep) then
           exit;
 
-        { overflow / range checking would make the closed form observably
-          differ from the trapping loop -> disable }
-        if ([cs_check_overflow,cs_check_range]*current_settings.localswitches)<>[] then
-          exit;
-        if ([cs_check_overflow,cs_check_range]*fn.localswitches)<>[] then
+        { Overflow (-Co) / range (-Cr) checking.  The closed form is built
+          entirely from nf_internal nodes, so it never traps; the original loop
+          may.  Two regimes:
+
+            * -Co (overflow checking): a native-width accumulator loop traps on
+              the overflowing iteration while the wrap-around closed form does
+              not, and a sub-native accumulator's trap-freedom relies on FPC
+              promoting the add to native width -- a fragile implementation
+              detail.  Matching the per-iteration trap semantics in a single
+              closed-form step is not robustly sound, so DISABLE outright.
+
+            * -Cr without -Co: sound *iff* neither the loop body nor the closed
+              form can raise a range error.  s:=s+c range-faults under -Cr only
+              on the narrowing store back into a sub-native / subrange
+              accumulator; for a native-width, full-range integer (int64/qword)
+              the add stays native and -Cr inserts no check -- matching the
+              nf_internal closed form bit-for-bit.  So under -Cr we proceed but
+              require the counter and every accumulator to be native full-range
+              integers (enforced below); pointers and sub-native/subrange
+              accumulators are rejected. }
+        co:=(cs_check_overflow in current_settings.localswitches) or
+            (cs_check_overflow in fn.localswitches);
+        cr:=(cs_check_range in current_settings.localswitches) or
+            (cs_check_range in fn.localswitches);
+        if co then
           exit;
 
         backward:=lnf_backward in fn.loopflags;
 
-        { counter: plain local integer, at most 32 bits (so b-a+1 is exact
-          in 64-bit) }
-        if not simple_local_int(fn.left,4) then
+        { counter: plain local integer, at most 64 bits.  The symbolic trip
+          count  b-a+1  is computed in 64-bit two's-complement, so it is the
+          true iteration count reduced mod 2^64; every accumulator product is
+          then truncated to the accumulator's own width, and (count*c) mod 2^w
+          is bit-identical to the repeated addition for any w<=64 -- so a
+          64-bit counter is as exact as a 32-bit one for the truncated result
+          and the pointer-stride element count. }
+        if not simple_local_int(fn.left,8) then
           exit;
         isym:=tloadnode(strip_conv(fn.left)).symtableentry;
+        { the counter type is unconstrained under -Cr: the loop terminates at
+          the bound so its own increment never range-faults, and the guard /
+          trip-count copy the original bound expressions verbatim (including any
+          narrowing conversion the for-loop applied), so any bound range fault
+          happens identically in the closed form. }
 
         { bounds must be invariant, side-effect free, and independent of the
           counter (they are evaluated once, before any s is stored) }
@@ -463,7 +552,15 @@ implementation
 
         if cnt=0 then
           begin
-            { empty body: a pure dead counted loop -> delete outright }
+            { empty body: a pure dead counted loop -> delete outright.  This
+              discards the bound expressions, which is sound only when their
+              evaluation cannot trap.  Without -Cr the bounds are pure invariant
+              integer arithmetic that only wraps; under -Cr a bound may carry a
+              narrowing conversion that range-faults at loop entry, so keep the
+              loop (the accumulator path is not reached for an empty body, so its
+              fault-preserving guard cannot stand in here). }
+            if cr then
+              exit;
             n:=cnothingnode.create;
             fn.free;
             do_firstpass(n);
@@ -479,6 +576,12 @@ implementation
         for k:=0 to cnt-1 do
           begin
             if not match_accumulator(stmts[k],isym,accs[k]) then
+              exit;
+            { under -Cr only native full-range integer accumulators are sound
+              (see the regime note above): a pointer, sub-native or subrange
+              accumulator would be range-checked on its narrowing store while
+              the nf_internal closed form would not }
+            if cr and (accs[k].isptr or not is_native_full_range_int(accs[k].sdef)) then
               exit;
             { each accumulator must be distinct from all earlier ones (two
               updates of the same variable would double-count) }
