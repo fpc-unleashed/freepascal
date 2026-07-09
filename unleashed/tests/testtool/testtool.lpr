@@ -376,6 +376,11 @@ begin
   Result := Result + ['-CX'];
   Result := Result + ['-XX'];
   Result := Result + ['-Xs'];
+  // unix targets have no built-in thread support: inject the cthreads driver
+  // so the threaded-feature tests (parallel for, async/await, lock, ...) run;
+  // Windows needs nothing (threads are built into its RTL)
+  if Pos('win', LowerCase(GTargetOS)) = 0 then
+    Result := Result + ['-Facthreads'];
   // patched copy lives in .tmp/, so the original test dir must be on the include
   // search path for {$I ...} and unit-uses to keep resolving
   if PatchedSrc <> '' then
@@ -399,8 +404,11 @@ end;
 function ProducedExePath(const SrcPath, PatchedSrc: String): String;
 begin
   var base := if PatchedSrc <> '' then PatchedSrc else SrcPath;
+  // the produced binary carries the TARGET's executable extension: .exe on
+  // Windows, none on unix targets
   Result := IncludeTrailingPathDelimiter(GTempDir) +
-            ChangeFileExt(ExtractFileName(base), '.exe');
+            ChangeFileExt(ExtractFileName(base),
+              if Pos('win', LowerCase(GTargetOS)) > 0 then '.exe' else '');
 end;
 
 procedure CleanupTempArtifacts(const SrcPath, PatchedSrc: String; Failed: Boolean);
