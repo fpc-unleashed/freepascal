@@ -161,6 +161,7 @@ implementation
        optcse,
        optloop,
        optpure,
+       optpartialinline,
        optsra,
        optconstprop,
        optdeadstore,
@@ -3138,6 +3139,63 @@ implementation
       end;
 
 
+    { -OoPARTIALINLINE: compile a freshly-synthesised inline header procdef
+      (built by optpartialinline.partialinline_make_header) whose node tree is
+      HEADERCODE. Mirrors the tail of parse_body + read_proc_body for a body we
+      already have as a node tree instead of parsing it from source. }
+    procedure compile_partial_inline_header(headerpd:tprocdef;headercode:tnode);
+      var
+        oldpi : tprocinfo;
+        oldmoduleprocinfo : tprocinfo;
+        oldstructdef : tabstractrecorddef;
+        oldblock : tblock_type;
+        pi : tcgprocinfo;
+      begin
+        if not assigned(headerpd) or not assigned(headercode) then
+          exit;
+        oldpi:=current_procinfo;
+        oldmoduleprocinfo:=tprocinfo(current_module.procinfo);
+        oldstructdef:=current_structdef;
+        oldblock:=block_type;
+
+        pi:=tcgprocinfo(cprocinfo.create(nil));
+        current_module.procinfo:=pi;
+        pi.procdef:=headerpd;
+        current_procinfo:=pi;
+        current_structdef:=nil;
+        block_type:=bt_body;
+
+        headerpd.aliasnames.insert(headerpd.mangledname);
+        alloc_proc_symbol(headerpd);
+
+        pi.add_to_symtablestack;
+
+        pi.entrypos:=headercode.fileinfo;
+        pi.entryswitches:=current_settings.localswitches;
+        pi.exitpos:=headercode.fileinfo;
+        pi.exitswitches:=current_settings.localswitches;
+
+        pi.code:=headercode;
+        do_typecheckpass(pi.code);
+
+        { store the inline copy before the tree is lowered by generate_code }
+        if (po_inline in headerpd.procoptions) and checknodeinlining(headerpd) then
+          pi.CreateInlineInfo;
+
+        pi.remove_from_symtablestack;
+
+        current_structdef:=oldstructdef;
+        block_type:=oldblock;
+
+        if Errorcount=0 then
+          pi.generate_code_tree;
+
+        freeandnil(pi);
+        current_module.procinfo:=oldmoduleprocinfo;
+        current_procinfo:=oldpi;
+      end;
+
+
     procedure read_proc_body(old_current_procinfo:tprocinfo;pd:tprocdef);
       {
         Parses the procedure directives, then parses the procedure body, then
@@ -3147,9 +3205,15 @@ implementation
       var
         oldfailtokenmode : tmodeswitches;
         isnestedproc     : boolean;
+        pi_dosplit       : boolean;
+        pi_headerpd      : tprocdef;
+        pi_headercode    : tnode;
       begin
         Message1(parser_d_procedure_start,pd.fullprocname(false));
         oldfailtokenmode:=[];
+        pi_dosplit:=false;
+        pi_headerpd:=nil;
+        pi_headercode:=nil;
 
         { create a new procedure }
         current_procinfo:=cprocinfo.create(old_current_procinfo);
@@ -3196,6 +3260,17 @@ implementation
         if (pd.proctypeoption=potype_constructor) then
           tokeninfo^[_FAIL].keyword:=oldfailtokenmode;
 
+        { -OoPARTIALINLINE: decide whether this routine is a partial-inline
+          candidate and, if so, snapshot its leading guard now -- before
+          generate_code_tree lowers or frees the node tree }
+        if (cs_opt_partialinline in current_settings.optimizerswitches) and
+           (not isnestedproc) and
+           (not(df_generic in pd.defoptions)) then
+          pi_dosplit:=partialinline_candidate(pd,
+            tcgprocinfo(current_procinfo).code,
+            current_procinfo.flags,
+            assigned(current_procinfo.get_first_nestedproc));
+
         { When it's a nested procedure then defer the code generation,
           when back at normal function level then generate the code
           for all deferred nested procedures and the current procedure }
@@ -3211,6 +3286,15 @@ implementation
                 tcgprocinfo(current_procinfo).convert_captured_syms;
                 tcgprocinfo(current_procinfo).generate_code_tree;
               end;
+          end;
+
+        { -OoPARTIALINLINE: the body has now been compiled unchanged; build the
+          tiny inline header (it takes over the original procsym) and compile it }
+        if pi_dosplit then
+          begin
+            pi_headerpd:=partialinline_make_header(pd,pi_headercode);
+            if assigned(pi_headerpd) then
+              compile_partial_inline_header(pi_headerpd,pi_headercode);
           end;
 
         { release procinfo }
