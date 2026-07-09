@@ -1220,6 +1220,7 @@ implementation
               pd: tprocdef;
               helperdef: tobjectdef;
               current: tpropertysym;
+              hp: tarrayconstructornode;
             begin
               result := nil;
               if not assigned(expr.resultdef) then
@@ -1244,6 +1245,26 @@ implementation
                       elements, widen to AnsiString like var x := [...] }
                     if is_conststring_array(result) then
                       result := getansistringdef;
+                    { untyped [a, b, c] literal: the constructor's elementdef
+                      comes from the first element only - widen over all
+                      elements so [4, 1994, 3888] infers a type holding
+                      every value instead of truncating to the first one's }
+                    if (expr.nodetype = arrayconstructorn) and is_integer(result) then
+                      begin
+                        hp := tarrayconstructornode(expr);
+                        while assigned(hp) do
+                          begin
+                            if assigned(hp.left) and
+                               (hp.left.nodetype <> arrayconstructorrangen) and
+                               assigned(hp.left.resultdef) and
+                               is_integer(hp.left.resultdef) then
+                              result := get_common_intdef(torddef(result), torddef(hp.left.resultdef), true);
+                            hp := tarrayconstructornode(hp.right);
+                          end;
+                        { promote sub-32-bit results like var x := expr does }
+                        if torddef(result).ordtype in [s8bit,u8bit,s16bit,u16bit] then
+                          result := s32inttype;
+                      end;
                   end;
                 stringdef:
                   begin

@@ -937,6 +937,26 @@ implementation
       end;
 
 
+    { true if the constructor holds an integer constant outside 0..255,
+      i.e. a value a set cannot represent - such a literal must iterate
+      as an array to keep its values and source order }
+    function arrayconstructor_exceeds_set_range(p: tnode): boolean;
+      var
+        el: tnode;
+      begin
+        result:=false;
+        while assigned(p) do
+          begin
+            el:=tarrayconstructornode(p).left;
+            if assigned(el) and (el.nodetype=ordconstn) and
+               is_integer(el.resultdef) and
+               ((tordconstnode(el).value<0) or (tordconstnode(el).value>255)) then
+              exit(true);
+            p:=tarrayconstructornode(p).right;
+          end;
+      end;
+
+
     function create_for_in_loop(hloopvar, hloopbody, expr: tnode): tnode;
       var
         pd, movenext: tprocdef;
@@ -1039,7 +1059,9 @@ implementation
                       expression can indeed be a set }
                     if (expr.nodetype=arrayconstructorn) and
                         (hloopvar.resultdef.typ in [enumdef,orddef]) and
-                        arrayconstructor_can_be_set(expr) then
+                        arrayconstructor_can_be_set(expr) and
+                        not((m_unleashed in current_settings.modeswitches) and
+                            arrayconstructor_exceeds_set_range(expr)) then
                       begin
                         expr:=arrayconstructor_to_set(expr,false);
                         typecheckpass(expr);

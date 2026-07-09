@@ -154,6 +154,26 @@ for var s in ['abc', 'longer string'] do  // s is AnsiString
 
 String literals in an array literal infer `AnsiString` for the loop variable, same as `var a := [...]` inference - every element is kept fully even when the first one is the shortest. Without this rule the variable would take the literal's carrier type sized to the first element and silently truncate the rest. Char literals keep `Char`.
 
+#### Integer literal lists: set vs array
+
+For an integer list the loop variable infers a common type wide enough for **every** element, not just the first one. What the loop iterates over depends on the values:
+
+- all constant elements fit `0..255`: the literal stays a **set**, as in stock Pascal - iteration is ascending and duplicates are a compile error;
+- any constant element is outside `0..255`: a set cannot hold it, so the literal iterates as an **array** - source order, duplicates allowed, no truncation.
+
+```pas
+for var n in [3, 1, 2] do        // set: iterates 1, 2, 3
+  write(n, ' ');
+
+for var n in [4, 1994, 3888] do  // array: iterates 4, 1994, 3888 in order
+  write(n, ' ');                 // n is LongInt (wide enough for all)
+
+for var n in [5000000000, 1] do  // Int64 elements work too
+  write(n, ' ');
+```
+
+The same applies to a predeclared loop variable (`for n in [...]`). Outside unleashed mode the stock behavior is kept (byte set with range-check warnings and truncation).
+
 ## Scoping
 
 ### Block scoping (Delphi-style)
