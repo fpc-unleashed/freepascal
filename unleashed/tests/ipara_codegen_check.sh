@@ -58,4 +58,42 @@ rc=0
 [ "$on_saves" -lt "$off_saves" ] || { echo "FAIL: -OoIPARA did not reduce caller-save pressure"; rc=1; }
 
 [ "$rc" -eq 0 ] && echo "PASS: -OoIPARA keeps caller values in untouched volatile registers across the call"
+
+# --------------------------------------------------------------------------
+# Cross-unit case (shared per-procdef PPU optimizer-summary mechanism): the
+# leaf helper lives in a separate unit whose ppu carries ADDONE's proven
+# volatile-register clobber mask. A caller in another unit consults that loaded
+# summary and narrows its caller-save spills exactly as in the intra-unit case;
+# when the callee unit is compiled WITHOUT -OoIPARA the summary is absent and
+# the caller falls back to the full ABI mask. Fixtures live in optsummary/.
+here_fix="$here/optsummary"
+xu="$(mktemp -d)"; trap 'rm -rf "$tmp" "$xu"' EXIT
+cp "$here_fix/iparalib.pas" "$here_fix/caller_ipara.pp" "$xu/"
+
+xu_pushes() { sed -n '/_HOT\$/,/\.size.*_HOT\$/p' "$1" | grep -Eci "$csregs" || true; }
+
+# callee unit WITH -OoIPARA -> caller narrows spills
+( cd "$xu" && "$CC" -Fu"$RTL" -O2 -OoIPARA iparalib.pas >/dev/null 2>&1 )
+( cd "$xu" && "$CC" -Fu"$RTL" -Fu. -O2 -OoIPARA -al -s caller_ipara.pp >/dev/null 2>&1 )
+xu_on=$(xu_pushes "$xu/caller_ipara.s")
+# callee unit WITHOUT -OoIPARA -> summary absent, caller keeps full mask
+( cd "$xu" && "$CC" -Fu"$RTL" -O2 iparalib.pas >/dev/null 2>&1 )
+( cd "$xu" && "$CC" -Fu"$RTL" -Fu. -O2 -OoIPARA -al -s caller_ipara.pp >/dev/null 2>&1 )
+xu_off=$(xu_pushes "$xu/caller_ipara.s")
+
+echo "CROSS-UNIT callee -OoIPARA : callee-saved pushes in hot = $xu_on"
+echo "CROSS-UNIT callee plain    : callee-saved pushes in hot = $xu_off"
+[ "$xu_off" -ge 1 ]      || { echo "FAIL: expected caller-save spills with no cross-unit summary"; rc=1; }
+[ "$xu_on" -lt "$xu_off" ] || { echo "FAIL: cross-unit -OoIPARA did not narrow caller-save pressure"; rc=1; }
+
+# runtime correctness in both configurations
+( cd "$xu" && "$CC" -Fu"$RTL" -O2 -OoIPARA iparalib.pas >/dev/null 2>&1 && \
+              "$CC" -Fu"$RTL" -Fu. -O2 -OoIPARA caller_ipara.pp -ox_on >/dev/null 2>&1 )
+( cd "$xu" && "$CC" -Fu"$RTL" -O2 iparalib.pas >/dev/null 2>&1 && \
+              "$CC" -Fu"$RTL" -Fu. -O2 caller_ipara.pp -ox_off >/dev/null 2>&1 )
+xr_on="$( ulimit -v 3000000; timeout 60 "$xu/x_on" )";  xe_on=$?
+xr_off="$( ulimit -v 3000000; timeout 60 "$xu/x_off" )"; xe_off=$?
+[ "$xe_on" -eq 0 ] && [ "$xe_off" -eq 0 ] && [ "$xr_on" = "$xr_off" ] || { echo "FAIL: cross-unit IPARA changed observable behaviour"; rc=1; }
+
+[ "$rc" -eq 0 ] && echo "PASS: cross-unit -OoIPARA narrows spills via the loaded ppu summary and is bit-exact"
 exit $rc

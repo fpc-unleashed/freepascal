@@ -972,11 +972,15 @@ interface
           { only needed when actually compiling a unit, no need to save/load from ppu }
           invoke_helper : tprocdef;
           copied_from : tprocdef;
-          { interprocedural pure/const attribute discovery (-OoPURE). All of
-            these are transient: computed while compiling the current unit and
-            never saved to / loaded from the ppu (a cross-unit / WPO version is
-            a follow-up), so on load they default to "not analyzed" => the
-            routine is treated conservatively as impure.
+          { interprocedural pure/const attribute discovery (-OoPURE). These raw
+            summary fields are transient: computed while compiling the current
+            unit and never saved to / loaded from the ppu, so for a routine read
+            from another unit they default to "not analyzed". The DERIVED
+            cross-unit verdict, however, IS persisted (see pure_ppu_valid below
+            and tprocdef.write_optimizer_summary): a routine loaded from a used
+            unit's ppu carries its resolved pure/const verdict as two booleans,
+            so callers no longer treat used-unit routines as unconditionally
+            impure.
               pure_analyzed        : the summary below has been filled in
               pure_intrinsic_impure: the body itself performs a disqualifying
                                      operation (global/memory write, I/O, raise,
@@ -996,11 +1000,13 @@ interface
           pure_callees : array of tprocdef;
           pure_qtoken : cardinal;
           pure_qresult : byte;
-          { interprocedural register allocation (-OoIPARA). Transient like the
-            pure/const summary above: recorded when this routine's code is
-            generated in the current unit, never saved to / loaded from the ppu,
-            so on load they default to "not analyzed" => a caller falls back to
-            the full ABI caller-saved mask.
+          { interprocedural register allocation (-OoIPARA). Recorded when this
+            routine's code is generated in the current unit, AND persisted to the
+            ppu (guarded by a target/ABI/-Cf instruction-set signature, see
+            tprocdef.write_optimizer_summary) so a caller in another unit can
+            narrow its caller-save spills. A summary compiled for a mismatching
+            signature, or absent entirely, defaults to "not analyzed" / full =>
+            the caller falls back to the full ABI caller-saved mask.
               ipara_analyzed  : the clobber summary below has been filled in
               ipara_full      : fall back to the full ABI mask (the routine is
                                 assembler / contains an inline-asm block / uses
@@ -1015,6 +1021,19 @@ interface
           ipara_clobber_mm : tcpuregisterset;
           ipara_clobber_fpu : tcpuregisterset;
           ipara_clobber_addr : tcpuregisterset;
+          { Cross-unit optimizer summary loaded from another unit's ppu
+            (shared per-procdef summary mechanism). When a routine is read from
+            a used unit, its transient in-unit summary fields above are never
+            filled; instead the pure/const verdict is carried as two ready-made
+            booleans and the IPARA clobber mask is carried in the ipara_* fields
+            (validated against the current target/ABI signature at load time,
+            invalid summaries are dropped to the conservative fallback).
+              pure_ppu_valid  : a pure/const verdict was loaded from the ppu; if
+                                set, proc_is_pure/proc_is_const return the two
+                                booleans below instead of running the fixpoint. }
+          pure_ppu_valid : boolean;
+          pure_ppu_is_pure : boolean;
+          pure_ppu_is_const : boolean;
           constructor create(level:byte;doregister:boolean);virtual;
           constructor ppuload(ppufile:tcompilerppufile);
           destructor  destroy;override;
@@ -1022,6 +1041,10 @@ interface
           { do not override this routine in platform-specific subclasses,
             override ppuwrite_platform instead }
           procedure ppuwrite(ppufile:tcompilerppufile);override;final;
+          { shared per-procdef cross-unit optimizer-summary blob (-OoPURE /
+            -OoIPARA), streamed inside the ibprocdef entry }
+          procedure write_optimizer_summary(ppufile:tcompilerppufile);
+          procedure load_optimizer_summary(ppufile:tcompilerppufile);
           procedure buildderef;override;
           procedure buildderefimpl;override;
           procedure deref;override;
@@ -1252,6 +1275,13 @@ interface
        cstringdef: tstringdefclass;
        cenumdef: tenumdefclass;
        csetdef: tsetdefclass;
+
+       { -OoPURE cross-unit serialization hook: optpure registers this at its
+         unit initialization. tprocdef.ppuwrite calls it (when set) to obtain a
+         routine's final pure/const verdict at write time, so the two booleans
+         can be persisted for callers in other units. nil (pass off / optpure
+         not linked) => the pure summary is not written. }
+       proc_query_purity_verdict : function(pd:tprocdef; wantconst:boolean):boolean = nil;
 
 
     { default types }
@@ -7103,6 +7133,9 @@ implementation
                end;
            end;
 
+         { per-procdef cross-unit optimizer summary blob (see ppuwrite) }
+         load_optimizer_summary(ppufile);
+
          ppuload_platform(ppufile);
 
          { load para symtable }
@@ -7287,6 +7320,14 @@ implementation
          else
            ppufile.putlongint(0);
 
+         { per-procdef cross-unit optimizer summary blob (shared -OoPURE /
+           -OoIPARA serialization). A self-describing (tag,len,payload) list
+           terminated by optsum_end; an older/absent summary simply yields no
+           tags and the conservative fallback. Kept inside the ibprocdef entry
+           and part of the interface crc so a changed verdict recompiles the
+           dependents that relied on it. }
+         write_optimizer_summary(ppufile);
+
          { write this entry }
          writeentry(ppufile,ibprocdef);
 
@@ -7307,6 +7348,141 @@ implementation
 
          if has_inlininginfo then
            ppuwritenodetree(ppufile,inlininginfo^.code);
+      end;
+
+
+    { The IPARA clobber mask is a set of physical registers, so it is only valid
+      for a ppu compiled for the very same target / ABI / instruction-set. This
+      signature is stored alongside the mask and compared on load; a mismatching
+      summary is ignored (=> the caller falls back to the full ABI mask). ppu
+      loading already rejects a foreign target_cpu, so this mainly guards the
+      -Cf/-Cp instruction-set selection within the same target. }
+    function ipara_target_signature : longint;
+      begin
+        ipara_target_signature:=
+          longint(ord(target_info.system)) or
+          (longint(ord(current_settings.cputype)) shl 8) or
+          (longint(ord(current_settings.fputype)) shl 16);
+      end;
+
+
+    procedure tprocdef.write_optimizer_summary(ppufile:tcompilerppufile);
+      var
+        pureflags : byte;
+      begin
+        { -OoPURE: persist the final pure/const verdict (computed now, when the
+          whole defining unit is analysed) as two ready-made booleans, so a
+          caller in another unit can consult it without re-deriving the call
+          graph. Only emitted when this routine was actually analysed in this
+          unit (=> -OoPURE was on) and the verdict hook is registered. }
+        if pure_analyzed and assigned(proc_query_purity_verdict) then
+          begin
+            pureflags:=0;
+            if proc_query_purity_verdict(self,false) then
+              pureflags:=pureflags or 1;
+            if proc_query_purity_verdict(self,true) then
+              pureflags:=pureflags or 2;
+            ppufile.putbyte(optsum_pure);
+            ppufile.putword(1);
+            ppufile.putbyte(pureflags);
+          end;
+
+        { -OoIPARA: persist the volatile-register clobber mask guarded by the
+          target/ABI/instruction-set signature. }
+        if ipara_analyzed then
+          begin
+            ppufile.putbyte(optsum_ipara);
+            if ipara_full then
+              begin
+                ppufile.putword(4+1);
+                ppufile.putlongint(ipara_target_signature);
+                ppufile.putbyte(1);
+              end
+            else
+              begin
+                ppufile.putword(4+1+4*sizeof(tcpuregisterset));
+                ppufile.putlongint(ipara_target_signature);
+                ppufile.putbyte(0);
+                ppufile.putdata(ipara_clobber_int,sizeof(tcpuregisterset));
+                ppufile.putdata(ipara_clobber_mm,sizeof(tcpuregisterset));
+                ppufile.putdata(ipara_clobber_fpu,sizeof(tcpuregisterset));
+                ppufile.putdata(ipara_clobber_addr,sizeof(tcpuregisterset));
+              end;
+          end;
+
+        { terminator }
+        ppufile.putbyte(optsum_end);
+      end;
+
+
+    procedure tprocdef.load_optimizer_summary(ppufile:tcompilerppufile);
+      var
+        tag,pureflags,ipfull : byte;
+        len : word;
+        sig : longint;
+        skip : array[0..255] of byte;
+        left,chunk : longint;
+      begin
+        { defaults: no summary loaded -> conservative fallback everywhere }
+        pure_ppu_valid:=false;
+        pure_ppu_is_pure:=false;
+        pure_ppu_is_const:=false;
+        repeat
+          tag:=ppufile.getbyte;
+          if tag=optsum_end then
+            break;
+          len:=ppufile.getword;
+          case tag of
+            optsum_pure:
+              begin
+                pureflags:=ppufile.getbyte;
+                pure_ppu_valid:=true;
+                pure_ppu_is_pure:=(pureflags and 1)<>0;
+                pure_ppu_is_const:=(pureflags and 2)<>0;
+              end;
+            optsum_ipara:
+              begin
+                sig:=ppufile.getlongint;
+                ipfull:=ppufile.getbyte;
+                { a mask compiled for a different target/ABI/instruction set is
+                  meaningless here: drop to the conservative full fallback }
+                if (sig<>ipara_target_signature) or (ipfull<>0) then
+                  begin
+                    ipara_analyzed:=true;
+                    ipara_full:=true;
+                    { consume any mask payload that follows }
+                    left:=longint(len)-(4+1);
+                    while left>0 do
+                      begin
+                        if left>sizeof(skip) then chunk:=sizeof(skip) else chunk:=left;
+                        ppufile.getdata(skip,chunk);
+                        dec(left,chunk);
+                      end;
+                  end
+                else
+                  begin
+                    ppufile.getdata(ipara_clobber_int,sizeof(tcpuregisterset));
+                    ppufile.getdata(ipara_clobber_mm,sizeof(tcpuregisterset));
+                    ppufile.getdata(ipara_clobber_fpu,sizeof(tcpuregisterset));
+                    ppufile.getdata(ipara_clobber_addr,sizeof(tcpuregisterset));
+                    ipara_analyzed:=true;
+                    ipara_full:=false;
+                  end;
+              end;
+            else
+              begin
+                { unknown tag (e.g. a summary written by a newer compiler):
+                  skip its payload so the stream stays aligned }
+                left:=len;
+                while left>0 do
+                  begin
+                    if left>sizeof(skip) then chunk:=sizeof(skip) else chunk:=left;
+                    ppufile.getdata(skip,chunk);
+                    dec(left,chunk);
+                  end;
+              end;
+          end;
+        until false;
       end;
 
 

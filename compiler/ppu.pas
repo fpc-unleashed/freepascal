@@ -48,7 +48,21 @@ const
   CurrentPPUVersion = 208;
   { for any other changes to the ppu format, increase this version number
     (it's a cardinal) }
-  CurrentPPULongVersion = 32;
+  { bumped to 33: per-procdef cross-unit optimizer summary blob added to the
+    ibprocdef entry (shared -OoPURE / -OoIPARA summary serialization) }
+  CurrentPPULongVersion = 33;
+
+  { Tags for the per-procdef optimizer-summary blob streamed inside the
+    ibprocdef entry (see tprocdef.ppuwrite/ppuload). The blob is a self-
+    describing list of (tag,length,payload) records terminated by
+    optsum_end, so a reader that does not understand a tag simply skips its
+    payload and an absent blob yields "no summary" -> conservative fallback.
+    Bump only when the *framing* changes; new per-pass payloads are just new
+    tags. }
+  optsum_end   = 0;  { terminator }
+  optsum_pure  = 1;  { -OoPURE pure/const verdict (1 flag byte) }
+  optsum_ipara = 2;  { -OoIPARA volatile-register clobber mask }
+  optsum_icf   = 3;  { reserved for -OoICF canonical body hash (not emitted) }
 
 { unit flags }
   uf_big_endian          = $000004;

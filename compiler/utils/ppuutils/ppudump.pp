@@ -4272,6 +4272,8 @@ procedure readdefinitions(const s:string; ParentDef: TPpuContainerDef);
 var
   b : byte;
   otb : byte; { Object Type byte, needed later again }
+  optsumtag : byte;
+  optsumlen,optsumk,optsumsig : longint;
   l,j,tokenbufsize : longint;
   tokenbuf : pbyte;
   calloption : tproccalloption;
@@ -4610,6 +4612,42 @@ begin
                  freemem(tokenbuf);
                  delete(space,1,4);
                end;
+             { per-procdef cross-unit optimizer summary blob (shared -OoPURE /
+               -OoIPARA serialization): a (tag,len,payload) list terminated by
+               optsum_end }
+             repeat
+               optsumtag:=ppufile.getbyte;
+               if optsumtag=optsum_end then
+                 break;
+               optsumlen:=ppufile.getword;
+               case optsumtag of
+                 optsum_pure:
+                   begin
+                     b:=ppufile.getbyte;
+                     writeln([space,' Optimizer summary : PURE  is_pure=',ord((b and 1)<>0),' is_const=',ord((b and 2)<>0)]);
+                   end;
+                 optsum_ipara:
+                   begin
+                     optsumsig:=ppufile.getlongint;
+                     b:=ppufile.getbyte;
+                     write  ([space,' Optimizer summary : IPARA  target_sig=$',hexstr(optsumsig,8),' full=',ord(b<>0)]);
+                     optsumk:=optsumlen-(4+1);
+                     if optsumk>0 then
+                       begin
+                         write(' clobber_mask=');
+                         for j:=1 to optsumk do
+                           write(hexstr(ppufile.getbyte,2));
+                       end;
+                     writeln;
+                   end;
+                 else
+                   begin
+                     writeln([space,' Optimizer summary : unknown tag ',optsumtag,' (',optsumlen,' bytes)']);
+                     for optsumk:=1 to optsumlen do
+                       ppufile.getbyte;
+                   end;
+               end;
+             until false;
              if po_syscall_has_libsym in procoptions then
                begin
                  { library symbol for AmigaOS/MorphOS/AROS }
