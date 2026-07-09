@@ -2394,6 +2394,21 @@ implementation
            not(po_assembler in current_procinfo.procdef.procoptions) then
           OptimizeRefElide(code);
 
+        { escape-analysis stack allocation of a non-escaping local dynamic array
+          with a single small constant-length SetLength (-OoSTACKALLOC): replace
+          its heap buffer with a hidden stack record. Must run HERE, before
+          do_firstpass lowers SetLength into an fpc_dynarr_setlength call -- the
+          analysis matches the in_setlength_x inline node and the plain A[i] /
+          Length loads. Disqualify routines that are recursive, use exceptions,
+          or contain inline assembler (opaque storage / unproven control flow);
+          the whole-routine escape walk is otherwise flow-insensitive and thus
+          sound under any control flow. }
+        if (cs_opt_stackalloc in current_settings.optimizerswitches) and
+           ((flags*[pi_has_assembler_block,pi_is_assembler,pi_uses_exceptions])=[]) and
+           not(pi_is_recursive in flags) and
+           not(po_assembler in current_procinfo.procdef.procoptions) then
+          OptimizeStackAlloc(code);
+
         { firstpass everything }
         flowcontrol:=[];
         do_firstpass(code);

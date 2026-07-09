@@ -2584,6 +2584,7 @@ const
          'cs_opt_gvnpre',
          'cs_opt_pure',
          'cs_opt_partialinline',
+         'cs_opt_stackalloc',
          'cs_opt_slp',
          'cs_opt_unrolldyn',
          'cs_opt_prefetch',
