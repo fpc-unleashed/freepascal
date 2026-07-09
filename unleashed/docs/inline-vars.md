@@ -204,6 +204,21 @@ for var i := 0 to 9 do
 // i is not visible here
 ```
 
+### Fresh value on every pass
+
+A declaration with an initializer assigns on every pass over it, and a managed-type declaration without one (string, dynamic array, interface, managed record) is re-initialized to its default at the declaration point. A loop body pass never sees the previous iteration's value:
+
+```pas
+for var round := 1 to 3 do
+begin
+  var acc: array of integer;   // empty again on every iteration
+  acc := acc + [round];
+  writeln(Length(acc));        // 1, 1, 1
+end;
+```
+
+Unmanaged declarations without an initializer (`var x: integer;`) stay undefined until assigned, as usual.
+
 ### No shadowing
 
 Inline variables cannot shadow variables from enclosing scopes. This prevents subtle bugs where a nested block accidentally hides an outer variable:

@@ -43,7 +43,7 @@ implementation
        cutils,cclasses,
        { global }
        globtype,globals,verbose,constexp,
-       systems,
+       systems,compinnr,
        { aasm }
        cpubase,aasmtai,aasmdata,aasmbase,
        { module - current_module.localsymtable for threadstatic registration }
@@ -3958,7 +3958,25 @@ implementation
                     end;
                 end
               else
-                result := cnothingnode.create;
+                begin
+                  { no initializer: re-initialize managed vars at the
+                    declaration point, so a loop pass over the declaration
+                    gets a fresh value instead of the previous iteration's }
+                  result := nil;
+                  for i := 0 to sc.count - 1 do
+                    if is_managed_type(tabstractnormalvarsym(sc[i]).vardef) and
+                       is_valid_for_default(tabstractnormalvarsym(sc[i]).vardef) then
+                      begin
+                        if not assigned(result) then
+                          result := internalstatements(statements);
+                        addstatement(statements, cassignmentnode.create(
+                          cloadnode.create(tsym(sc[i]), tsym(sc[i]).owner),
+                          cinlinenode.create(in_default_x, false,
+                            ctypenode.create(tabstractnormalvarsym(sc[i]).vardef))));
+                      end;
+                  if not assigned(result) then
+                    result := cnothingnode.create;
+                end;
             end
           else if current_scanner.token = _ASSIGNMENT then
             begin
