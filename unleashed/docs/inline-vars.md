@@ -220,6 +220,24 @@ end;
 
 This applies across all enclosing block scopes, parameters, and the procedure's own `var` section.
 
+## Inline constants
+
+`const` declarations work in statement blocks too, with the same block scoping as inline vars:
+
+```pas
+begin
+  const K = 50;                          // true compile-time constant
+  const S = 'hello';
+  const T: Integer = 7;                  // typed constant (block-scoped storage)
+  const A: array[3] of integer = (1, 2, 3);
+  begin
+    const Inner = K * 2;                 // visible only in this block
+  end;
+end;
+```
+
+The plain `const K = expr` form requires a compile-time evaluable expression and produces a true constant (not assignable, no storage). The typed form `const K: T = v` follows the usual typed-constant rules, including `{$J}` writability, but is scoped to the declaring block.
+
 ## Debugger support
 
 Block-scoped inline variables emit proper DWARF debug information:

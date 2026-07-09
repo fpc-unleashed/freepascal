@@ -56,7 +56,7 @@ implementation
        nutils,ngenutil,nbas,nadd,ncal,nmem,nset,ncnv,ncon,nld,nflw,ninl,nmat,
        { parser }
        scanner,
-       pbase,ptype,pexpr,ptconst,pparautl,
+       pbase,ptype,pexpr,ptconst,pdecl,pparautl,
        { codegen }
        procinfo,cgbase,ncgutil,
        { assembler reader }
@@ -4122,6 +4122,89 @@ implementation
       end;
 
 
+    { Parse an inline constant declaration of the form:
+        const name = expr
+        const name : Type = expr
+      Scoped like inline vars: the symbol lands in the current block-scope
+      symtable. The typed form creates the usual typed-constant storage. }
+    function inline_const_statement : tnode;
+      var
+        orgname : TIDString;
+        filepos : tfileposinfo;
+        csym : tconstsym;
+        vsym : tstaticvarsym;
+        hdef : tdef;
+        nt : tnodetype;
+        old_block_type : tblock_type;
+        varspez : tvarspez;
+        asmtype : tasmlisttype;
+      begin
+        result:=nil;
+        consume(_CONST);
+        if not (symtablestack.top.symtabletype in [localsymtable,staticsymtable,blocksymtable]) then
+          begin
+            Message(parser_e_syntax_error);
+            result:=cerrornode.create;
+            exit;
+          end;
+        if current_scanner.token<>_ID then
+          begin
+            consume(_ID);
+            result:=cerrornode.create;
+            exit;
+          end;
+        orgname:=current_scanner.orgpattern;
+        filepos:=current_tokenpos;
+        consume(_ID);
+        old_block_type:=block_type;
+        block_type:=bt_const;
+        if try_to_consume(_EQ) then
+          begin
+            csym:=readconstant(orgname,filepos,nt);
+            if assigned(csym) then
+              begin
+                csym.register_sym;
+                symtablestack.top.insertsym(csym);
+                result:=cnothingnode.create;
+              end
+            else
+              result:=cerrornode.create;
+          end
+        else if current_scanner.token=_COLON then
+          begin
+            { typed constant - static storage scoped to the block }
+            block_type:=bt_const_type;
+            consume(_COLON);
+            read_anon_type(hdef,false,nil);
+            block_type:=bt_const;
+            if not (cs_typed_const_writable in current_settings.localswitches) then
+              begin
+                varspez:=vs_const;
+                asmtype:=al_rotypedconsts;
+              end
+            else
+              begin
+                varspez:=vs_value;
+                asmtype:=al_typedconsts;
+              end;
+            vsym:=cstaticvarsym.create(orgname,varspez,hdef,[]);
+            symtablestack.top.insertsym(vsym);
+            vsym.register_sym;
+            consume(_EQ);
+            { parse_tail=false: the statement loop owns the semicolon }
+            read_typed_const(current_asmdata.asmlists[asmtype],vsym,false,false);
+            result:=cnothingnode.create;
+          end
+        else
+          begin
+            { neither '=' nor ':' - generate the expected-token error }
+            consume(_EQ);
+            result:=cerrornode.create;
+          end;
+        block_type:=old_block_type;
+      end;
+
+
     { Parse an inline static declaration of the form:
         static name : Type
         static name : Type := expr
@@ -4956,6 +5039,17 @@ implementation
                      statement keyword – give a clear error and skip. }
                    Message(parser_e_syntax_error);
                    consume(_VAR);
+                   code:=cerrornode.create;
+                 end;
+             end;
+           _CONST:
+             begin
+               if m_inline_var in current_settings.modeswitches then
+                 code:=inline_const_statement
+               else
+                 begin
+                   Message(parser_e_syntax_error);
+                   consume(_CONST);
                    code:=cerrornode.create;
                  end;
              end;
