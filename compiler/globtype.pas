@@ -668,7 +668,26 @@ interface
            prefetch of an out-of-range address never faults, and the prefetch only
            fires on the contiguous dynamic-array walk pattern the loop already
            establishes. Opt-in; NOT part of the -O4 defaults }
-         cs_opt_prefetch
+         cs_opt_prefetch,
+         { identical code folding (-OoICF): the gcc -fipa-icf / gold --icf pass
+           ported to FPC, operating intra-unit at the assembler-list level after
+           all of a module's routines are generated. Each routine's final
+           instruction list is canonicalized (opcodes+operand encodings with the
+           routine's own symbol and local labels symbolized to positional tokens,
+           relocations abstracted to referenced symbol names), bucketed by that
+           canonical form, and provably byte-identical routines are folded: every
+           duplicate keeps its own distinct symbol/address but has its body
+           replaced by a single JMP to the first (kept) copy. Using a jump thunk
+           rather than a symbol alias means @f<>@g is preserved even for folded
+           routines, so Pascal address-comparison semantics are never violated,
+           and FPC's non-DWARF exception model is unaffected. FPC generics and
+           per-type instantiations of structurally identical plumbing make
+           binaries duplicate-heavy, so this shrinks them at zero runtime cost.
+           Conservative: only folds routines whose body is straight-line
+           instructions/labels (no embedded data, cfi or unhandled operand
+           kinds) and large enough that a thunk is a net shrink. Opt-in; NOT part
+           of the -O4 defaults }
+         cs_opt_icf
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -748,7 +767,7 @@ interface
          'PREDCOM','SRA','STOREMERGE','CASECLUSTER','CROSSJUMP','BLOCKORDER',
          'SINK','STOREMOTION','VRP','REFELIDE','SWITCHTABLE','REE',
          'SHRINKWRAP','GVNPRE','PURE','PARTIALINLINE','SLP',
-         'UNROLLDYN','PREFETCH'
+         'UNROLLDYN','PREFETCH','ICF'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
