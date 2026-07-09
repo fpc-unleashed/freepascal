@@ -54,6 +54,7 @@ unit optloop;
     function OptimizeStoreMotion(node : tnode) : boolean;
     function OptimizeVRP(node : tnode) : boolean;
     function OptimizeRefElide(node : tnode) : boolean;
+    function OptimizeStackAlloc(node : tnode) : boolean;
     function OptimizeSwitchTable(node : tnode) : boolean;
     function OptimizeGVNPRE(var node : tnode) : boolean;
 
@@ -9411,6 +9412,338 @@ unit optloop;
           end;
         if result then
           foreachnodestatic(node,@refelide_apply,@cands);
+      end;
+
+{*****************************************************************************
+                             OptimizeStackAlloc
+ *****************************************************************************}
+
+    { -OoSTACKALLOC: escape-analysis driven stack allocation of a non-escaping
+      local dynamic array whose single SetLength has a small compile-time
+      constant length.
+
+      A local dynamic-array variable A of a NON-managed element type, whose
+      only SetLength is  SetLength(A,N)  with N a positive compile-time
+      constant and N*sizeof(elem)+2*sizeof(pint) within a small frame budget,
+      that never escapes its routine -- never appears except as  A[i]  (element
+      access) or as the operand of Length/High/Low or of that one SetLength,
+      never has its address taken, is never captured by a nested routine, never
+      assigned to/from another location, never passed to a call as the whole
+      array -- is proven to live no longer than its frame. Its heap buffer is
+      replaced by a stack buffer: a hidden local record  R = record refcount,
+      high : sizeint; data : array[0..N-1] of elem end  is allocated in the
+      frame, and the SetLength is rewritten (guarded by  if A=nil, so re-
+      execution in a loop keeps the FPC "SetLength to same length is a no-op"
+      semantics rather than re-zeroing) to:
+
+          FillChar(R,sizeof(R),0);  R.refcount:=-1;  R.high:=N-1;
+          PPtrUInt(@A)^ := PtrUInt(@R.data);
+
+      refcount=-1 is exactly FPC's own constant/read-only dynamic-array header
+      sentinel (see aasmcnst begin_dynarray_const): fpc_dynarray_decr_ref then
+      neither frees nor finalizes it, and fpc_dynarray_incr_ref treats it as
+      constant, so the scope-end finalization the compiler still emits for A is
+      a safe no-op and no fpc_getmem is called. Element type is restricted to
+      non-managed so there is nothing to finalize.
+
+      Sound because the stack buffer has exactly the same lifetime the heap
+      buffer would (both reclaimed at scope exit) and the escape walk proves no
+      reference to A (or a copy of it) outlives the frame. Conservative: single
+      constant-length SetLength, no address-taken/captured/aliased use, no whole
+      -array passing to callees; recursion is disqualified (the caller only runs
+      this when the routine is non-recursive). Runs BEFORE do_firstpass, while
+      SetLength is still an in_setlength_x inline node.  Opt-in (-OoSTACKALLOC);
+      NOT part of the -O4 defaults. }
+
+    type
+      tstackalloc_cand = record
+        inl    : tnode;      { the in_setlength_x inline node }
+        dsym   : tsym;       { the local dynamic-array var }
+        arrdef : tarraydef;
+        n      : asizeint;   { constant length }
+        accept : boolean;
+        recsym : tsym;       { hidden stack record local }
+        fref,fhigh,fdata : tsym; { its fields }
+      end;
+      tstackalloc_candarr = array of tstackalloc_cand;
+      pstackalloc_candarr = ^tstackalloc_candarr;
+
+      tstackalloc_scan = record
+        dsym    : tsym;
+        oklist  : array of pointer; { load nodes in a non-escaping context }
+        total   : longint;          { all loads of dsym }
+        nsetlen : longint;          { SetLength(dsym,...) statements }
+        bad     : boolean;          { address-taken load seen }
+      end;
+      pstackalloc_scan = ^tstackalloc_scan;
+
+    var
+      stackalloc_seq : longint;
+
+    { structural check of an in_setlength_x node: 1 dimension, positive constant
+      length, destination a plain load of a dynamic-array local }
+    function stackalloc_setlen_info(inl: tinlinenode; out dsym: tsym; out arrdef: tarraydef; out n: asizeint): boolean;
+      var
+        p0,p1 : tcallparanode;
+        lennode,arrnode : tnode;
+      begin
+        result:=false; dsym:=nil; arrdef:=nil; n:=0;
+        if inl.inlinenumber<>in_setlength_x then exit;
+        if not assigned(inl.left) or (inl.left.nodetype<>callparan) then exit;
+        p0:=tcallparanode(inl.left);
+        if not assigned(p0.right) or (p0.right.nodetype<>callparan) then exit;
+        p1:=tcallparanode(p0.right);
+        if assigned(p1.right) then exit; { >1 dimension -> reject }
+        lennode:=p0.left;
+        arrnode:=p1.left;
+        if not assigned(arrnode) or (arrnode.nodetype<>loadn) then exit;
+        if not assigned(arrnode.resultdef) or not is_dynamic_array(arrnode.resultdef) then exit;
+        if nf_address_taken in arrnode.flags then exit;
+        if not assigned(lennode) or (lennode.nodetype<>ordconstn) then exit;
+        if tordconstnode(lennode).value<=0 then exit;
+        dsym:=tloadnode(arrnode).symtableentry;
+        arrdef:=tarraydef(arrnode.resultdef);
+        n:=tordconstnode(lennode).value.svalue;
+        result:=true;
+      end;
+
+    function stackalloc_collect(var n: tnode; arg: pointer): foreachnoderesult;
+      var
+        ca : pstackalloc_candarr;
+        dsym : tsym;
+        arrdef : tarraydef;
+        len : asizeint;
+        l : longint;
+      begin
+        result:=fen_false;
+        if n.nodetype<>inlinen then exit;
+        if not stackalloc_setlen_info(tinlinenode(n),dsym,arrdef,len) then exit;
+        ca:=arg;
+        l:=length(ca^);
+        setlength(ca^,l+1);
+        ca^[l].inl:=n;
+        ca^[l].dsym:=dsym;
+        ca^[l].arrdef:=arrdef;
+        ca^[l].n:=len;
+        ca^[l].accept:=false;
+      end;
+
+    procedure stackalloc_addok(sc: pstackalloc_scan; ld: tnode);
+      var l : longint;
+      begin
+        if not assigned(ld) or (ld.nodetype<>loadn) then exit;
+        if tloadnode(ld).symtableentry<>sc^.dsym then exit;
+        l:=length(sc^.oklist);
+        setlength(sc^.oklist,l+1);
+        sc^.oklist[l]:=ld;
+      end;
+
+    { record every plain load of dsym inside a Length/High/Low intrinsic as ok }
+    function stackalloc_markreader(var n: tnode; arg: pointer): foreachnoderesult;
+      begin
+        result:=fen_false;
+        if (n.nodetype=loadn) and (tloadnode(n).symtableentry=pstackalloc_scan(arg)^.dsym) then
+          stackalloc_addok(arg,n);
+      end;
+
+    function stackalloc_mark(var n: tnode; arg: pointer): foreachnoderesult;
+      var
+        sc : pstackalloc_scan;
+        inl : tinlinenode;
+        sub : tnode;
+        p0,p1 : tcallparanode;
+      begin
+        result:=fen_false;
+        sc:=arg;
+        case n.nodetype of
+          vecn:
+            begin
+              sub:=tvecnode(n).left;
+              if assigned(sub) and (sub.nodetype=loadn) and
+                 (tloadnode(sub).symtableentry=sc^.dsym) and
+                 not(nf_address_taken in sub.flags) then
+                stackalloc_addok(sc,sub);
+            end;
+          inlinen:
+            begin
+              inl:=tinlinenode(n);
+              case inl.inlinenumber of
+                in_length_x,in_high_x,in_low_x:
+                  if assigned(inl.left) then
+                    begin
+                      sub:=inl.left;
+                      foreachnodestatic(sub,@stackalloc_markreader,sc);
+                    end;
+                in_setlength_x:
+                  { only the destination (array) operand is a safe use; loads of
+                    dsym in the length expression are NOT marked (they would be
+                    an escape, e.g. SetLength(a,Foo(a))) }
+                  if assigned(inl.left) and (inl.left.nodetype=callparan) then
+                    begin
+                      p0:=tcallparanode(inl.left);
+                      if assigned(p0.right) and (p0.right.nodetype=callparan) then
+                        begin
+                          p1:=tcallparanode(p0.right);
+                          if not assigned(p1.right) and assigned(p1.left) and
+                             (p1.left.nodetype=loadn) and
+                             (tloadnode(p1.left).symtableentry=sc^.dsym) then
+                            begin
+                              stackalloc_addok(sc,p1.left);
+                              inc(sc^.nsetlen);
+                            end;
+                        end;
+                    end;
+              end;
+            end;
+        end;
+      end;
+
+    function stackalloc_verify(var n: tnode; arg: pointer): foreachnoderesult;
+      var
+        sc : pstackalloc_scan;
+        i : longint;
+        found : boolean;
+      begin
+        result:=fen_false;
+        sc:=arg;
+        if (n.nodetype<>loadn) or (tloadnode(n).symtableentry<>sc^.dsym) then exit;
+        inc(sc^.total);
+        if nf_address_taken in n.flags then
+          begin
+            sc^.bad:=true;
+            exit;
+          end;
+        found:=false;
+        for i:=0 to high(sc^.oklist) do
+          if sc^.oklist[i]=pointer(n) then
+            begin
+              found:=true;
+              break;
+            end;
+        if not found then
+          sc^.bad:=true;
+      end;
+
+    function stackalloc_apply(var n: tnode; arg: pointer): foreachnoderesult;
+      var
+        ca : pstackalloc_candarr;
+        i : longint;
+        blk : tnode;
+        stat : tstatementnode;
+        setupblk : tnode;
+        setupstat : tstatementnode;
+        pptr : tdef;
+        recload : tnode;
+      begin
+        result:=fen_false;
+        if n.nodetype<>inlinen then exit;
+        ca:=arg;
+        for i:=0 to high(ca^) do
+          if ca^[i].accept and (ca^[i].inl=n) then
+            begin
+              { setup block: FillChar(R,sizeof(R),0); R.refcount:=-1;
+                R.high:=N-1; PPtrUInt(@A)^ := PtrUInt(@R.data); }
+              setupblk:=internalstatements(setupstat);
+
+              recload:=cloadnode.create(ca^[i].recsym,ca^[i].recsym.owner);
+              addstatement(setupstat,
+                ccallnode.createintern('FILLCHAR',
+                  ccallparanode.create(cordconstnode.create(0,u8inttype,false),
+                    ccallparanode.create(cordconstnode.create(tabstractvarsym(ca^[i].recsym).vardef.size,sizesinttype,false),
+                      ccallparanode.create(recload,nil)))));
+
+              addstatement(setupstat,
+                cassignmentnode.create(
+                  csubscriptnode.create(ca^[i].fref,cloadnode.create(ca^[i].recsym,ca^[i].recsym.owner)),
+                  cordconstnode.create(-1,ptrsinttype,false)));
+              addstatement(setupstat,
+                cassignmentnode.create(
+                  csubscriptnode.create(ca^[i].fhigh,cloadnode.create(ca^[i].recsym,ca^[i].recsym.owner)),
+                  cordconstnode.create(ca^[i].n-1,sizesinttype,false)));
+
+              pptr:=cpointerdef.getreusable(ptruinttype);
+              addstatement(setupstat,
+                cassignmentnode.create(
+                  cderefnode.create(ctypeconvnode.create_internal(
+                    caddrnode.create_internal_nomark(
+                      cloadnode.create(ca^[i].dsym,ca^[i].dsym.owner)),pptr)),
+                  ctypeconvnode.create_internal(
+                    caddrnode.create(
+                      csubscriptnode.create(ca^[i].fdata,cloadnode.create(ca^[i].recsym,ca^[i].recsym.owner))),
+                    ptruinttype)));
+
+              { guard: if A=nil then <setup>  (keeps loop re-execution a no-op,
+                matching heap SetLength-to-same-length semantics) }
+              blk:=internalstatements(stat);
+              addstatement(stat,
+                cifnode.create(
+                  caddnode.create(equaln,
+                    ctypeconvnode.create_internal(
+                      cloadnode.create(ca^[i].dsym,ca^[i].dsym.owner),voidpointertype),
+                    cnilnode.create),
+                  setupblk,nil));
+
+              typecheckpass(blk);
+              n.free;
+              n:=blk;
+              result:=fen_norecurse_false;
+              exit;
+            end;
+      end;
+
+    function OptimizeStackAlloc(node : tnode) : boolean;
+      var
+        cands : tstackalloc_candarr;
+        i : longint;
+        sc : tstackalloc_scan;
+        elemdef : tdef;
+        totalbytes : asizeint;
+        recdef : trecorddef;
+        recname : string;
+      begin
+        result:=false;
+        setlength(cands,0);
+        foreachnodestatic(node,@stackalloc_collect,@cands);
+        if length(cands)=0 then
+          exit;
+        for i:=0 to high(cands) do
+          begin
+            { destination must be a plain local, never funcret/typedconst/extern,
+              never address-taken and never captured by a nested routine }
+            if cands[i].dsym.typ<>localvarsym then continue;
+            if (tabstractvarsym(cands[i].dsym).varoptions*[vo_is_funcret,vo_is_typed_const,vo_is_external])<>[] then continue;
+            if tabstractvarsym(cands[i].dsym).addr_taken or
+               tabstractvarsym(cands[i].dsym).different_scope then continue;
+            { element type must be non-managed (nothing to finalize) and sized }
+            elemdef:=cands[i].arrdef.elementdef;
+            if not assigned(elemdef) or is_managed_type(elemdef) or (elemdef.size<=0) then continue;
+            { frame budget: header (2 pointers) + payload <= 4 KiB }
+            totalbytes:=2*sizeof(pint)+cands[i].n*elemdef.size;
+            if (cands[i].n>(high(asizeint)-2*sizeof(pint)) div elemdef.size) or (totalbytes>4096) then continue;
+            { escape walk: every load of dsym must be a safe A[i] / Length / High
+              / Low / the single SetLength use, none address-taken }
+            sc.dsym:=cands[i].dsym;
+            setlength(sc.oklist,0);
+            sc.total:=0; sc.nsetlen:=0; sc.bad:=false;
+            foreachnodestatic(node,@stackalloc_mark,@sc);
+            foreachnodestatic(node,@stackalloc_verify,@sc);
+            if sc.bad or (sc.nsetlen<>1) or (sc.total<>length(sc.oklist)) then continue;
+            { build the hidden stack record  R = record refcount,high:sizeint;
+              data:array[0..N-1] of elem end  and a local of that type }
+            inc(stackalloc_seq);
+            recname:='$stackdynarr$'+tostr(stackalloc_seq);
+            recdef:=crecorddef.create_global_internal(recname,sizeof(pint),sizeof(pint));
+            cands[i].fref:=recdef.add_field_by_def('',ptrsinttype);
+            cands[i].fhigh:=recdef.add_field_by_def('',sizesinttype);
+            cands[i].fdata:=recdef.add_field_by_def('',carraydef.getreusable(elemdef,cands[i].n));
+            cands[i].recsym:=clocalvarsym.create(recname,vs_value,recdef,[]);
+            cands[i].recsym.register_sym;
+            current_procinfo.procdef.localst.insertsym(cands[i].recsym);
+            cands[i].accept:=true;
+            result:=true;
+          end;
+        if result then
+          foreachnodestatic(node,@stackalloc_apply,@cands);
       end;
 
 

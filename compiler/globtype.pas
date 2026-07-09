@@ -624,6 +624,28 @@ interface
            guard is side-effect-free and whose then-branch always exits.
            Opt-in (-OoPARTIALINLINE); NOT part of the -O4 defaults }
          cs_opt_partialinline,
+         { escape-analysis driven stack allocation of a non-escaping local
+           dynamic array (the HotSpot/gcc -fipa-pta stack-allocation idea, the
+           dynamic-array subset). A local dynamic-array var of a NON-managed
+           element type whose ONLY SetLength is SetLength(A,N) with N a positive
+           compile-time constant within a small frame budget (payload+header <=
+           4 KiB) and that provably never escapes -- appears only as A[i], as the
+           operand of Length/High/Low or of that one SetLength, never address-
+           taken, captured by a nested routine, assigned to/from another
+           location, or passed whole to a callee -- has its heap buffer replaced
+           by a hidden stack record  record refcount,high:sizeint; data:array[
+           0..N-1] of elem end , the SetLength rewritten (guarded by if A=nil so
+           loop re-execution stays a no-op like the RTL) to zero the buffer, set
+           refcount:=-1 (FPC's own constant/read-only dynarray header sentinel,
+           so the still-emitted scope-end decr_ref neither frees nor finalizes)
+           and high:=N-1, and point A at the buffer. Sound: the stack buffer has
+           exactly the heap buffer's lifetime and no reference to A outlives the
+           frame; no fpc_getmem is called. Runs BEFORE do_firstpass while
+           SetLength is still an in_setlength_x inline node. Conservative (single
+           constant-length non-escaping SetLength, non-managed element, non-
+           recursive routine). Opt-in (-OoSTACKALLOC); NOT part of the -O4
+           defaults }
+         cs_opt_stackalloc,
          { superword-level parallelism (SLP) vectorization (the gcc
            tree-slp-vectorize / LLVM SLPVectorizer idea ported to FPC): pack a
            run of >=4 adjacent, isomorphic scalar single-precision assignments
@@ -766,7 +788,7 @@ interface
          'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC','UNROLLJAM',
          'PREDCOM','SRA','STOREMERGE','CASECLUSTER','CROSSJUMP','BLOCKORDER',
          'SINK','STOREMOTION','VRP','REFELIDE','SWITCHTABLE','REE',
-         'SHRINKWRAP','GVNPRE','PURE','PARTIALINLINE','SLP',
+         'SHRINKWRAP','GVNPRE','PURE','PARTIALINLINE','STACKALLOC','SLP',
          'UNROLLDYN','PREFETCH','ICF'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
