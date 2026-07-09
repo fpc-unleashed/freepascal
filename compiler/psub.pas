@@ -1378,6 +1378,22 @@ implementation
              and not(pi_has_label in flags) then
              RedoDFA:=OptimizeVectorize(code) or RedoDFA;
 
+           { dynamic-trip loop unrolling + software prefetch: unroll a counted
+             for-loop of unknown trip count by 4 (four serial body copies + a
+             scalar remainder loop) and/or insert a PREFETCHNTA of base[i+DIST]
+             per iteration group for each streamed dynamic-array base. Targets
+             the long bandwidth-bound array-walk loops the stock -OoLOOPUNROLL
+             (constant trip counts only) never fires on. Runs after the
+             vectorizer (which consumes the for-node when it fires, so the two do
+             not both rewrite the same loop) and before strength reduction, while
+             the a[i] index nodes are still plain vecn reads. Needs valid DFA to
+             prove the counter and streamed bases are not modified in the body;
+             skips procedures with labels like the loop passes so control cannot
+             enter the rewritten loop mid-stream. }
+           if (([cs_opt_unrolldyn,cs_opt_prefetch]*current_settings.optimizerswitches)<>[])
+             and not(pi_has_label in flags) then
+             RedoDFA:=OptimizeUnrollPrefetch(code) or RedoDFA;
+
            { SLP (superword-level parallelism) straight-line vectorization:
              pack runs of >=4 adjacent, isomorphic scalar single-precision
              element-wise assignments over consecutive array slots (hand-unrolled

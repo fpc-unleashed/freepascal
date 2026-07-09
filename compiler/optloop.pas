@@ -41,6 +41,7 @@ unit optloop;
     function OptimizeRangeElim(node : tnode) : boolean;
     function OptimizeVectorize(node : tnode) : boolean;
     function OptimizeSLP(node : tnode) : boolean;
+    function OptimizeUnrollPrefetch(node : tnode) : boolean;
     function OptimizeJumpThread(node : tnode) : boolean;
     function OptimizeLoopDistPat(node : tnode) : boolean;
     function OptimizeLoopPeel(node : tnode) : boolean;
@@ -3684,6 +3685,400 @@ unit optloop;
         ctx.changed:=false;
         { postorder so nested (inner) loops are considered before their parents }
         foreachnodestatic(pm_postprocess,node,@vect_processloop_cb,@ctx);
+        Result:=ctx.changed;
+      end;
+
+
+{*****************************************************************************
+       dynamic-trip loop unrolling + software prefetch
+*****************************************************************************}
+
+    { -OoUNROLLDYN / -OoPREFETCH: two cooperating transforms for the long
+      contiguous single-precision (and integer) array-walk loops that dominate
+      the memory-bandwidth-bound neural-api kernels.  Vectorizing a body widens
+      it but neither unrolls it nor hides memory latency, and stock -OoLOOPUNROLL
+      only fully unrolls small COMPILE-TIME constant trip counts, so neither
+      touches these UNKNOWN-trip counted loops over dynamic arrays.
+
+      A counted for-loop  for i:=lo to hi do BODY  is rewritten to
+
+        lo:=<start>; hi:=<end>; i:=lo;
+        while i<=hi-(UF-1) do begin
+          -OoPREFETCH: for each streamed dynamic-array base: prefetch base[i+DIST]
+          BODY; i:=i+1;   (repeated UF times)
+        end;
+        while i<=hi do begin BODY; i:=i+1 end;   [scalar remainder]
+
+      with UF=4 under -OoUNROLLDYN and UF=1 under bare -OoPREFETCH.  The four body
+      copies keep the ORIGINAL serial evaluation order (body;inc x4), so a
+      floating-point accumulation chain stays a single serial accumulator and the
+      result is BIT-IDENTICAL to the scalar loop -- no reassociation, unlike the
+      partial-sum reduction the vectorizer / -OoREASSOC perform.  The prefetch is
+      a semantic no-op: an x86 PREFETCHNTA of an out-of-range address never faults,
+      and it only walks the contiguous dynamic-array pattern the loop establishes.
+
+      Sound subset (correctness over coverage):
+        * ascending unit-step (no downto, no step) for-loop;
+        * the counter is a simple non-aliased signed 32/64-bit local/value-param
+          that DFA proves is never modified in the body (so i+UF/i+DIST cannot be
+          derailed mid-loop);
+        * the body is straight-line -- no calls or inline-node calls, no control
+          flow (if/case/break/continue/exit/goto/label), no nested loops, no
+          try/raise/asm -- so replicating (body;inc) is exactly the scalar
+          sequence with fewer branch checks;
+        * every array-element access in the body is a 1-D array indexed by EXACTLY
+          the bare loop counter (unit stride, offset 0), and there is at least one
+          such access (this is an array-walk loop, not an arbitrary loop);
+        * no streamed array base is reassigned in the body (its walk stays
+          contiguous and any prefetch address stays inside the walk);
+        * -Cr/-Co disables the transform (both the proc default and any per-region
+          body localswitch), like the neighbouring loop passes;
+        * only dynamic arrays of a non-aggregate element are prefetched;
+        * inline-candidate procs are skipped (the rewritten body is never streamed
+          to a PPU) and, like every loop pass, procs with labels are skipped at
+          the psub call site. }
+
+    const
+      unrollpf_factor = 4;    { body copies per unrolled iteration group }
+      unrollpf_dist   = 64;   { prefetch distance, in elements }
+      unrollpf_maxbases = 8;  { cap on distinct prefetched array bases }
+
+    type
+      tunrollpfcontext = object
+        changed : boolean;
+        { recognizer state, filled while scanning the current loop body }
+        counter : tabstractvarsym;
+        bad : boolean;                { a forbidden node was seen }
+        arraccess : boolean;         { at least one counter-indexed array access }
+        nbases : longint;
+        baseload : array[0..unrollpf_maxbases-1] of tnode;   { load of the array var }
+        basesym  : array[0..unrollpf_maxbases-1] of tabstractvarsym;
+        nwrite : longint;
+        writesym : array[0..unrollpf_maxbases-1] of tabstractvarsym;   { store-target bases }
+        procedure resetscan(c : tabstractvarsym);
+        function scanbody(var n : tnode) : foreachnoderesult;
+        procedure processloop(var n : tnode);
+      end;
+
+
+    procedure tunrollpfcontext.resetscan(c : tabstractvarsym);
+      begin
+        counter:=c;
+        bad:=false;
+        arraccess:=false;
+        nbases:=0;
+        nwrite:=0;
+      end;
+
+
+    function tunrollpfcontext.scanbody(var n : tnode) : foreachnoderesult;
+      var
+        idx, base : tnode;
+        bsym : tabstractvarsym;
+        eldef : tdef;
+        i : longint;
+      begin
+        result:=fen_false;
+        if bad then
+          begin
+            result:=fen_norecurse_true;
+            exit;
+          end;
+        { a per-region range/overflow check disables the transform }
+        if ([cs_check_range,cs_check_overflow]*n.localswitches)<>[] then
+          begin
+            bad:=true;
+            result:=fen_norecurse_true;
+            exit;
+          end;
+        case n.nodetype of
+          { any call, control flow, nested loop, exception, inline asm or
+            inline-node (which may hide a call) makes (body;inc) replication
+            unsound -- reject and stop }
+          calln,inlinen,asmn,
+          breakn,continuen,exitn,goton,labeln,
+          ifn,casen,whilerepeatn,forn,
+          tryexceptn,tryfinallyn,raisen:
+            begin
+              bad:=true;
+              result:=fen_norecurse_true;
+              exit;
+            end;
+          assignn:
+            begin
+              { remember the array base written by this store so it is never
+                prefetched: prefetching a pure store destination only pollutes
+                the bus without hiding any load latency }
+              base:=rangeelim_skip_typeconv(tassignmentnode(n).left);
+              if assigned(base) and (base.nodetype=vecn) then
+                begin
+                  bsym:=rangeelim_simple_var(tvecnode(base).left);
+                  if assigned(bsym) and (nwrite<unrollpf_maxbases) then
+                    begin
+                      writesym[nwrite]:=bsym;
+                      inc(nwrite);
+                    end;
+                end;
+            end;
+          vecn:
+            begin
+              { the index must be exactly a plain read of the loop counter }
+              idx:=rangeelim_skip_typeconv(tvecnode(n).right);
+              if not assigned(idx) or (idx.nodetype<>loadn) or
+                 (([nf_write,nf_modify]*idx.flags)<>[]) or
+                 (tloadnode(idx).symtableentry<>tsym(counter)) then
+                begin
+                  bad:=true;
+                  result:=fen_norecurse_true;
+                  exit;
+                end;
+              arraccess:=true;
+              { collect the base for prefetch if it is a simple non-aliased
+                dynamic array of a non-aggregate element }
+              base:=tvecnode(n).left;
+              if assigned(base) and assigned(base.resultdef) and
+                 is_dynamic_array(base.resultdef) then
+                begin
+                  eldef:=tarraydef(base.resultdef).elementdef;
+                  bsym:=rangeelim_simple_var(base);
+                  if assigned(bsym) and assigned(eldef) and
+                     not(eldef.typ in [arraydef,recorddef,objectdef,setdef,filedef,variantdef]) then
+                    begin
+                      { record one load per distinct base symbol }
+                      for i:=0 to nbases-1 do
+                        if tloadnode(baseload[i]).symtableentry=tsym(bsym) then
+                          exit;
+                      if nbases<unrollpf_maxbases then
+                        begin
+                          baseload[nbases]:=base;
+                          basesym[nbases]:=bsym;
+                          inc(nbases);
+                        end;
+                    end;
+                end;
+            end;
+          else
+            ;
+        end;
+      end;
+
+
+    function unrollpf_scanbody_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      begin
+        result:=tunrollpfcontext(arg^).scanbody(n);
+      end;
+
+
+    procedure tunrollpfcontext.processloop(var n : tnode);
+      var
+        forn : tfornode;
+        ctype : tdef;
+        c : tabstractvarsym;
+        dounroll, doprefetch, willprefetch : boolean;
+        uf, rep, i : longint;
+        block, ifbody, mainbody, rembody : tnode;
+        stat, istat, mstat, rstat : tstatementnode;
+        lotemp, hitemp : ttempcreatenode;
+        bidx : tnode;
+
+      function makecounterload : tnode;
+        begin
+          makecounterload:=cloadnode.create(tsym(c),c.owner);
+        end;
+
+      { true if the array base sym is a pure store destination (only written,
+        so prefetching it hides no load latency) }
+      function is_storetarget(bs : tabstractvarsym) : boolean;
+        var w : longint;
+        begin
+          is_storetarget:=false;
+          for w:=0 to nwrite-1 do
+            if writesym[w]=bs then
+              begin
+                is_storetarget:=true;
+                exit;
+              end;
+        end;
+
+      { number of streamed bases we will actually prefetch (read operands) }
+      function nreadbases : longint;
+        var k : longint;
+        begin
+          nreadbases:=0;
+          for k:=0 to nbases-1 do
+            if not is_storetarget(basesym[k]) then
+              inc(nreadbases);
+        end;
+
+      begin
+        forn:=tfornode(n);
+        dounroll:=cs_opt_unrolldyn in current_settings.optimizerswitches;
+        doprefetch:=cs_opt_prefetch in current_settings.optimizerswitches;
+        if not dounroll and not doprefetch then
+          exit;
+
+        { only plain ascending unit-step for-loops }
+        if lnf_backward in forn.loopflags then
+          exit;
+        if assigned(forn.loopstep) then
+          exit;
+
+        { simple non-aliased signed 32/64-bit counter }
+        c:=rangeelim_simple_var(forn.left);
+        if not assigned(c) then
+          exit;
+        ctype:=forn.left.resultdef;
+        if not assigned(ctype) or (ctype.typ<>orddef) then
+          exit;
+        if not is_signed(ctype) or not(ctype.size in [4,8]) then
+          exit;
+
+        { never rewrite an inline-candidate proc (not streamable to a PPU) }
+        if po_inline in current_procinfo.procdef.procoptions then
+          exit;
+
+        { preserve bounds/overflow checking: do not touch checked code }
+        if ([cs_check_range,cs_check_overflow]*current_settings.localswitches)<>[] then
+          exit;
+
+        if not assigned(forn.t2) then
+          exit;
+
+        { scan the body: reject forbidden nodes, require every array access be
+          indexed by the bare counter, and collect the streamed dynamic bases }
+        resetscan(c);
+        foreachnodestatic(pm_postprocess,forn.t2,@unrollpf_scanbody_cb,@self);
+        if bad or not arraccess then
+          exit;
+
+        { DFA: the counter must not be assigned anywhere in the body.  (A streamed
+          base does NOT need a not-modified check: element writes a[i]:=... never
+          reassign the array reference, and even a legal whole-array reassignment
+          a:=x mid-body is preserved verbatim by the serial (body;inc) replication
+          and still leaves base[i+DIST] a valid -- fault-free -- prefetch target.) }
+        if not(pi_dfaavailable in current_procinfo.flags) then
+          exit;
+        CalcDefSum(forn.t2);
+        if not assigned(forn.t2.optinfo) or not assigned(forn.left.optinfo) then
+          exit;
+        if DynSetIn(forn.t2.optinfo^.defsum,forn.left.optinfo^.index) then
+          exit;
+
+        willprefetch:=doprefetch and (nreadbases>0);
+        { nothing to do if we would neither unroll nor prefetch }
+        if not dounroll and not willprefetch then
+          exit;
+        if dounroll then
+          uf:=unrollpf_factor
+        else
+          uf:=1;
+
+        { ---- build the replacement block ---- }
+        block:=internalstatements(stat);
+
+        lotemp:=ctempcreatenode.create(ctype,ctype.size,tt_persistent,true);
+        addstatement(stat,lotemp);
+        addstatement(stat,cassignmentnode.create(ctemprefnode.create(lotemp),forn.right.getcopy));
+        hitemp:=ctempcreatenode.create(ctype,ctype.size,tt_persistent,true);
+        addstatement(stat,hitemp);
+        addstatement(stat,cassignmentnode.create(ctemprefnode.create(hitemp),forn.t1.getcopy));
+
+        { All counter writes live under  if lo<=hi then ... , so an empty loop
+          (lo>hi) never touches the counter -- matching the unleashed for-loop's
+          "counter untouched when the loop did not run" semantics.  The counter is
+          restored to hi (the last taken index) at the end of the if-body, again
+          matching a completed ascending for-loop.  This keeps the counter's
+          post-loop value identical to the scalar loop. }
+        ifbody:=internalstatements(istat);
+
+        { i := lo }
+        addstatement(istat,cassignmentnode.create(makecounterload,ctemprefnode.create(lotemp)));
+
+        { main (unrolled) loop:  while i<=hi-(uf-1) do begin [prefetch]; (body;inc)xUF end }
+        mainbody:=internalstatements(mstat);
+        if willprefetch then
+          for i:=0 to nbases-1 do
+            begin
+              { skip pure store destinations: only read operands are worth
+                prefetching }
+              if is_storetarget(basesym[i]) then
+                continue;
+              { prefetch base[i+DIST] -- an out-of-range prefetch never faults }
+              bidx:=caddnode.create(addn,makecounterload,
+                cordconstnode.create(unrollpf_dist,ctype,false));
+              addstatement(mstat,geninlinenode(in_prefetch_var,false,
+                cvecnode.create(baseload[i].getcopy,bidx)));
+            end;
+        for rep:=1 to uf do
+          begin
+            addstatement(mstat,forn.t2.getcopy);
+            addstatement(mstat,cassignmentnode.create(makecounterload,
+              caddnode.create(addn,makecounterload,cordconstnode.create(1,ctype,false))));
+          end;
+        addstatement(istat,cwhilerepeatnode.create(
+          caddnode.create(lten,makecounterload,
+            caddnode.create(subn,ctemprefnode.create(hitemp),
+              cordconstnode.create(uf-1,ctype,false))),
+          mainbody,true,false));
+
+        { scalar remainder (only needed when unrolling):
+          while i<=hi do begin body; i:=i+1 end }
+        if uf>1 then
+          begin
+            rembody:=internalstatements(rstat);
+            addstatement(rstat,forn.t2.getcopy);
+            addstatement(rstat,cassignmentnode.create(makecounterload,
+              caddnode.create(addn,makecounterload,cordconstnode.create(1,ctype,false))));
+            addstatement(istat,cwhilerepeatnode.create(
+              caddnode.create(lten,makecounterload,ctemprefnode.create(hitemp)),
+              rembody,true,false));
+          end;
+
+        { restore the completed-loop exit value: i := hi (last taken index) }
+        addstatement(istat,cassignmentnode.create(makecounterload,ctemprefnode.create(hitemp)));
+
+        { if lo<=hi then <the whole loop nest> }
+        addstatement(stat,cifnode.create(
+          caddnode.create(lten,ctemprefnode.create(lotemp),ctemprefnode.create(hitemp)),
+          ifbody,nil));
+
+        addstatement(stat,ctempdeletenode.create(lotemp));
+        addstatement(stat,ctempdeletenode.create(hitemp));
+
+        do_firstpass(block);
+        forn.free;
+        n:=block;
+        changed:=true;
+      end;
+
+
+    function unrollpf_processloop_cb(var n : tnode; arg : pointer) : foreachnoderesult;
+      begin
+        result:=fen_false;
+        if n.nodetype=forn then
+          begin
+            tunrollpfcontext(arg^).processloop(n);
+            result:=fen_norecurse_false;
+          end;
+      end;
+
+
+    function OptimizeUnrollPrefetch(node : tnode) : boolean;
+      var
+        ctx : tunrollpfcontext;
+      begin
+        Result:=false;
+        if not(pi_dfaavailable in current_procinfo.flags) then
+          exit;
+        if ([cs_opt_unrolldyn,cs_opt_prefetch]*current_settings.optimizerswitches)=[] then
+          exit;
+        ctx.changed:=false;
+        ctx.counter:=nil;
+        ctx.bad:=false;
+        ctx.arraccess:=false;
+        ctx.nbases:=0;
+        { postorder so inner loops are handled before their parents }
+        foreachnodestatic(pm_postprocess,node,@unrollpf_processloop_cb,@ctx);
         Result:=ctx.changed;
       end;
 
