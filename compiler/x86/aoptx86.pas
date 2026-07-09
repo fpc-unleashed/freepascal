@@ -18139,6 +18139,8 @@ unit aoptx86;
 
 {$ifdef x86_64}
     function TX86AsmOptimizer.CurrentProcAllowsSiblingTailFrameReuse : Boolean;
+      var
+        hp : tai;
 
       function symtable_has_addrtaken(st : TSymtable) : Boolean;
         var
@@ -18155,6 +18157,43 @@ unit aoptx86;
                  tabstractvarsym(sym).addr_taken then
                 exit(true);
             end;
+        end;
+
+      { true if hpx materialises the address of a frame slot (a stack/frame
+        pointer relative address, or a copy of the frame pointer itself) into a
+        general register.  Such a pointer may be handed to the callee -- an open
+        array of const, a var/out/@temp argument -- and would dangle once we
+        release the frame.  Compiler-generated temps are not tracked by
+        addr_taken, so this catches the escapes symtable_has_addrtaken misses. }
+      function materialises_frame_address(hpx : tai) : Boolean;
+        var
+          cur : taicpu;
+        begin
+          Result:=false;
+          if hpx.typ<>ait_instruction then
+            exit;
+          cur:=taicpu(hpx);
+          { lea disp(%rsp|%rbp,...), %reg  with reg not the stack/frame pointer }
+          if (cur.opcode=A_LEA) and (cur.ops=2) and
+             (cur.oper[0]^.typ=top_ref) and
+             ((cur.oper[0]^.ref^.base=NR_STACK_POINTER_REG) or
+              (cur.oper[0]^.ref^.base=NR_FRAME_POINTER_REG) or
+              (cur.oper[0]^.ref^.index=NR_STACK_POINTER_REG) or
+              (cur.oper[0]^.ref^.index=NR_FRAME_POINTER_REG)) and
+             (cur.oper[1]^.typ=top_reg) and
+             (getregtype(cur.oper[1]^.reg)=R_INTREGISTER) and
+             (getsupreg(cur.oper[1]^.reg)<>RS_STACK_POINTER_REG) and
+             (getsupreg(cur.oper[1]^.reg)<>RS_FRAME_POINTER_REG) then
+            exit(true);
+          { mov %rsp|%rbp, %reg  (copy of the frame pointer into a GP reg) }
+          if (cur.opcode=A_MOV) and (cur.ops=2) and
+             (cur.oper[0]^.typ=top_reg) and (cur.oper[1]^.typ=top_reg) and
+             (getregtype(cur.oper[0]^.reg)=R_INTREGISTER) and
+             ((getsupreg(cur.oper[0]^.reg)=RS_STACK_POINTER_REG) or
+              (getsupreg(cur.oper[0]^.reg)=RS_FRAME_POINTER_REG)) and
+             (getsupreg(cur.oper[1]^.reg)<>RS_STACK_POINTER_REG) and
+             (getsupreg(cur.oper[1]^.reg)<>RS_FRAME_POINTER_REG) then
+            exit(true);
         end;
 
       begin
@@ -18181,6 +18220,18 @@ unit aoptx86;
         if symtable_has_addrtaken(current_procinfo.procdef.localst) or
            symtable_has_addrtaken(current_procinfo.procdef.parast) then
           exit;
+        { A frame address materialised anywhere in the routine (into a general
+          register) may reach the callee even when no named local/parameter is
+          addr_taken -- e.g. an open array of const or a managed temporary whose
+          pointer is passed by reference. Releasing the frame before the jmp
+          would leave the callee reading dangling stack. Reject conservatively. }
+        hp:=BlockStart;
+        while assigned(hp) and (hp<>BlockEnd) do
+          begin
+            if materialises_frame_address(hp) then
+              exit;
+            hp:=tai(hp.Next);
+          end;
         Result:=true;
       end;
 
@@ -18189,19 +18240,27 @@ unit aoptx86;
       ANOTHER routine into a frame teardown followed by a jmp, so the callee
       reuses the caller's return slot (O(depth) -> O(1) stack for mutual
       recursion / continuation dispatch).  Unlike the -O4 CallFrameRet2Jmp this
-      also accepts the shape where the call result is forwarded through a single
-      callee-saved register and moved back before the ret (rax->cs->rax
-      identity) -- the shape the register allocator emits for
-      `result := OtherFunc(args)` when the routine owns a callee-saved register,
-      which is exactly the mutual-recursion / continuation case.
+      also accepts the shape where the call result is forwarded through one or
+      more callee-saved registers and/or rsp-relative frame slots and moved back
+      before the ret (an identity round-trip) -- the shape the register
+      allocator emits for `result := OtherFunc(args)` when the routine owns a
+      callee-saved register (single longint result) or stages a wider result
+      (128-bit rax:rdx, or a result split across a callee-saved reg and a stack
+      slot) through the frame, which is exactly the mutual-recursion /
+      continuation case.
 
       Recognised epilogue after the call (only labels/markers may sit between
       instructions; a crossed label means the teardown is shared with other exit
       paths so its originals must be kept):
 
           call   X
-          mov    %rax_sub, %cs_sub       (optional single result forward-save)
-       L: mov    %cs_sub, %rax_sub       (matching restore, before any pop)
+          mov    %rax_sub, %cs_sub       (>=0 result forward-saves: each moves a
+          mov    %rdx_sub, off(%rsp)      return reg into a callee-saved reg or
+                                          an rsp frame slot; distinct sources and
+                                          distinct destinations)
+       L: mov    %cs_sub, %rax_sub       (one matching restore per save, each
+          mov    off(%rsp), %rdx_sub      copying the saved value back to its
+                                          return reg, all before any teardown)
           leaq   N(%rsp),%rsp / addq $N  (optional rsp release, N>0)
           popq   %cs...                  (>=0 callee-saved integer pops)
           ret
@@ -18222,18 +18281,47 @@ unit aoptx86;
       conventions rejected); and a direct call to a symbol (indirect/procvar
       calls rejected). }
     function TX86AsmOptimizer.OptSibCall(var p : tai) : Boolean;
+      const
+        { rax + rdx: the two integer function-return registers (a 128-bit
+          result is the widest integer thing forwarded through the epilogue) }
+        maxfwd = 2;
       var
         hp, hpret, hpnew, hpteardown, firstlabel : tai;
-        fwd_cs_sup : tsuperregister;
-        fwd_opsize : topsize;
-        have_fwd, restore_seen, crossed_label, walk_ok : Boolean;
-        teardown_count : integer;
+        { each forward-save records a return register staged into a
+          callee-saved register OR an rsp-relative frame slot, and the matching
+          restore that copies it back before the ret. A multi-entry chain is
+          how the register allocator lays out a 128-bit result (rax:rdx) or a
+          result staged through a mix of a callee-saved reg and a stack slot. }
+        fwd_ret_sup : array[0..maxfwd-1] of tsuperregister;  { RS_RAX / RS_RDX }
+        fwd_opsize  : array[0..maxfwd-1] of topsize;
+        fwd_is_reg  : array[0..maxfwd-1] of Boolean;
+        fwd_dst_sup : array[0..maxfwd-1] of tsuperregister;  { callee-saved reg dest }
+        fwd_dst_ins : array[0..maxfwd-1] of taicpu;          { save instr (slot ref) }
+        fwd_done    : array[0..maxfwd-1] of Boolean;         { restored yet }
+        fwd_count, restore_count, teardown_count, i : integer;
+        crossed_label, walk_ok, matched, distinct : Boolean;
 
       function reg_is_calleesaved(reg : tregister) : Boolean;
         begin
           Result:=(getregtype(reg)=R_INTREGISTER) and
             not(getsupreg(reg) in
                 paramanager.get_volatile_registers_int(current_procinfo.procdef.proccalloption));
+        end;
+
+      function is_return_reg(reg : tregister) : Boolean;
+        begin
+          Result:=(getregtype(reg)=R_INTREGISTER) and
+            (getsupreg(reg) in [RS_FUNCTION_RETURN_REG,RS_FUNCTION_RETURN_REG_HIGH]);
+        end;
+
+      { an rsp-relative frame slot (no index, no symbol): a spill/return slot
+        living inside the frame we are about to release }
+      function is_frame_slot(const ref : treference) : Boolean;
+        begin
+          Result:=(ref.base=NR_STACK_POINTER_REG) and
+            (ref.index=NR_NO) and
+            (ref.symbol=nil) and
+            (ref.relsymbol=nil);
         end;
 
       function is_teardown(hpx : tai) : Boolean;
@@ -18296,13 +18384,20 @@ unit aoptx86;
            (taicpu(p).oper[0]^.ref^.index<>NR_NO) then
           exit;
 
-        have_fwd:=false;
-        restore_seen:=false;
+        fwd_count:=0;
+        restore_count:=0;
+        for i:=0 to maxfwd-1 do
+          begin
+            fwd_ret_sup[i]:=RS_INVALID;
+            fwd_opsize[i]:=S_NO;
+            fwd_is_reg[i]:=false;
+            fwd_dst_sup[i]:=RS_INVALID;
+            fwd_dst_ins[i]:=nil;
+            fwd_done[i]:=false;
+          end;
         crossed_label:=false;
         walk_ok:=true;
         teardown_count:=0;
-        fwd_cs_sup:=RS_INVALID;
-        fwd_opsize:=S_NO;
         firstlabel:=nil;
         hpret:=tai(p.Next);
         while assigned(hpret) and walk_ok do
@@ -18321,55 +18416,130 @@ unit aoptx86;
             { end of the epilogue }
             if MatchInstruction(hpret,A_RET,[S_NO]) and (taicpu(hpret).ops=0) then
               break;
-            { single result forward-save: mov %rax_sub,%cs_sub -- only valid as
-              the first thing, before any teardown/restore }
-            if (not have_fwd) and (not restore_seen) and (teardown_count=0) and
+
+            matched:=false;
+
+            { result forward-save: mov %ret_sub,<callee-saved reg | frame slot>
+              -- only in the save phase, before any restore or teardown. The
+              source must be a return register (rax/rdx); a callee-saved reg
+              destination is never a return register (rax/rdx are volatile), and
+              a frame-slot destination is released with the frame, so a save
+              never clobbers a live return register. Sources and destinations
+              must be pairwise distinct so the round-trip is a true identity. }
+            if (restore_count=0) and (teardown_count=0) and (fwd_count<maxfwd) and
               MatchInstruction(hpret,A_MOV,[S_B,S_W,S_L,S_Q]) and
               (taicpu(hpret).oper[0]^.typ=top_reg) and
-              (taicpu(hpret).oper[1]^.typ=top_reg) and
-              (getsupreg(taicpu(hpret).oper[0]^.reg)=RS_FUNCTION_RETURN_REG) and
-              (getregtype(taicpu(hpret).oper[0]^.reg)=R_INTREGISTER) and
-              reg_is_calleesaved(taicpu(hpret).oper[1]^.reg) then
+              is_return_reg(taicpu(hpret).oper[0]^.reg) then
               begin
-                have_fwd:=true;
-                fwd_cs_sup:=getsupreg(taicpu(hpret).oper[1]^.reg);
-                fwd_opsize:=taicpu(hpret).opsize;
-                hpret:=tai(hpret.Next);
-                continue;
+                distinct:=true;
+                for i:=0 to fwd_count-1 do
+                  if fwd_ret_sup[i]=getsupreg(taicpu(hpret).oper[0]^.reg) then
+                    distinct:=false;
+                if distinct and (taicpu(hpret).oper[1]^.typ=top_reg) and
+                  reg_is_calleesaved(taicpu(hpret).oper[1]^.reg) then
+                  begin
+                    for i:=0 to fwd_count-1 do
+                      if fwd_is_reg[i] and
+                        (fwd_dst_sup[i]=getsupreg(taicpu(hpret).oper[1]^.reg)) then
+                        distinct:=false;
+                    if distinct then
+                      begin
+                        fwd_ret_sup[fwd_count]:=getsupreg(taicpu(hpret).oper[0]^.reg);
+                        fwd_opsize[fwd_count]:=taicpu(hpret).opsize;
+                        fwd_is_reg[fwd_count]:=true;
+                        fwd_dst_sup[fwd_count]:=getsupreg(taicpu(hpret).oper[1]^.reg);
+                        fwd_dst_ins[fwd_count]:=taicpu(hpret);
+                        fwd_done[fwd_count]:=false;
+                        inc(fwd_count);
+                        matched:=true;
+                      end;
+                  end
+                else if distinct and (taicpu(hpret).oper[1]^.typ=top_ref) and
+                  is_frame_slot(taicpu(hpret).oper[1]^.ref^) then
+                  begin
+                    for i:=0 to fwd_count-1 do
+                      if (not fwd_is_reg[i]) and
+                        RefsEqual(fwd_dst_ins[i].oper[1]^.ref^,taicpu(hpret).oper[1]^.ref^) then
+                        distinct:=false;
+                    if distinct then
+                      begin
+                        fwd_ret_sup[fwd_count]:=getsupreg(taicpu(hpret).oper[0]^.reg);
+                        fwd_opsize[fwd_count]:=taicpu(hpret).opsize;
+                        fwd_is_reg[fwd_count]:=false;
+                        fwd_dst_ins[fwd_count]:=taicpu(hpret);
+                        fwd_done[fwd_count]:=false;
+                        inc(fwd_count);
+                        matched:=true;
+                      end;
+                  end;
               end;
-            { matching restore: mov %cs_sub,%rax_sub (same width), before pops }
-            if have_fwd and (not restore_seen) and (teardown_count=0) and
-              MatchInstruction(hpret,A_MOV,[fwd_opsize]) and
-              (taicpu(hpret).oper[0]^.typ=top_reg) and
+
+            { matching restore: mov <saved location>,%ret_sub -- reverses one
+              pending save (same width, same return reg, same source location),
+              before any teardown }
+            if (not matched) and (fwd_count>0) and (restore_count<fwd_count) and
+              (teardown_count=0) and
+              MatchInstruction(hpret,A_MOV,[S_B,S_W,S_L,S_Q]) and
               (taicpu(hpret).oper[1]^.typ=top_reg) and
-              (getsupreg(taicpu(hpret).oper[0]^.reg)=fwd_cs_sup) and
-              (getsupreg(taicpu(hpret).oper[1]^.reg)=RS_FUNCTION_RETURN_REG) and
-              (getregtype(taicpu(hpret).oper[1]^.reg)=R_INTREGISTER) then
+              is_return_reg(taicpu(hpret).oper[1]^.reg) then
               begin
-                restore_seen:=true;
-                hpret:=tai(hpret.Next);
-                continue;
+                for i:=0 to fwd_count-1 do
+                  if (not fwd_done[i]) and
+                    (fwd_opsize[i]=taicpu(hpret).opsize) and
+                    (fwd_ret_sup[i]=getsupreg(taicpu(hpret).oper[1]^.reg)) then
+                    begin
+                      if fwd_is_reg[i] then
+                        begin
+                          if (taicpu(hpret).oper[0]^.typ=top_reg) and
+                            (getregtype(taicpu(hpret).oper[0]^.reg)=R_INTREGISTER) and
+                            (getsupreg(taicpu(hpret).oper[0]^.reg)=fwd_dst_sup[i]) then
+                            begin
+                              fwd_done[i]:=true;
+                              inc(restore_count);
+                              matched:=true;
+                              break;
+                            end;
+                        end
+                      else
+                        begin
+                          if (taicpu(hpret).oper[0]^.typ=top_ref) and
+                            RefsEqual(fwd_dst_ins[i].oper[1]^.ref^,taicpu(hpret).oper[0]^.ref^) then
+                            begin
+                              fwd_done[i]:=true;
+                              inc(restore_count);
+                              matched:=true;
+                              break;
+                            end;
+                        end;
+                    end;
               end;
+
             { teardown }
-            if is_teardown(hpret) then
+            if (not matched) and is_teardown(hpret) then
               begin
-                { a pop before the result was restored would clobber the value
-                  still living in the callee-saved register }
-                if have_fwd and (not restore_seen) then
+                { a teardown before every save is restored would clobber a value
+                  still living in a callee-saved register (pop) or invalidate the
+                  frame slots (rsp release) the pending restores read }
+                if (fwd_count>0) and (restore_count<fwd_count) then
                   begin
                     walk_ok:=false;
                     break;
                   end;
                 inc(teardown_count);
-                hpret:=tai(hpret.Next);
-                continue;
+                matched:=true;
               end;
+
             { anything else disqualifies }
-            walk_ok:=false;
+            if not matched then
+              begin
+                walk_ok:=false;
+                break;
+              end;
+            hpret:=tai(hpret.Next);
           end;
 
         if not(walk_ok and (teardown_count>0) and
-               (not have_fwd or restore_seen) and
+               ((fwd_count=0) or (restore_count=fwd_count)) and
                assigned(hpret) and (hpret.typ=ait_instruction) and
                MatchInstruction(hpret,A_RET,[S_NO]) and (taicpu(hpret).ops=0)) then
           exit;
