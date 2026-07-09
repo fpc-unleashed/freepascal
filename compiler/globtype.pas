@@ -607,7 +607,23 @@ interface
            any global/threadvar/pointer write, call to an unproven routine,
            Writeln/IO, raise, try/except or inline asm => not pure. Opt-in
            (-OoPURE): a wrong attribute is a miscompile }
-         cs_opt_pure
+         cs_opt_pure,
+         { partial inlining / function splitting (the gcc -fpartial-inlining /
+           ipa-split idea ported to FPC): a routine that starts with a cheap,
+           side-effect-free early-exit guard ("if <cond> then exit[(value)]")
+           followed by an expensive body is split into a tiny inlinable header
+           (a copy of the guard + a call forwarding the parameters) that takes
+           over the original procsym, and an out-of-line body routine that keeps
+           the whole original code. The inliner then inlines just the header at
+           call sites, so the common guarded-exit path pays no call. Conservative
+           (correctness over coverage): this first landing splits only standalone
+           non-method/non-nested/non-generic PROCEDURES (void return) with simple
+           by-value scalar/pointer/class parameters, no exceptions/asm/labels/
+           goto/nested procs/varargs/open arrays/threadvars, not already inline
+           and without a separate forward/interface declaration, whose leading
+           guard is side-effect-free and whose then-branch always exits.
+           Opt-in (-OoPARTIALINLINE); NOT part of the -O4 defaults }
+         cs_opt_partialinline
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -686,7 +702,7 @@ interface
          'LOOPPEEL','LOOPSPLIT','LOOPFUSE','IFCONVERT','REASSOC','UNROLLJAM',
          'PREDCOM','SRA','STOREMERGE','CASECLUSTER','CROSSJUMP','BLOCKORDER',
          'SINK','STOREMOTION','VRP','REFELIDE','SWITCHTABLE','REE',
-         'SHRINKWRAP','GVNPRE','PURE'
+         'SHRINKWRAP','GVNPRE','PURE','PARTIALINLINE'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
