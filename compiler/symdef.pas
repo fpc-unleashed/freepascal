@@ -1029,6 +1029,27 @@ interface
           pure_ppu_valid : boolean;
           pure_ppu_is_pure : boolean;
           pure_ppu_is_const : boolean;
+          { identical code folding (-OoICF).
+              icf_addrtaken  : transient (this-unit) flag set the moment this
+                               routine's address is loaded as a value (@proc /
+                               procvar assignment, see tloadnode.create_procvar).
+                               A routine whose address can be observed must never
+                               be collapsed to a zero-byte symbol alias (that
+                               would make @f=@g observably true); it falls back to
+                               the address-preserving jmp thunk instead.
+              icf_hash_valid : icf_hash below holds this routine's canonical body
+                               digest and it is globally referenceable, so it may
+                               serve as a cross-unit fold survivor. Set by the ICF
+                               pass for un-folded, globally-visible routines, and
+                               (guarded by the target/ABI signature) persisted to
+                               the ppu as the optsum_icf summary tag so a later
+                               unit can fold an identical routine into a
+                               cross-unit jmp thunk to icf survivor.
+              icf_hash       : 128-bit digest of the full canonical instruction
+                               stream (see opticf.build_canon). }
+          icf_addrtaken : boolean;
+          icf_hash_valid : boolean;
+          icf_hash : array[0..1] of qword;
           constructor create(level:byte;doregister:boolean);virtual;
           constructor ppuload(ppufile:tcompilerppufile);
           destructor  destroy;override;
@@ -1544,6 +1565,7 @@ implementation
       aasmbase,
       gendef,
       fpchash,
+      opticf,
       entfile
       ;
 
@@ -7043,6 +7065,10 @@ implementation
          genericdecltokenbuf:=nil;
          if cs_opt_fastmath in current_settings.optimizerswitches then
            include(implprocoptions, pio_fastmath);
+         icf_addrtaken:=false;
+         icf_hash_valid:=false;
+         icf_hash[0]:=0;
+         icf_hash[1]:=0;
       end;
 
 
@@ -7053,6 +7079,10 @@ implementation
         buf : array[0..255] of byte;
       begin
          inherited ppuload(procdef,ppufile);
+         icf_addrtaken:=false;
+         icf_hash_valid:=false;
+         icf_hash[0]:=0;
+         icf_hash[1]:=0;
 {$ifdef symansistr}
          if po_has_mangledname in procoptions then
            _mangledname:=ppufile.getansistring
@@ -7364,6 +7394,7 @@ implementation
     procedure tprocdef.write_optimizer_summary(ppufile:tcompilerppufile);
       var
         pureflags : byte;
+        icfname : TSymStr;
       begin
         { -OoPURE: persist the final pure/const verdict (computed now, when the
           whole defining unit is analysed) as two ready-made booleans, so a
@@ -7405,6 +7436,25 @@ implementation
               end;
           end;
 
+        { -OoICF: persist the 128-bit canonical body digest of a globally-visible
+          fold survivor, guarded by the same target/ABI/instruction-set signature
+          as the IPARA mask (a hash of an instruction stream produced for a
+          different target/ABI must never fold a routine here). Only emitted for
+          globally referenceable routines that survived intra-unit folding, so a
+          later unit can fold an identical routine into a cross-unit jmp thunk to
+          this survivor. }
+        if icf_hash_valid then
+          begin
+            icfname:=mangledname;
+            ppufile.putbyte(optsum_icf);
+            ppufile.putword(4+2*sizeof(qword)+1+length(icfname));
+            ppufile.putlongint(ipara_target_signature);
+            ppufile.putdata(icf_hash,2*sizeof(qword));
+            { the survivor's global name, captured here where it is resolved (it
+              is not yet computable at load_optimizer_summary time) }
+            ppufile.putstring(icfname);
+          end;
+
         { terminator }
         ppufile.putbyte(optsum_end);
       end;
@@ -7417,11 +7467,13 @@ implementation
         sig : longint;
         skip : array[0..255] of byte;
         left,chunk : longint;
+        icfname : TSymStr;
       begin
         { defaults: no summary loaded -> conservative fallback everywhere }
         pure_ppu_valid:=false;
         pure_ppu_is_pure:=false;
         pure_ppu_is_const:=false;
+        icf_hash_valid:=false;
         repeat
           tag:=ppufile.getbyte;
           if tag=optsum_end then
@@ -7462,6 +7514,35 @@ implementation
                     ppufile.getdata(ipara_clobber_addr,sizeof(tcpuregisterset));
                     ipara_analyzed:=true;
                     ipara_full:=false;
+                  end;
+              end;
+            optsum_icf:
+              begin
+                sig:=ppufile.getlongint;
+                { a digest computed for a different target/ABI/instruction set
+                  cannot be trusted to match code generated here: drop it }
+                if sig<>ipara_target_signature then
+                  begin
+                    left:=longint(len)-4;
+                    while left>0 do
+                      begin
+                        if left>sizeof(skip) then chunk:=sizeof(skip) else chunk:=left;
+                        ppufile.getdata(skip,chunk);
+                        dec(left,chunk);
+                      end;
+                  end
+                else
+                  begin
+                    ppufile.getdata(icf_hash,2*sizeof(qword));
+                    icf_hash_valid:=true;
+                    { the survivor's global name was captured at write time
+                      (mangledname is not yet computable this early in ppuload) }
+                    icfname:=ppufile.getstring;
+                    { register this used-unit routine as a cross-unit fold
+                      survivor (keyed by digest -> its global name) so the ICF
+                      pass of the unit currently being compiled can fold an
+                      identical routine into a jmp thunk to it }
+                    ICFRegisterExternalSurvivor(icf_hash[0],icf_hash[1],icfname);
                   end;
               end;
             else

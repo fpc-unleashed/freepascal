@@ -62,7 +62,8 @@ const
   optsum_end   = 0;  { terminator }
   optsum_pure  = 1;  { -OoPURE pure/const verdict (1 flag byte) }
   optsum_ipara = 2;  { -OoIPARA volatile-register clobber mask }
-  optsum_icf   = 3;  { reserved for -OoICF canonical body hash (not emitted) }
+  optsum_icf   = 3;  { -OoICF 128-bit canonical body digest of a globally-visible
+                       fold survivor (target/ABI signature + 16 hash bytes) }
 
 { unit flags }
   uf_big_endian          = $000004;
