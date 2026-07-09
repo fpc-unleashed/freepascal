@@ -162,6 +162,7 @@ implementation
        optloop,
        optpure,
        optpartialinline,
+       optipara,
        optsra,
        optconstprop,
        optdeadstore,
@@ -2765,6 +2766,16 @@ implementation
              end;
 
             finish_eh;
+
+{$ifdef x86_64}
+            { -OoIPARA: now that the body is register-allocated and all entry/exit
+              code has been emitted, snapshot the routine's real volatile-register
+              clobber set for direct callers generated later in this unit. The
+              register allocators are still alive (done_register_allocators below). }
+            if (cs_opt_ipara in current_settings.optimizerswitches) and
+               not(cs_no_regalloc in current_settings.globalswitches) then
+              RecordProcClobbers(current_procinfo.procdef,current_procinfo.flags);
+{$endif x86_64}
 
             hlcg.record_generated_code_for_procdef(current_procinfo.procdef,aktproccode,aktlocaldata);
 

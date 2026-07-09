@@ -709,7 +709,28 @@ interface
            instructions/labels (no embedded data, cfi or unhandled operand
            kinds) and large enough that a thunk is a net shrink. Opt-in; NOT part
            of the -O4 defaults }
-         cs_opt_icf
+         cs_opt_icf,
+         { interprocedural register allocation (-OoIPARA): the gcc -fipa-ra pass
+           ported to FPC, operating intra-unit. Once a routine's code has been
+           generated its ACTUAL physical volatile-register clobber set (the
+           registers its final, register-allocated body uses -- which already
+           includes, transitively, the reduced clobber set of every routine it
+           itself calls, because each inner call allocates exactly its callee's
+           clobbers) is recorded on the procdef. When later generating a DIRECT
+           call to such an already-generated routine, only those volatile
+           registers the callee provably clobbers are allocated around the call
+           instead of the full ABI caller-saved set, so caller values living in
+           untouched volatile registers survive the call without a spill/reload.
+           Small leaf helpers clobber two or three registers but force full
+           caller-save spills at every call site otherwise. Conservative: falls
+           back to the full ABI mask for indirect/procvar, virtual, method,
+           external, syscall, interrupt and inline-assembler-containing callees,
+           for routines not yet generated in this compilation (forward order),
+           and -- because an exception unwind (longjmp) restores only
+           callee-saved registers -- for any call inside a routine that itself
+           has exception handling. Both integer and XMM/MM clobbers are tracked.
+           x86_64 only. Opt-in; NOT part of the -O4 defaults }
+         cs_opt_ipara
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -789,7 +810,7 @@ interface
          'PREDCOM','SRA','STOREMERGE','CASECLUSTER','CROSSJUMP','BLOCKORDER',
          'SINK','STOREMOTION','VRP','REFELIDE','SWITCHTABLE','REE',
          'SHRINKWRAP','GVNPRE','PURE','PARTIALINLINE','STACKALLOC','SLP',
-         'UNROLLDYN','PREFETCH','ICF'
+         'UNROLLDYN','PREFETCH','ICF','IPARA'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
