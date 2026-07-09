@@ -1,9 +1,10 @@
 { %OPT="-O4 -OoVECTORIZE -Cfsse64 -vn" }
 { Vectorization diagnostic active (-vn) on a mix of loops that do NOT
-  autovectorize (double elements, two-statement body, non-counter index) plus
-  one that does. Each falls back to correct scalar code and emits a
-  cg_n_loop_not_vectorized (06066) note naming the reason; the diagnostic is
-  measure-only, so every loop must still compute the same result as before. }
+  autovectorize (mixed single/double precision, two-statement body, non-counter
+  index) plus ones that do (single and double element-wise). Each falls back to
+  correct code and emits a cg_n_loop_not_vectorized (06066) note naming the
+  reason; the diagnostic is measure-only, so every loop must still compute the
+  same result as before. }
 program vect_diag_reasons_01;
 {$mode objfpc}{$H+}
 procedure work(n: longint);
@@ -21,9 +22,9 @@ begin
   for i:=0 to n-1 do a[i]:=b[i]+c[i];
   for i:=0 to n-1 do begin ds:=b[i]+c[i]; if a[i]<>ds then Halt(1); end;
 
-  { not vectorized: double element type }
-  for i:=0 to n-1 do da[i]:=db[i]+dc[i];
-  for i:=0 to n-1 do begin dd:=db[i]+dc[i]; if da[i]<>dd then Halt(2); end;
+  { not vectorized: mixed single/double precision (single b promoted to double) }
+  for i:=0 to n-1 do da[i]:=b[i]+dc[i];
+  for i:=0 to n-1 do begin dd:=b[i]+dc[i]; if da[i]<>dd then Halt(2); end;
 
   { not vectorized: two statements in the loop body }
   for i:=0 to n-1 do begin a[i]:=b[i]-c[i]; c[i]:=c[i]+1; end;

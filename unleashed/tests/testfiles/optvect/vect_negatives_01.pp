@@ -1,8 +1,9 @@
 { %OPT="-O4 -OoVECTORIZE -Cfsse64" }
-{ Non-matching shapes must compile to correct scalar code (the vectorizer must
-  not fire nor miscompile): shifted read index a[i+1], integer arrays, double
-  arrays, and a downto loop. Each result is checked against an independent
-  recompute. This guards the recognizer's must-not-fire boundary. }
+{ Non-matching shapes must compile to correct code (the vectorizer must not
+  miscompile): shifted read index a[i+1], integer arrays, and a downto loop stay
+  scalar; a plain double-precision array now vectorizes (bit-exact) since the
+  double extension landed. Each result is checked against an independent
+  recompute, guarding both the must-not-fire boundary and double bit-exactness. }
 program vect_negatives_01;
 {$mode objfpc}{$H+}
 procedure work(n: longint);
@@ -19,7 +20,7 @@ begin
   { integer arrays -> not single -> scalar }
   for i:=0 to n-1 do ai[i]:=bi[i]+ci[i];
   for i:=0 to n-1 do if ai[i]<>bi[i]+ci[i] then Halt(2);
-  { double arrays -> out of scope -> scalar }
+  { double arrays -> now vectorized (bit-exact mulpd), result still matches }
   for i:=0 to n-1 do ad[i]:=bd[i]*cd[i];
   for i:=0 to n-1 do if ad[i]<>bd[i]*cd[i] then Halt(3);
   { downto -> not ascending -> scalar }
