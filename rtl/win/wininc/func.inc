@@ -117,6 +117,7 @@ function OpenProcess(dwDesiredAccess:DWORD; bInheritHandle:WINBOOL; dwProcessId:
 function GetCurrentProcess:HANDLE; external 'kernel32' name 'GetCurrentProcess';
 function GetCurrentProcessId:DWORD; external 'kernel32' name 'GetCurrentProcessId';
 procedure ExitProcess(uExitCode:UINT);external 'kernel32' name 'ExitProcess';
+function SwitchToThread():WinBool; external 'kernel32' name 'SwitchToThread';
 function TerminateProcess(hProcess:HANDLE; uExitCode:UINT):WINBOOL; external 'kernel32' name 'TerminateProcess';
 function SetProcessAffinityMask(hProcess: THandle; dwProcessAffinityMask: DWORD_PTR): BOOL; external 'kernel32' name 'SetProcessAffinityMask';
 function GetExitCodeProcess(hProcess:HANDLE; lpExitCode:LPDWORD):WINBOOL; external 'kernel32' name 'GetExitCodeProcess';
@@ -1373,6 +1374,9 @@ function CONSOLE_REAL_OUTPUT_HANDLE : HANDLE;
   function Toolhelp32ReadProcessMemory(th32ProcessID: DWORD; lpBaseAddress: pointer; lpBuffer: pointer; cbRead: SIZE_T; lpNumberOfBytesRead: PSIZE_T): BOOL; stdcall; external KernelDLL;
   function GetFileSizeEx(InFileHandle : THANDLE;OutFileSize  : PLARGE_INTEGER): BOOL; stdcall; external kernelDLL;
   function SetFilePointerEx(InFile : THANDLE; InDistanceToMove : LARGE_INTEGER;OutoptNewFilePointer : PLARGE_INTEGER;InMoveMethod : DWORD): BOOL; stdcall; external KernelDLL;
+
+  // fileapi.h
+  function CreateFile2(lpFileName:LPCWSTR; dwDesiredAccess:DWORD; dwShareMode:DWORD;dwCreationDisposition:DWORD;pCreateExParams:LPCREATEFILE2_EXTENDED_PARAMETERS):HANDLE; external 'kernel32' name 'CreateFile2';
 
 {$endif read_interface}
 

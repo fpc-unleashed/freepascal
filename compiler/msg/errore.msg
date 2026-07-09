@@ -498,7 +498,7 @@ scan_e_improperly_indented_multiline_string=02120_E_Incorrectly indented multi-l
 #
 # Parser
 #
-# 03384 is the last used one
+# 03441 is the last used one
 #
 % \section{Parser messages}
 % This section lists all parser messages. The parser takes care of the
@@ -1721,10 +1721,10 @@ parser_e_type_alread_forward=03373_E_Duplicate forward type declaration: $1
 parser_e_no_suitable_newinstance_method_found=03374_E_No suitable NewInstance method for class instance creation found
 % To create a new instance of a class, a suitable NewInstance (like \var{TObject.NewInstance}) method must be found. The symbol name NewInstance
 % might not be used for other purposes than to create a new instance of a class.
-parser_e_with_duplicate_symbol=03375_E_Duplicate symbol "$1" in WITH list
+parser_e_with_duplicate_symbol=03440_E_Duplicate symbol "$1" in WITH list
 % The same symbol appears more than once in the same \var{with} clause,
 % which is most likely a typo and makes the active scope ambiguous.
-parser_w_with_shadowed_field=03376_W_Field "$1" in WITH entry shadows an earlier field with the same name
+parser_w_with_shadowed_field=03441_W_Field "$1" in WITH entry shadows an earlier field with the same name
 % Two entries in the same \var{with} clause expose a field with the same name.
 % The later entry hides the earlier one, which is most likely unintended.
 %
@@ -1977,6 +1977,9 @@ parser_e_auto_property_init_context=03425_E_Property initializer requires an acc
 % A \var{= value} initializer only applies to a bare property that synthesizes a
 % backing field. It is not allowed with an explicit read/write, on an indexed
 % property, or in a record.
+parser_w_unaligned_useless=03375_W_Unaligned is useless here.
+parser_w_aligned_useless=03376_W_Aligned is useless here.
+% Use of aligned(EXPR) or unaligned(EXPR) only has an effect if EXPR is a dereference.
 %
 % \end{description}
 %
@@ -3612,7 +3615,7 @@ link_f_executable_too_big_exceeds_X_by_Y_bytes=09224_F_Executable image size is 
 #
 # Unit loading
 #
-# 10070 is the last used one
+# 10072 is the last used one
 #
 # BeginOfTeX
 % \section{Unit loading messages.}
@@ -3638,8 +3641,11 @@ unit_u_ppu_file_too_short=10006_U_PPU File too short
 % The ppufile is too short, not all declarations are present.
 unit_u_ppu_invalid_header=10007_U_PPU Invalid Header (no PPU at the begin)
 % A unit file contains as the first three bytes the ASCII codes of the characters \var{PPU}.
-unit_u_ppu_invalid_version=10008_U_PPU Invalid Version $1
+unit_u_ppu_invalid_version=10008_U_PPU Invalid Version $1 expecting $2
 % This unit file was compiled with a different version of the compiler, and
+% cannot be read.
+unit_u_ppu_invalid_long_version=10072_U_PPU Invalid Long Version $1 expecting $2
+% This unit file was compiled with a different long version of the compiler, and
 % cannot be read.
 unit_u_ppu_invalid_processor=10009_U_PPU is compiled for another processor $1
 % This unit file was compiled for a different processor type, and

@@ -236,6 +236,11 @@ type
      ,
      {$i ppcgen/ccpuinnr.inc}
 {$endif}
+
+{$if defined(MIPS)}    
+     ,
+     {$i mips/ccpuinnr.inc}
+{$endif}
    );
 
 implementation

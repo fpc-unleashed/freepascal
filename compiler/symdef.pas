@@ -769,7 +769,7 @@ interface
           has_paraloc_info : tcallercallee; { paraloc info is available }
           { number of user visible parameters }
           maxparacount,
-          minparacount    : byte;
+          minparacount    : word;
           constructor create(dt:tdeftyp;level:byte;doregister:boolean);
           constructor ppuload(dt:tdeftyp;ppufile:tcompilerppufile);
           destructor destroy;override;
@@ -998,7 +998,7 @@ interface
           procedure setmangledname(const s : TSymStr);
           function  needsglobalasmsym: boolean;
           procedure setcompilerprocname;
-          function  fullprocname(showhidden:boolean):string;
+          function  fullprocname(showhidden:boolean):ansistring;
           function  customprocname(pno: tprocnameoptions):ansistring;
           function  defaultmangledname: TSymStr;
           function  cplusplusmangledname : TSymStr;
@@ -7267,7 +7267,7 @@ implementation
       end;
 
 
-    function tprocdef.fullprocname(showhidden:boolean):string;
+    function tprocdef.fullprocname(showhidden:boolean):ansistring;
       var
         pno: tprocnameoptions;
       begin
@@ -8979,12 +8979,38 @@ implementation
                             result:=result+'_OBJC_METACLASS_'
                           else
                             internalerror(2009111511);
+                        objcprotocollist:
+                          if not(oo_is_classhelper in objectoptions) then
+                            result:=result+'_OBJC_CLASS_PROTOCOLS_'
+                          else
+                            result:=result+'_OBJC_CATEGORY_PROTOCOLS_';
+                        objcinstancemethods:
+                          result:=result+'_OBJC_INSTANCE_METHODS_';
+                        objcclassmethods:
+                          result:=result+'_OBJC_CLASS_METHODS_';
                         else
                          internalerror(2009092302);
                       end;
                     end;
                   odt_objcprotocol:
-                    result:=result+'_OBJC_PROTOCOL_';
+                    begin
+                      case rt of
+                        objcclassrtti:
+                          result:=result+'_OBJC_PROTOCOL_';
+                        objcprotocollist:
+                          result:=result+'_OBJC_PROTOCOL_REFS_';
+                        objcinstancemethods:
+                          result:=result+'_OBJC_PROTOCOL_INSTANCE_METHODS_';
+                        objcclassmethods:
+                          result:=result+'_OBJC_PROTOCOL_CLASS_METHODS_';
+                        objcprotinstancemethodsopt:
+                          result:=result+'_OBJC_PROTOCOL_INSTANCE_METHODS_OPT_';
+                        objcprotclassmethodsopt:
+                          result:=result+'_OBJC_PROTOCOL_CLASS_METHODS_OPT_';
+                        else
+                         internalerror(2026062801);
+                      end
+                    end
                   else
                    ;
                 end;
@@ -8995,7 +9021,7 @@ implementation
                   odt_objcclass:
                     begin
                       if (oo_is_classhelper in objectoptions) and
-                         (rt<>objcclassrtti) then
+                         not(rt in [objcclassrtti,objcprotocollist]) then
                         internalerror(2009111512);
                       case rt of
                         objcclassrtti:
@@ -9006,9 +9032,18 @@ implementation
                         objcmetartti:
                           result:='_OBJC_METACLASS_$_';
                         objcclassrortti:
-                          result:=lower(target_asm.labelprefix)+'_OBJC_CLASS_RO_$_';
+                          result:='__OBJC_CLASS_RO_$_';
                         objcmetarortti:
-                          result:=lower(target_asm.labelprefix)+'_OBJC_METACLASS_RO_$_';
+                          result:='__OBJC_METACLASS_RO_$_';
+                        objcprotocollist:
+                          if not(oo_is_classhelper in objectoptions) then
+                            result:='__OBJC_CLASS_PROTOCOLS_$_'
+                          else
+                            result:='__OBJC_CATEGORY_PROTOCOLS_$_';
+                        objcinstancemethods:
+                          result:='__OBJC_$_INSTANCE_METHODS_';
+                        objcclassmethods:
+                          result:='__OBJC_$_CLASS_METHODS_';
                         else
                          internalerror(2009092303);
                       end;
@@ -9021,6 +9056,18 @@ implementation
                           result:=result+'_OBJC_PROTOCOL_$_';
                         objcmetartti:
                           result:=result+'_OBJC_LABEL_PROTOCOL_$_';
+                        objcprotocollist:
+                          result:='__OBJC_$_PROTOCOL_REFS_';
+                        objcprotocolmethodstypelist:
+                          result:='__OBJC_$_PROTOCOL_METHOD_TYPES_';
+                        objcinstancemethods:
+                          result:='__OBJC_$_PROTOCOL_INSTANCE_METHODS_';
+                        objcclassmethods:
+                          result:='__OBJC_$_PROTOCOL_CLASS_METHODS_';
+                        objcprotinstancemethodsopt:
+                          result:='__OBJC_$_PROTOCOL_INSTANCE_METHODS_OPT_';
+                        objcprotclassmethodsopt:
+                          result:='__OBJC_$_PROTOCOL_CLASS_METHODS_OPT_';
                         else
                           internalerror(2009092501);
                       end;

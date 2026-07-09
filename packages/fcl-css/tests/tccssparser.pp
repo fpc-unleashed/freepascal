@@ -134,6 +134,14 @@ type
     Procedure TestNestedAndPlusRule;
     Procedure TestNestedRule_AppendedAndOperator;
     Procedure TestNestedRule_NestedDeclarations;
+    Procedure TestDeclarationSourcePosition;
+    Procedure TestDeclarationValueSourcePosition;
+    Procedure TestDeclarationValueSourceStreamPos;
+    Procedure TestDeclarationValueClassSourcePosition;
+    Procedure TestDeclarationValueStartLocation;
+    Procedure TestDeclarationValueEndLocation;
+    Procedure TestDeclarationValueEndLocationExact;
+    Procedure TestDeclarationParenthesisValue;
   end;
 
   { TTestCSSFilesParser }
@@ -1249,6 +1257,214 @@ begin
   AssertEquals('Declaration value count',1,aDecl.ChildCount);
   aIdent:=TCSSIdentifierElement(CheckClass('Declaration value',TCSSIdentifierElement,aDecl.Children[0]));
   AssertEquals('Declaration value','blue',aIdent.Value);
+end;
+
+procedure TTestCSSParser.TestDeclarationSourcePosition;
+var
+  R : TCSSRuleElement;
+  D : TCSSDeclarationElement;
+begin
+  // The declaration source position must point to the start of the attribute name.
+  R:=ParseRule('a {'+LineEnding
+              +'  padding-top: 3px;'+LineEnding
+              +'}');
+  D:=CheckDeclaration(R,0,'padding-top');
+  AssertEquals('Declaration source row',2,D.SourceRow);
+  AssertEquals('Declaration source col',2,D.SourceCol);
+end;
+
+procedure TTestCSSParser.TestDeclarationValueSourcePosition;
+var
+  R : TCSSRuleElement;
+  D : TCSSDeclarationElement;
+  V : TCSSElement;
+begin
+  // The declaration value source position must point to the start of the value.
+  R:=ParseRule('a {'+LineEnding
+              +'  padding-top: 3px;'+LineEnding
+              +'}');
+  D:=CheckDeclaration(R,0,'padding-top');
+  AssertEquals('Value count',1,D.ChildCount);
+  V:=D.Children[0];
+  AssertNotNull('Value not nil',V);
+  AssertEquals('Value source row',2,V.SourceRow);
+  AssertEquals('Value source col',15,V.SourceCol);
+end;
+
+procedure TTestCSSParser.TestDeclarationValueSourceStreamPos;
+var
+  R : TCSSRuleElement;
+  D : TCSSDeclarationElement;
+  V : TCSSElement;
+  LineStart : Integer;
+begin
+  // SourcePos is the 0-based stream position of the start of the element.
+  // On a single line it equals the (0-based) column.
+  R:=ParseRule('a{p:b}');
+  D:=CheckDeclaration(R,0,'p');
+  AssertEquals('Declaration source pos',2,D.SourcePos); // 'p' is at offset 2
+  AssertEquals('Value count',1,D.ChildCount);
+  V:=D.Children[0];
+  AssertEquals('Value source pos',4,V.SourcePos); // 'b' is at offset 4
+
+  // On later lines it accounts for the preceding lines and their line endings.
+  R:=ParseRule('a {'+LineEnding
+              +'  padding-top: 3px;'+LineEnding
+              +'}');
+  LineStart:=Length('a {')+Length(LineEnding); // offset of the start of line 2
+  D:=CheckDeclaration(R,0,'padding-top');
+  AssertEquals('Declaration source pos',LineStart+2,D.SourcePos);
+  AssertEquals('Value count',1,D.ChildCount);
+  V:=D.Children[0];
+  AssertEquals('Value source pos',LineStart+15,V.SourcePos);
+
+  // A unary value points at the operator.
+  R:=ParseRule('a{p:>b}');
+  D:=CheckDeclaration(R,0,'p');
+  AssertEquals('Unary value count',1,D.ChildCount);
+  V:=D.Children[0];
+  CheckClass('Unary value class',TCSSUnaryElement,V);
+  AssertEquals('Unary value source pos',4,V.SourcePos); // '>' is at offset 4
+end;
+
+procedure TTestCSSParser.TestDeclarationValueClassSourcePosition;
+
+  // Parse 'a{p:<aValue>}' and check that the value element is of the expected
+  // class and its source position points to the start of the value (column 4).
+  procedure CheckValuePos(const aValue: String; aExpectedClass: TCSSElementClass);
+  var
+    R : TCSSRuleElement;
+    D : TCSSDeclarationElement;
+    V : TCSSElement;
+  begin
+    R:=ParseRule('a{p:'+aValue+'}');
+    D:=CheckDeclaration(R,0,'p');
+    AssertEquals('Value count for '+aValue,1,D.ChildCount);
+    V:=D.Children[0];
+    CheckClass('Value class for '+aValue,aExpectedClass,V);
+    AssertEquals('Value source row for '+aValue,1,V.SourceRow);
+    AssertEquals('Value source col for '+aValue,4,V.SourceCol);
+  end;
+
+begin
+  CheckValuePos('b',TCSSIdentifierElement);
+  CheckValuePos('3px',TCSSIntegerElement);
+  CheckValuePos('-.5em',TCSSFloatElement);
+  CheckValuePos('"b"',TCSSStringElement);
+  CheckValuePos('#ABABAB',TCSSHashValueElement);
+  CheckValuePos('url("b.c")',TCSSURLElement);
+  CheckValuePos('U+0400',TCSSUnicodeRangeElement);
+end;
+
+procedure TTestCSSParser.TestDeclarationValueStartLocation;
+
+  // Parse 'a{p:<aValue>}' and check that GetValueStartLocation returns the start
+  // of the value (row 1, column aExpectedCol). The value starts at column 4.
+  procedure CheckStart(const aValue: String; aExpectedClass: TCSSElementClass; aExpectedCol: Integer);
+  var
+    R : TCSSRuleElement;
+    D : TCSSDeclarationElement;
+    aRow, aCol : Integer;
+  begin
+    R:=ParseRule('a{p:'+aValue+'}');
+    D:=CheckDeclaration(R,0,'p');
+    AssertEquals('Value count for '+aValue,1,D.ChildCount);
+    CheckClass('Value class for '+aValue,aExpectedClass,D.Children[0]);
+    D.GetValueStartLocation(aRow,aCol);
+    AssertEquals('Value start row for '+aValue,1,aRow);
+    AssertEquals('Value start col for '+aValue,aExpectedCol,aCol);
+  end;
+
+begin
+  CheckStart('b',TCSSIdentifierElement,4);        // simple identifier
+  CheckStart('calc(1px)',TCSSCallElement,4);      // function call
+  CheckStart('(1 + 2)',TCSSParenthesisElement,4); // parenthesized value: the opening bracket
+  CheckStart('>b',TCSSUnaryElement,4);            // unary: the prefix operator
+end;
+
+procedure TTestCSSParser.TestDeclarationValueEndLocation;
+
+  // Parse 'a{p:<aValue>}' and check that GetValueEndLocation returns the position
+  // right after the last character of the value.
+  procedure CheckEnd(const aValue: String; aExpectedClass: TCSSElementClass; aExpectedCol: Integer);
+  var
+    R : TCSSRuleElement;
+    D : TCSSDeclarationElement;
+    aRow, aCol : Integer;
+  begin
+    R:=ParseRule('a{p:'+aValue+'}');
+    D:=CheckDeclaration(R,0,'p');
+    AssertEquals('Value count for '+aValue,1,D.ChildCount);
+    CheckClass('Value class for '+aValue,aExpectedClass,D.Children[0]);
+    // The parser stored the exact end location in the EndRow/EndCol properties.
+    AssertEquals('EndRow for '+aValue,1,D.EndRow);
+    AssertEquals('EndCol for '+aValue,aExpectedCol,D.EndCol);
+    // GetValueEndLocation returns the stored position.
+    D.GetValueEndLocation(aRow,aCol);
+    AssertEquals('Value end row for '+aValue,1,aRow);
+    AssertEquals('Value end col for '+aValue,aExpectedCol,aCol);
+  end;
+
+begin
+  // The value starts at column 4; the end column is 4 + length of the value text.
+  CheckEnd('b',TCSSIdentifierElement,5);            // 'b'
+  CheckEnd('3px',TCSSIntegerElement,7);             // '3px'
+  CheckEnd('calc(1px)',TCSSCallElement,13);         // 'calc(1px)'
+  CheckEnd('(1 + 2)',TCSSParenthesisElement,11);    // '(1 + 2)'
+  CheckEnd('>b',TCSSUnaryElement,6);                // '>b'
+end;
+
+procedure TTestCSSParser.TestDeclarationValueEndLocationExact;
+var
+  R : TCSSRuleElement;
+  D : TCSSDeclarationElement;
+begin
+  // Leading/trailing whitespace: the end excludes the trailing space.
+  //             0123456789
+  R:=ParseRule('a{p:  3px }');
+  D:=CheckDeclaration(R,0,'p');
+  AssertEquals('spaced EndRow',1,D.EndRow);
+  AssertEquals('spaced EndCol',9,D.EndCol); // after 'x' at col 8
+
+  // Non-canonical spacing inside parentheses: the end is the actual ')' position.
+  //             0123456789012
+  R:=ParseRule('a{p:( 1 + 2 )}');
+  D:=CheckDeclaration(R,0,'p');
+  AssertEquals('spaced paren EndRow',1,D.EndRow);
+  AssertEquals('spaced paren EndCol',13,D.EndCol); // after ')' at col 12
+
+  // !important is not part of the value.
+  //             0123456789
+  R:=ParseRule('a{p:3px !important}');
+  D:=CheckDeclaration(R,0,'p');
+  AssertTrue('important flag',D.IsImportant);
+  AssertEquals('important EndRow',1,D.EndRow);
+  AssertEquals('important EndCol',7,D.EndCol); // after 'x' at col 6, excludes !important
+end;
+
+procedure TTestCSSParser.TestDeclarationParenthesisValue;
+var
+  R : TCSSRuleElement;
+  D : TCSSDeclarationElement;
+  aParen : TCSSParenthesisElement;
+  aBin : TCSSBinaryElement;
+begin
+  R:=ParseRule('a{p:(1 + 2)}');
+  D:=CheckDeclaration(R,0,'p');
+  AssertEquals('Value count',1,D.ChildCount);
+  aParen:=TCSSParenthesisElement(CheckClass('Value',TCSSParenthesisElement,D.Children[0]));
+  // The parenthesis node points at the opening bracket ...
+  AssertEquals('Parenthesis source row',1,aParen.SourceRow);
+  AssertEquals('Parenthesis source col',4,aParen.SourceCol);
+  // ... and wraps the inner expression, which keeps its own position (the operator).
+  AssertEquals('Parenthesis child count',1,aParen.ChildCount);
+  aBin:=TCSSBinaryElement(CheckClass('Inner value',TCSSBinaryElement,aParen.Children[0]));
+  AssertEquals('Inner binary operation',boPlus,aBin.Operation);
+  AssertEquals('Inner binary source col',7,aBin.SourceCol);
+  CheckLiteral('Inner binary left',aBin.Left,1);
+  CheckLiteral('Inner binary right',aBin.Right,2);
+  // The parentheses round-trip through AsString.
+  AssertEquals('AsString','(1 + 2)',aParen.AsString);
 end;
 
 

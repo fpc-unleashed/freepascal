@@ -132,7 +132,7 @@ implementation
     procedure insertobjectfile(curr : tmodule);
     { Insert the used object file for this unit in the used list for this unit }
       begin
-        curr.linkunitofiles.add(curr.objfilename,link_static);
+        curr.linkunitofiles.add(ExtractFileName(curr.objfilename),link_static);
         curr.headerflags:=curr.headerflags or uf_static_linked;
 
         if create_smartlink_library then
@@ -160,7 +160,7 @@ implementation
         if not(target_info.system in systems_darwin) and
            (
             (tf_needs_dwarf_cfi in target_info.flags) or
-            (target_dbg.id in [dbg_dwarf2, dbg_dwarf3])
+            (target_dbg.id in [dbg_dwarf2, dbg_dwarf3, dbg_dwarf4, dbg_dwarf5])
            ) then
           begin
             current_asmdata.asmlists[al_dwarf_frame].Free;

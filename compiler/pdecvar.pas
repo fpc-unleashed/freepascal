@@ -397,6 +397,7 @@ implementation
          sc : TFPObjectList;
          paranr : word;
          i      : longint;
+	 s : single;
          ImplIntf     : TImplementedInterface;
          found,
          gotreadorwrite: boolean;
@@ -848,9 +849,24 @@ implementation
                   { Set default value }
                   case pt.nodetype of
                     setconstn :
-                      p.default:=plongint(tsetconstnode(pt).value_set)^;
+                      begin
+                        if (source_info.endian=target_info.endian) then
+                          p.default:=plongint(tsetconstnode(pt).value_set)^
+                        else
+                          p.default:=longint(reverse_longword(plongword(tsetconstnode(pt).value_set)^));
+                        include(p.propoptions,ppo_default_is_set);
+                      end;
                     ordconstn :
-                      if (Tordconstnode(pt).value<int64(low(longint))) or
+                      if is_real(p.propdef) then
+                        begin
+                          if TOrdconstnode(pt).value.is_negative then
+                            s:=TOrdconstnode(pt).value.svalue
+                          else
+                            s:=TOrdconstnode(pt).value.uvalue;
+                          p.default:=plongint(@s)^;
+                          include(p.propoptions,ppo_default_is_single);
+                        end
+                      else if (Tordconstnode(pt).value<int64(low(longint))) or
                          (Tordconstnode(pt).value>int64(high(cardinal))) then
                         message3(type_e_range_check_error_bounds,tostr(Tordconstnode(pt).value),tostr(low(longint)),tostr(high(cardinal)))
                       else
@@ -858,7 +874,11 @@ implementation
                     niln :
                       p.default:=0;
                     realconstn:
-                      p.default:=longint(single(trealconstnode(pt).value_real));
+                      begin
+                        s:=single(trealconstnode(pt).value_real);
+                        p.default:=plongint(@s)^;
+                        include(p.propoptions,ppo_default_is_single);
+                      end;
                     else if not codegenerror then
                       internalerror(2019050525);
                   end;
@@ -1476,20 +1496,20 @@ implementation
                       abssym.fileinfo:=vs.fileinfo;
                       abssym.abstyp:=tovar;
                       abssym.ref:=node_to_propaccesslist(pt);
+                      { if the sizes are different, can't be a regvar since you }
+                      { can't be "absolute upper 8 bits of a register" (except  }
+                      { if its a record field of the same size of a record      }
+                      { regvar, but in that case pt.resultdef.size will have    }
+                      { the same size since it refers to the field and not to   }
+                      { the whole record -- which is why we use pt and not hp)  }
+
+                      { we can't take the size of an open array or an array of const }
+                      if is_open_array(pt.resultdef) or
+                         is_array_of_const(pt.resultdef) or
+                         (vs.vardef.size <> pt.resultdef.size) then
+                        make_not_regable(pt,[ra_addr_regable]);
+                      tabsolutevarsym(abssym).adjust_varregable;
                     end;
-
-                  { if the sizes are different, can't be a regvar since you }
-                  { can't be "absolute upper 8 bits of a register" (except  }
-                  { if its a record field of the same size of a record      }
-                  { regvar, but in that case pt.resultdef.size will have    }
-                  { the same size since it refers to the field and not to   }
-                  { the whole record -- which is why we use pt and not hp)  }
-
-                  { we can't take the size of an open array or an array of const }
-                  if is_open_array(pt.resultdef) or
-                     is_array_of_const(pt.resultdef) or
-                     (vs.vardef.size <> pt.resultdef.size) then
-                    make_not_regable(pt,[ra_addr_regable]);
                 end
               else
                 Message(parser_e_absolute_only_to_var_or_const);
