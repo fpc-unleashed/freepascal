@@ -138,6 +138,7 @@ implementation
       cgobj,tgobj,hlcgobj,
       procinfo,
       aasmtai,
+      optipara,
       wpobase;
 
 
@@ -1003,6 +1004,12 @@ implementation
         regs_to_save_address,
         regs_to_save_fpu,
         regs_to_save_mm   : Tcpuregisterset;
+{$ifdef x86_64}
+        ipara_clobber_int,
+        ipara_clobber_address,
+        ipara_clobber_fpu,
+        ipara_clobber_mm  : Tcpuregisterset;
+{$endif x86_64}
         href : treference;
         pop_size : longint;
         pvreg : tregister;
@@ -1030,6 +1037,44 @@ implementation
          regs_to_save_address:=paramanager.get_volatile_registers_address(procdefinition.proccalloption);
          regs_to_save_fpu:=paramanager.get_volatile_registers_fpu(procdefinition.proccalloption);
          regs_to_save_mm:=paramanager.get_volatile_registers_mm(procdefinition.proccalloption);
+
+{$ifdef x86_64}
+         { -OoIPARA interprocedural register allocation: for a DIRECT call to an
+           ordinary routine already generated in this unit with a proven physical
+           clobber set, narrow the volatile registers allocated around the call
+           to the ones the callee actually clobbers, so caller values living in
+           untouched volatile registers survive the call without a spill/reload.
+           Every fallback condition below keeps us on the full ABI mask:
+             - only plain direct calls (right=nil, no procvar/indirect target)
+             - no method dispatch (methodpointer) and not a virtual/external/
+               interrupt/assembler routine or a syscall
+             - the callee must have a recorded, reduced (non-full) summary; a
+               routine not yet generated (forward order) has none => full mask
+             - the CALLER must have no exception handling: an exception unwind
+               (longjmp) restores only callee-saved registers, so a caller value
+               kept in a volatile register across a call that raises and is
+               caught here would be lost. Disable the reduction whenever the
+               current routine uses exceptions or has an implicit finally. }
+         if (cs_opt_ipara in current_settings.optimizerswitches) and
+            (right=nil) and
+            assigned(procdefinition) and (procdefinition is tprocdef) and
+            not assigned(methodpointer) and
+            ((procdefinition.procoptions*[po_virtualmethod,po_abstractmethod,
+              po_external,po_weakexternal,po_interrupt,po_assembler])=[]) and
+            (procdefinition.proccalloption<>pocall_syscall) and
+            assigned(current_procinfo) and
+            not(pi_uses_exceptions in current_procinfo.flags) and
+            not(pi_needs_implicit_finally in current_procinfo.flags) and
+            GetProcClobbers(tprocdef(procdefinition),
+              ipara_clobber_int,ipara_clobber_mm,
+              ipara_clobber_fpu,ipara_clobber_address) then
+           begin
+             regs_to_save_int:=regs_to_save_int*ipara_clobber_int;
+             regs_to_save_address:=regs_to_save_address*ipara_clobber_address;
+             regs_to_save_fpu:=regs_to_save_fpu*ipara_clobber_fpu;
+             regs_to_save_mm:=regs_to_save_mm*ipara_clobber_mm;
+           end;
+{$endif x86_64}
 
          { Include Function result registers }
          if (not is_void(resultdef)) then

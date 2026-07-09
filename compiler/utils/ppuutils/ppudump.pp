@@ -2604,7 +2604,8 @@ const
          'cs_opt_slp',
          'cs_opt_unrolldyn',
          'cs_opt_prefetch',
-         'cs_opt_icf'
+         'cs_opt_icf',
+         'cs_opt_ipara'
        );
     var
          globalswitch  : tglobalswitch;

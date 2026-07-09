@@ -36,7 +36,7 @@ interface
        { aasm }
        aasmtai,
        cpuinfo,
-       cgbase,
+       cgbase,cgutils,
        parabase
        ;
 
@@ -996,6 +996,25 @@ interface
           pure_callees : array of tprocdef;
           pure_qtoken : cardinal;
           pure_qresult : byte;
+          { interprocedural register allocation (-OoIPARA). Transient like the
+            pure/const summary above: recorded when this routine's code is
+            generated in the current unit, never saved to / loaded from the ppu,
+            so on load they default to "not analyzed" => a caller falls back to
+            the full ABI caller-saved mask.
+              ipara_analyzed  : the clobber summary below has been filled in
+              ipara_full      : fall back to the full ABI mask (the routine is
+                                assembler / contains an inline-asm block / uses
+                                exceptions / is external -- its real machine-level
+                                clobbers cannot be modelled precisely)
+              ipara_clobber_* : the volatile physical registers the routine's
+                                final register-allocated body actually uses (and
+                                therefore may clobber), per register bank }
+          ipara_analyzed : boolean;
+          ipara_full : boolean;
+          ipara_clobber_int : tcpuregisterset;
+          ipara_clobber_mm : tcpuregisterset;
+          ipara_clobber_fpu : tcpuregisterset;
+          ipara_clobber_addr : tcpuregisterset;
           constructor create(level:byte;doregister:boolean);virtual;
           constructor ppuload(ppufile:tcompilerppufile);
           destructor  destroy;override;
