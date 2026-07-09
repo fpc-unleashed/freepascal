@@ -3116,7 +3116,7 @@ unit optloop;
         hascheck : boolean;
         block, vecbody, scalbody : tnode;
         stat, vstat, sstat : tstatementnode;
-        lotemp, hitemp, splattemp, acctemp : ttempcreatenode;
+        lotemp, hitemp, splattemp, acctemp, seedtemp : ttempcreatenode;
         { reduction (single-precision sum / dot product) recognizer outputs }
         accsym : tabstractvarsym;
         redlhs, redla, redra, redexpr, redprod : tnode;
@@ -3567,10 +3567,25 @@ unit optloop;
               elewidth*eletype.size,tt_persistent,false);
             addstatement(stat,acctemp);
 
-            { acc := [s,0,..]   (lane 0 keeps the incoming scalar value of s) }
+            { acc := [s,0,..]   (lane 0 keeps the incoming scalar value of s).
+              The incoming s is first copied into a memory-backed scalar temp
+              with a PLAIN assignment, and the packed init then seeds from that
+              temp instead of reading s directly.  A backend node's operand reads
+              are not reliably modelled by DFA (the same reason the horizontal-sum
+              store below targets a temp and writes s with a plain assignment):
+              embedding cloadnode(s) directly inside the reduce_init backend node
+              leaves the incoming def of s (e.g. the user's  s:=<start>  before the
+              loop) looking dead to dead-store elimination, which then wrongly
+              removes it and seeds lane 0 from a stale slot.  Reading s through a
+              plain  seedtemp:=s  assignment keeps that def live. }
+            seedtemp:=ctempcreatenode.create(eletype,eletype.size,tt_persistent,false);
+            addstatement(stat,seedtemp);
+            addstatement(stat,cassignmentnode.create(
+              ctemprefnode.create(seedtemp),
+              cloadnode.create(tsym(accsym),accsym.owner)));
             addstatement(stat,cvectoropnode.create_reduce_init(
               ctemprefnode.create(acctemp),
-              cloadnode.create(tsym(accsym),accsym.owner),vecdouble));
+              ctemprefnode.create(seedtemp),vecdouble));
 
             { vector loop:  while i<=hi-(VL-1) do begin acc:=acc+window; i:=i+VL end }
             vecbody:=internalstatements(vstat);
@@ -3622,6 +3637,7 @@ unit optloop;
             addstatement(stat,ctempdeletenode.create(lotemp));
             addstatement(stat,ctempdeletenode.create(hitemp));
             addstatement(stat,ctempdeletenode.create(acctemp));
+            addstatement(stat,ctempdeletenode.create(seedtemp));
             addstatement(stat,ctempdeletenode.create(splattemp));
 
             do_firstpass(block);
