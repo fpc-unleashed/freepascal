@@ -44,7 +44,11 @@ function ptrinc(base: PLongint; n: longint): PtrInt;    { pointer stride -> dele
 function multiacc(n: longint): longint;                 { two accumulators -> deleted }
 function dupacc(n: longint): longint;                   { same acc twice -> kept }
 function ptrassign(base: PLongint; n: longint): PtrInt; { p:=p+stride form -> kept }
+function cnt64(a,b: int64): int64;                      { 64-bit counter -> deleted }
+function natacc(n: longint): int64;                     { native int64 acc -> deleted; kept OFF; deleted under -Cr }
+function gacc(n: longint): int64;                       { global int64 acc -> deleted; deleted under -Cr }
 implementation
+var gv: int64;
 function accum(n: longint): longint;
 var i,s: longint;
 begin s:=10; for i:=1 to n do inc(s,3); accum:=s; end;
@@ -66,6 +70,15 @@ begin s:=0; for i:=1 to n do begin inc(s,3); inc(s,5); end; dupacc:=s; end;
 function ptrassign(base: PLongint; n: longint): PtrInt;
 var i: longint; p: PLongint;
 begin p:=base; for i:=1 to n do p:=p+2; ptrassign:=PtrInt(p)-PtrInt(base); end;
+function cnt64(a,b: int64): int64;
+var i,s: int64;
+begin s:=0; for i:=a to b do inc(s,3); cnt64:=s; end;
+function natacc(n: longint): int64;
+var i: longint; s: int64;
+begin s:=0; for i:=1 to n do inc(s,3); natacc:=s; end;
+function gacc(n: longint): int64;
+var i: longint;
+begin gv:=0; for i:=1 to n do inc(gv,3); gacc:=gv; end;
 end.
 EOF
 
@@ -98,12 +111,12 @@ asm_for() {  # $1=flags $2=tag ; sets globals via echo "acc empty brk"
   mkdir -p "$d"; cp "$tmp/k.pp" "$d/"
   ( cd "$d" && "$CC" -Fu"$RTL" $1 -al -s k.pp >/dev/null 2>&1 )
   local f="$d/k.s"
-  # accum empty break  ptrinc multiacc  dupacc ptrassign
-  echo "$(branches_in "$f" 'ACCUM') $(branches_in "$f" 'EMPTYLOOP') $(branches_in "$f" 'WITHBREAK') $(branches_in "$f" 'PTRINC') $(branches_in "$f" 'MULTIACC') $(branches_in "$f" 'DUPACC') $(branches_in "$f" 'PTRASSIGN')"
+  # accum empty break  ptrinc multiacc  dupacc ptrassign cnt64 natacc gacc
+  echo "$(branches_in "$f" 'ACCUM') $(branches_in "$f" 'EMPTYLOOP') $(branches_in "$f" 'WITHBREAK') $(branches_in "$f" 'PTRINC') $(branches_in "$f" 'MULTIACC') $(branches_in "$f" 'DUPACC') $(branches_in "$f" 'PTRASSIGN') $(branches_in "$f" 'CNT64') $(branches_in "$f" 'NATACC') $(branches_in "$f" 'GACC')"
 }
 
-read on_acc  on_empty  on_brk  on_pinc  on_multi  on_dup  on_passign  < <(asm_for "-O2 -OoFINALVALUE" on)
-read off_acc off_empty off_brk off_pinc off_multi off_dup off_passign < <(asm_for "-O2"              off)
+read on_acc  on_empty  on_brk  on_pinc  on_multi  on_dup  on_passign  on_c64  on_nat  on_g  < <(asm_for "-O2 -OoFINALVALUE" on)
+read off_acc off_empty off_brk off_pinc off_multi off_dup off_passign off_c64 off_nat off_g < <(asm_for "-O2"              off)
 
 echo "ON  : accum=$on_acc empty=$on_empty break=$on_brk ptrinc=$on_pinc multiacc=$on_multi dupacc=$on_dup ptrassign=$on_passign"
 echo "OFF : accum=$off_acc empty=$off_empty break=$off_brk ptrinc=$off_pinc multiacc=$off_multi dupacc=$off_dup ptrassign=$off_passign"
@@ -125,6 +138,37 @@ echo "OFF : accum=$off_acc empty=$off_empty break=$off_brk ptrinc=$off_pinc mult
 [ "$on_dup"     -eq "$off_dup" ]     || fail "duplicate-accumulator loop altered under -OoFINALVALUE (on=$on_dup off=$off_dup)"
 [ "$on_passign" -ge 1 ] || fail "pointer-assign loop lost its back-edge (should be kept)"
 [ "$on_passign" -eq "$off_passign" ] || fail "pointer-assign loop altered under -OoFINALVALUE (on=$on_passign off=$off_passign)"
+# 64-bit counter, native int64 accumulator, and global accumulator -> all deleted ON, present OFF.
+echo "ON  : cnt64=$on_c64 natacc=$on_nat gacc=$on_g   OFF: cnt64=$off_c64 natacc=$off_nat gacc=$off_g"
+[ "$on_c64"  -eq 0 ] || fail "64-bit counter loop not deleted under -OoFINALVALUE (back-edges=$on_c64)"
+[ "$on_nat"  -eq 0 ] || fail "native int64 accumulator loop not deleted under -OoFINALVALUE (back-edges=$on_nat)"
+[ "$on_g"    -eq 0 ] || fail "global accumulator loop not deleted under -OoFINALVALUE (back-edges=$on_g)"
+[ "$off_c64" -ge 1 ] || fail "64-bit counter loop unexpectedly absent with switch OFF"
+[ "$off_nat" -ge 1 ] || fail "native int64 accumulator loop unexpectedly absent with switch OFF"
+[ "$off_g"   -ge 1 ] || fail "global accumulator loop unexpectedly absent with switch OFF"
+
+# ---------------------------------------------------------------------------
+# Part A2: overflow/range-check regimes.
+#   -Cr (range, no -Co): enabled only for native full-range integer accumulators
+#     (natacc, gacc, cnt64 -> deleted) while a sub-native accumulator (accum,
+#     longint) is range-checked on its narrowing store -> KEPT.
+#   -Co (overflow): fully disabled -> every loop KEPT (matches OFF).
+# ---------------------------------------------------------------------------
+read cr_acc cr_empty cr_brk cr_pinc cr_multi cr_dup cr_passign cr_c64 cr_nat cr_g < <(asm_for "-O2 -Cr -OoFINALVALUE" cr)
+read co_acc co_empty co_brk co_pinc co_multi co_dup co_passign co_c64 co_nat co_g < <(asm_for "-O2 -Co -OoFINALVALUE" co)
+echo "-Cr : accum=$cr_acc natacc=$cr_nat gacc=$cr_g cnt64=$cr_c64 empty=$cr_empty"
+echo "-Co : accum=$co_acc natacc=$co_nat gacc=$co_g cnt64=$co_c64 empty=$co_empty"
+# -Cr: native accumulators deleted, sub-native kept.
+[ "$cr_nat" -eq 0 ] || fail "native int64 accumulator not deleted under -Cr (back-edges=$cr_nat)"
+[ "$cr_g"   -eq 0 ] || fail "global int64 accumulator not deleted under -Cr (back-edges=$cr_g)"
+[ "$cr_c64" -eq 0 ] || fail "64-bit-counter native accumulator not deleted under -Cr (back-edges=$cr_c64)"
+[ "$cr_acc" -ge 1 ] || fail "sub-native accumulator wrongly deleted under -Cr (would skip its range check)"
+# -Co: pass fully disabled -> nothing deleted (every routine keeps its loop).
+[ "$co_acc"   -ge 1 ] || fail "accumulator loop deleted under -Co (must stay to trap on overflow)"
+[ "$co_nat"   -ge 1 ] || fail "native accumulator loop deleted under -Co (must stay to trap on overflow)"
+[ "$co_g"     -ge 1 ] || fail "global accumulator loop deleted under -Co"
+[ "$co_c64"   -ge 1 ] || fail "64-bit-counter loop deleted under -Co"
+[ "$co_empty" -ge 1 ] || fail "empty loop deleted under -Co"
 
 # ---------------------------------------------------------------------------
 # Part B: semantics (ON vs OFF byte-identical stdout, both exit 0)

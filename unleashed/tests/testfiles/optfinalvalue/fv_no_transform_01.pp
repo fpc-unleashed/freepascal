@@ -1,11 +1,12 @@
 { %OPT="-O2 -OoFINALVALUE" }
 { -OoFINALVALUE must NOT transform (and must leave correct results for) loops it
   cannot prove sound: a body containing a break, a body with a live call/store,
-  a global (non-local) accumulator, a loop whose counter's exit value is used
-  afterwards, a body that updates the SAME accumulator twice (would be double-
-  counted), and a pointer  p := p + stride  assignment form (the stride is
-  already element-size-scaled at this point). All must still produce their
-  normal counted-loop results. }
+  a loop whose counter's exit value is used afterwards, a body that updates the
+  SAME accumulator twice (would be double-counted), and a pointer  p := p + stride
+  assignment form (the stride is already element-size-scaled at this point). All
+  must still produce their normal counted-loop results. (A global accumulator is
+  now transformed -- see fv_global_accum_01 -- so global_acc below is retained as
+  a correctness regression, not a non-transform case.) }
 program fv_no_transform_01;
 {$mode objfpc}{$H+}{$POINTERMATH ON}
 
@@ -43,7 +44,8 @@ begin
   with_break:=s;
 end;
 
-{ global accumulator -> not a plain local }
+{ global accumulator -> now transformed (see fv_global_accum_01); kept here as
+  a correctness regression -- the closed form must give the same result }
 function global_acc(n: longint): longint;
 var i: longint;
 begin
