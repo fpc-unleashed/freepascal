@@ -104,6 +104,8 @@ interface
         procedure g_concatcopy(list: TAsmList; const source, dest: treference; len: tcgint);override;
         procedure g_adjust_self_value(list: TAsmList; procdef: tprocdef; ioffset: tcgint);override;
         procedure g_check_for_fpu_exception(list: TAsmList; force, clear: boolean);override;
+        procedure g_local_unwind(list: TAsmList; l: TAsmLabel);override;
+        procedure adjust_exceptfilter_ref(var ref: treference; for_finalization: boolean);override;
         procedure g_profilecode(list: TAsmList);override;
        private
         function save_regs(list: TAsmList; rt: tregistertype; lowsr, highsr: tsuperregister; sub: tsubregister): longint;
@@ -133,7 +135,7 @@ implementation
     symtable,symsym,
     tgobj,
     ncgutil,
-    procinfo,cpupi;
+    procinfo,cpupi,psub;
 
 
     procedure tcgaarch64.make_simple_ref(list:TAsmList; var op: tasmop; size: tcgsize; oppostfix: toppostfix; var ref: treference; preferred_newbasereg: tregister);
@@ -1942,11 +1944,22 @@ implementation
                       gen_load_frame_for_exceptfilter(list)
                     else
                       genloadframeforexcept:=true;
-                    localsize:=current_procinfo.maxpushedparasize;
+                    { On AArch64-Win64, the exceptfilter handler's own temps
+                      are SP-relative (not mapped to parent frame). Allocate
+                      enough stack for all handler temps (calc_stackframe_size)
+                      and also for the handler's outgoing call parameters. }
+                    if target_info.system=system_aarch64_win64 then
+                      begin
+                        localsize:=current_procinfo.calc_stackframe_size;
+                        if Align(current_procinfo.maxpushedparasize,16)>localsize then
+                          localsize:=Align(current_procinfo.maxpushedparasize,16);
+                      end
+                    else
+                      localsize:=current_procinfo.maxpushedparasize;
                   end;
               end;
 
-            totalstackframesize:=localsize;
+            totalstackframesize:=0;
             { save modified integer registers }
             inc(totalstackframesize,
               save_regs(list,R_INTREGISTER,RS_X19,RS_X28,R_SUBWHOLE));
@@ -1962,7 +1975,13 @@ implementation
                 localsize:=align(localsize,16);
                 current_procinfo.final_localsize:=localsize;
                 g_stackpointer_alloc(list,localsize);
+                inc(totalstackframesize,localsize);
               end;
+
+            { Store total stack frame size for use by exceptfilter temp access.
+              This is the offset from FP to SP after prolog completes, including
+              saved registers and local variables. }
+            tcpuprocinfo(current_procinfo).total_stackframe_size:=totalstackframesize;
             { By default, we use the frame pointer to access parameters passed via
               the stack and the stack pointer to address local variables and temps
               because
@@ -2164,8 +2183,10 @@ implementation
                 load_regs(list,R_MMREGISTER,RS_D8,RS_D15,R_SUBMMD);
                 load_regs(list,R_INTREGISTER,RS_X19,RS_X28,R_SUBWHOLE);
                 { on Windows also restore SP even if the add should be enough
-                  to have matching exit sequence to the entry sequence }
-                if target_info.system=system_aarch64_win64 then
+                  to have matching exit sequence to the entry sequence.
+                  Skip for exceptfilters where FP points to parent's frame, not local frame. }
+                if (target_info.system=system_aarch64_win64) and
+                   (current_procinfo.procdef.proctypeoption<>potype_exceptfilter) then
                   a_load_reg_reg(list,OS_ADDR,OS_ADDR,NR_FP,NR_SP);
               end
             else if current_procinfo.final_localsize<>0 then
@@ -2177,13 +2198,16 @@ implementation
                   begin
                     handle_reg_imm12_reg(list,A_ADD,OS_ADDR,current_procinfo.framepointer,current_procinfo.final_localsize,
                       current_procinfo.framepointer,NR_IP0,false,true);
-                    if not (pi_no_framepointer_needed in current_procinfo.flags) then
+                    { Skip mov sp,fp for exceptfilters where FP points to parent's frame }
+                    if not (pi_no_framepointer_needed in current_procinfo.flags) and
+                       (current_procinfo.procdef.proctypeoption<>potype_exceptfilter) then
                       a_load_reg_reg(list,OS_ADDR,OS_ADDR,NR_FP,NR_SP);
                   end
-                else if pi_no_framepointer_needed in current_procinfo.flags  then
+                else if pi_no_framepointer_needed in current_procinfo.flags then
                   handle_reg_imm12_reg(list,A_ADD,OS_ADDR,current_procinfo.framepointer,current_procinfo.final_localsize,
                     current_procinfo.framepointer,NR_IP0,false,true)
-                else
+                else if current_procinfo.procdef.proctypeoption<>potype_exceptfilter then
+                  { Skip for exceptfilters where FP points to parent's frame }
                   a_load_reg_reg(list,OS_ADDR,OS_ADDR,NR_FP,NR_SP);
               end;
 
@@ -2698,6 +2722,110 @@ implementation
           end
         else
           internalerror(2020021901);
+      end;
+
+
+    procedure tcgaarch64.g_local_unwind(list: TAsmList; l: TAsmLabel);
+      var
+        para1,para2: tcgpara;
+        pd: tprocdef;
+        reg: tregister;
+        href: treference;
+      begin
+        if target_info.system<>system_aarch64_win64 then
+          begin
+            inherited g_local_unwind(list,l);
+            exit;
+          end;
+        pd:=search_system_proc('_fpc_local_unwind');
+        para1.init;
+        para2.init;
+        paramanager.getcgtempparaloc(list,pd,1,para1);
+        paramanager.getcgtempparaloc(list,pd,2,para2);
+        { On AArch64-Win64, pass FP+16 as TargetFrame for RtlUnwindEx.
+          Windows ARM64 computes EstablisherFrame as SP-at-function-entry.
+          Since the standard prolog saves FP/LR with "stp fp,lr,[sp,#-16]!",
+          SP-at-entry = FP + 16. RtlUnwindEx validates TargetFrame >= EstablisherFrame,
+          so passing FP alone fails (FP is 16 bytes below EstablisherFrame).
+          Passing FP+16 satisfies the validation and matches the frame correctly. }
+        reg:=getaddressregister(list);
+        a_op_const_reg_reg(list,OP_ADD,OS_ADDR,16,NR_FRAME_POINTER_REG,reg);
+        a_load_reg_cgpara(list,OS_ADDR,reg,para1);
+        { pass target label address }
+        para2.check_simple_location;
+        if para2.location^.loc in [LOC_CREGISTER,LOC_REGISTER] then
+          begin
+            paramanager.allocparaloc(list,para2.location);
+            reg:=para2.location^.register;
+          end
+        else
+          reg:=getaddressregister(list);
+        { ADR is simpler and doesn't require symbol table entries (±1MB range is sufficient for local labels) }
+        reference_reset_symbol(href,l,0,sizeof(pint),[]);
+        list.concat(taicpu.op_reg_ref(A_ADR,reg,href));
+        if not(para2.location^.loc in [LOC_CREGISTER,LOC_REGISTER]) then
+          a_load_reg_cgpara(list,OS_ADDR,reg,para2);
+        paramanager.freecgpara(list,para2);
+        paramanager.freecgpara(list,para1);
+        g_call(list,'_FPC_local_unwind');
+        para2.done;
+        para1.done;
+      end;
+
+
+    procedure tcgaarch64.adjust_exceptfilter_ref(var ref: treference; for_finalization: boolean);
+      var
+        stackframe_size: longint;
+      begin
+        { Convert SP-relative temps to FP-relative for exceptfilter on AArch64-Win64.
+          The exceptfilter ($fin$) has its own SP but receives parent's FP as x0
+          and sets its FP (x29) to that value. Temps were allocated with SP-relative
+          offsets in the parent function, so accessing them via SP in the exceptfilter
+          would fail. Convert to FP-relative using the parent's total stack frame size.
+          After parent's prolog: FP points to saved x29/x30, SP = FP - totalstackframesize.
+          A temp at [SP + X] is at [FP - totalstackframesize + X] = [FP + (X - totalstackframesize)].
+
+          This is called from two places:
+          1. ncgbas.pas (temprefnode) - during normal code gen for exceptfilter procs
+             for_finalization=false, current_procinfo IS the exceptfilter
+          2. hlcgobj.pas (finalizetempvariables) - during finalization for parent procs
+             for_finalization=true, current_procinfo is parent with exceptfilter finalize_procinfo }
+        if target_info.system<>system_aarch64_win64 then
+          exit;
+
+        if for_finalization then
+          begin
+            { Finalization context: current_procinfo is the parent,
+              finalize_procinfo is the exceptfilter we're generating finalization for }
+            if not assigned(current_procinfo.finalize_procinfo) then
+              exit;
+            if current_procinfo.finalize_procinfo.procdef.proctypeoption<>potype_exceptfilter then
+              exit;
+            if ref.base<>current_procinfo.framepointer then
+              exit;
+            if current_procinfo.framepointer=NR_FRAME_POINTER_REG then
+              exit;
+            stackframe_size:=tcpuprocinfo(current_procinfo).total_stackframe_size;
+          end
+        else
+          begin
+            { Normal code gen context: current_procinfo IS the exceptfilter.
+              Distinguish parent temps from handler temps using the boundary
+              saved in generate_code_exceptfilters. Parent temps (offset below
+              the boundary) must be converted to FP-relative to access the
+              parent's stack frame. Handler temps (offset at or above the
+              boundary) stay SP-relative in the handler's own stack frame. }
+            if current_procinfo.procdef.proctypeoption<>potype_exceptfilter then
+              exit;
+            if ref.base<>NR_STACK_POINTER_REG then
+              exit;
+            if ref.offset>=tcgprocinfo(current_procinfo.parent).exceptfilter_parent_tempend then
+              exit;
+            stackframe_size:=tcpuprocinfo(current_procinfo.parent).total_stackframe_size;
+          end;
+
+        ref.base:=NR_FRAME_POINTER_REG;
+        dec(ref.offset, stackframe_size);
       end;
 
 

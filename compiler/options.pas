@@ -2340,7 +2340,7 @@ begin
     end;
 {$endif i8086_link_intern_debuginfo}
 
-  if (paratargetdbg in [dbg_dwarf2,dbg_dwarf3,dbg_dwarf4]) and
+  if (paratargetdbg in [dbg_dwarf2,dbg_dwarf3,dbg_dwarf4,dbg_dwarf5]) and
      not(target_info.system in (systems_darwin+[system_i8086_msdos,system_i8086_embedded])) then
     begin
       { smartlink creation does not yet work with DWARF
@@ -2363,7 +2363,7 @@ begin
   { external debug info is only supported for DWARF on darwin }
   if (target_info.system in systems_darwin) and
      (cs_link_separate_dbg_file in init_settings.globalswitches) and
-     not(paratargetdbg in [dbg_dwarf2,dbg_dwarf3,dbg_dwarf4]) then
+     not(paratargetdbg in [dbg_dwarf2,dbg_dwarf3,dbg_dwarf4,dbg_dwarf5]) then
     begin
       Message(option_debug_external_unsupported);
       exclude(init_settings.globalswitches,cs_link_separate_dbg_file);
@@ -3386,12 +3386,13 @@ begin
           end;
         'w' :
           begin
-            if (j<length(more)) and (more[j+1] in ['2','3','4']) then
+            if (j<length(more)) and (more[j+1] in ['2','3','4','5']) then
               begin
                 case more[j+1] of
                   '2': paratargetdbg:=dbg_dwarf2;
                   '3': paratargetdbg:=dbg_dwarf3;
                   '4': paratargetdbg:=dbg_dwarf4;
+                  '5': paratargetdbg:=dbg_dwarf5;
                 end;
                 inc(j);
               end
@@ -5009,6 +5010,7 @@ procedure read_arguments(cmd:TCmdStr);
 
       {$ifdef aarch64}
         def_system_macro('CPUAARCH64');
+        def_system_macro('CPUARM64');
         def_system_macro('CPU64');
         def_system_macro('FPC_CURRENCY_IS_INT64');
         def_system_macro('FPC_COMP_IS_INT64');

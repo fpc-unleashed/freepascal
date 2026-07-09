@@ -969,6 +969,75 @@ type
     property OnInvoke: TVirtualInterfaceInvokeEvent read fOnInvoke write fOnInvoke;
   end;
 
+  { Fired before the original virtual method is invoked. 
+    Set aDoInvoke to False to suppress the original call; 
+    aResult is then used as the return value. }
+  TInterceptBeforeNotify = procedure(aInstance: TObject; 
+                                     aMethod: TRttiMethod;
+                                     const aArgs: TValueArray; 
+                                     out aDoInvoke: Boolean; 
+                                     out aResult: TValue) of object;
+                                     
+  { Fired after the original virtual method returned. aResult may be modified. }
+  TInterceptAfterNotify = procedure(aInstance: TObject; 
+                                    aMethod: TRttiMethod;
+                                    const aArgs: TValueArray; 
+                                    var aResult: TValue) of object;
+  { Fired when the original virtual method raised an exception. 
+    Set aRaiseException to False to swallow it and return aResult instead. }
+  TInterceptExceptionNotify = procedure(aInstance: TObject; aMethod: TRttiMethod;
+    const aArgs: TValueArray; out aRaiseException: Boolean;
+    aTheException: Exception; out aResult: TValue) of object;
+
+  (* Intercepts the virtual method calls of instances of a given class.
+     It builds a proxy class (a runtime copy of the original VMT) whose virtual
+     method table routes through this object.
+     Proxify changes an instance to use the proxy class,
+     Unproxify restores the original class.
+     Only virtual methods that have RTTI are intercepted. 
+    
+     NOTE: 
+     Unlike Delphi, FPC does not emit method RTTI by default, it is opt-in.
+     so the target class must be compiled with e.g. 
+     
+     {$RTTI EXPLICIT METHODS[vcPrivate,vcProtected,vcPublic,vcPublished]
+  
+    for the OnBefore/OnAfter/OnException events to fire; 
+    virtual methods without RTTI keep working but are not intercepted. 
+    *)
+  TVirtualMethodInterceptor = class
+  private
+    fContext: TRttiContext;
+    fOriginalClass: TClass;
+    fProxyClass: TClass;
+    fProxyVmt: Pointer;
+    fImpls: array of TMethodImplementation;
+    fOnBefore: TInterceptBeforeNotify;
+    fOnAfter: TInterceptAfterNotify;
+    fOnException: TInterceptExceptionNotify;
+    procedure CreateProxyClass;
+  protected
+    procedure HandleInterceptCallback(aUserData: Pointer; const aArgs: TValueArray; out aResult: TValue);
+  public
+    // Build the proxy class for aOriginalClass.
+    constructor Create(aOriginalClass: TClass);
+    destructor Destroy; override;
+    // Make aInstance use the proxy class, so its virtual methods are intercepted.
+    procedure Proxify(aInstance: TObject);
+    // Restore aInstance to its original class.
+    procedure Unproxify(aInstance: TObject);
+    // The class that is being intercepted.
+    property OriginalClass: TClass read fOriginalClass;
+    // The generated proxy class; its instances' virtual calls are intercepted.
+    property ProxyClass: TClass read fProxyClass;
+    // Called before each intercepted virtual method is invoked.
+    property OnBefore: TInterceptBeforeNotify read fOnBefore write fOnBefore;
+    // Called after each intercepted virtual method returns.
+    property OnAfter: TInterceptAfterNotify read fOnAfter write fOnAfter;
+    // Called when an intercepted virtual method raises an exception.
+    property OnException: TInterceptExceptionNotify read fOnException write fOnException;
+  end;
+
 
   ERtti = class(Exception);
   EInsufficientRtti = class(ERtti);
@@ -1451,6 +1520,11 @@ resourcestring
   SErrVirtIntfMethodNil = 'Method %1:d of ''%0:s'' is Nil';
   SErrVirtIntfCreateVmt = 'Failed to create VMT for ''%s''';
 //  SErrVirtIntfIInterface = 'Failed to prepare IInterface method callbacks';
+  SErrVirtMethodOrigClassNil = 'The original class must be assigned';
+  SErrVirtMethodCreateVmt = 'Failed to create proxy VMT for ''%s''';
+  SErrVirtMethodInstanceNil = 'The instance must be assigned';
+  SErrVirtMethodNotOriginal = 'Instance is not of class ''%s'' (or a descendant)';
+  SErrVirtMethodNotProxified = 'Instance is not proxified by this interceptor';
   SErrCannotWriteToProperty = 'Cannot write to property "%s"';
   SErrCannotReadProperty = 'Cannot read property "%s"';
   SErrCannotWriteToClassProperty = 'Cannot write to class property "%s"';
@@ -7605,7 +7679,7 @@ var
 begin
   case (FPropInfo^.PropProcs shr 2) and 3 of
     ptField:
-      {$ifdef cpu8086}
+      {$ifdef cpui8086}
       { convert to the correct pointer type }
       AValue.Cast(FPropInfo^.PropType).ExtractRawData(PPointer(@(FPropInfo^.SetProc))^);
       {$else}
@@ -7670,7 +7744,7 @@ begin
     { tkRecord etc }
     case (FPropInfo^.PropProcs shr 2) and 3 of
       ptField:
-        {$ifdef cpu8086}
+        {$ifdef cpui8086}
         { convert to the correct pointer type }
         AValue.Cast(FPropInfo^.PropType).ExtractRawData(Pointer(Instance)+CodePtrUInt(FPropInfo^.SetProc));
         {$else}
@@ -8650,6 +8724,178 @@ begin
   if Assigned(fOnInvoke) then
     fOnInvoke(TRttiMethod(aUserData), aArgs, aResult);
 end;
+
+{ TVirtualMethodInterceptor }
+
+constructor TVirtualMethodInterceptor.Create(aOriginalClass: TClass);
+
+begin
+  if not Assigned(aOriginalClass) then
+    raise EArgumentNilException.Create(SErrVirtMethodOrigClassNil);
+  { Always use extended RTTI so that all virtual methods with RTTI
+    are enumerated, regardless of their visibility }
+  fContext:=TRttiContext.Create(False);
+  fOriginalClass:=aOriginalClass;
+  CreateProxyClass;
+end;
+
+
+destructor TVirtualMethodInterceptor.Destroy;
+
+var
+  impl: TMethodImplementation;
+
+begin
+  for impl in fImpls do
+    impl.Free;
+  if Assigned(fProxyVmt) then
+    FreeMem(fProxyVmt);
+  fContext.Free;
+  inherited Destroy;
+end;
+
+
+procedure TVirtualMethodInterceptor.CreateProxyClass;
+
+const
+  { the index of the last standard (TObject) virtual method slot }
+  StdMethodSlots = (vmtToString - vmtMethodStart) div SizeOf(CodePointer);
+
+var
+  t: TRttiType;
+  methods: specialize TArray<TRttiMethod>;
+  m: TRttiMethod;
+  slotCount, vmtSize, idx: SizeInt;
+  slots, origSlots: PCodePointer;
+  filled: array of Boolean;
+
+begin
+  t:=fContext.GetType(fOriginalClass);
+  if not Assigned(t) then
+    raise EInsufficientRtti.CreateFmt(SErrVirtMethodCreateVmt, [fOriginalClass.ClassName]);
+
+  methods:=t.GetMethods;
+
+  { Determine the number of virtual method slots of the original class.
+    The compiler emits all virtual methods followed by a terminating nil
+    code pointer (no real entry, not even an abstract one, is nil), so the
+    slot count can be found by scanning until that terminator. This covers
+    the complete VMT even for virtual methods that have no RTTI - they must
+    still be copied so that calling them keeps working after proxification. }
+  origSlots:=PCodePointer(PByte(fOriginalClass) + vmtMethodStart);
+  slotCount:=StdMethodSlots;
+  while Assigned(origSlots[slotCount]) do
+    Inc(slotCount);
+
+  { allocate room for all method slots plus the terminating nil entry }
+  vmtSize:=vmtMethodStart+((slotCount + 1) * SizeOf(CodePointer));
+
+  fProxyVmt:=GetMem(vmtSize);
+  if not Assigned(fProxyVmt) then
+    raise ERtti.CreateFmt(SErrVirtMethodCreateVmt, [fOriginalClass.ClassName]);
+  Move(Pointer(fOriginalClass)^, fProxyVmt^, vmtSize);
+  fProxyClass:=TClass(fProxyVmt);
+
+  { make the proxy class descend from the original class so that 'is'/'as' and
+    InheritsFrom keep working for the original class and its ancestors }
+  PVmt(fProxyVmt)^.vParentRef:=PPVmt(@fOriginalClass);
+
+  { override every virtual method that has RTTI with an interception thunk. 
+    The childmost declaration is encountered first (GetMethods lists self before
+    parents), so the first thunk for a slot wins. }
+  slots:=PCodePointer(PByte(fProxyVmt) + vmtMethodStart);
+  SetLength(filled, slotCount);
+  for m in methods do
+    begin
+    idx:=m.VirtualIndex;
+    if (idx<0) or (idx>=slotCount) or m.IsConstructor or m.IsStatic then
+      Continue;
+    if filled[idx] then
+      Continue;
+    filled[idx]:=True;
+    SetLength(fImpls, Length(fImpls)+1);
+    fImpls[High(fImpls)]:=m.CreateImplementation(m, @HandleInterceptCallback);
+    slots[idx]:=fImpls[High(fImpls)].CodeAddress;
+    end;
+end;
+
+
+procedure TVirtualMethodInterceptor.HandleInterceptCallback(aUserData: Pointer; const aArgs: TValueArray; out aResult: TValue);
+
+var
+  method: TRttiMethod;
+  inst: TObject;
+  instance: TValue;
+  userArgs, sharedArgs: TValueArray;
+  doInvoke, raiseException: Boolean;
+  i: SizeInt;
+
+begin
+  method:=TRttiMethod(aUserData);
+  { aArgs[0] contains Self }
+  instance:=aArgs[0];
+  inst:=instance.AsObject;
+  SetLength(userArgs,Length(aArgs)-1);
+  for i:=1 to High(aArgs) do
+    userArgs[i-1]:=aArgs[i];
+
+  aResult:=TValue.Empty;
+  doInvoke:=True;
+  if Assigned(fOnBefore) then
+    fOnBefore(inst,method,userArgs,doInvoke,aResult);
+
+  if doInvoke then
+    try
+      { TRttiInstanceMethod.Invoke calls the static CodeAddress for class methods
+        (it only dispatches through the VMT for interfaces), so this calls the
+        original implementation and does not recurse through the proxy VMT }
+      aResult:=method.Invoke(instance, userArgs);
+    except
+      on e: Exception do
+        begin
+        raiseException:=True;
+        if Assigned(fOnException) then
+          fOnException(inst, method, userArgs, raiseException, e, aResult);
+        if raiseException then
+          raise;
+        end;
+    end;
+
+  if Assigned(fOnAfter) then
+    fOnAfter(inst,method,userArgs,aResult);
+
+  { Put possibly modified var/out parameters back into the argument array
+    the low-level callback uses to write them to the caller }
+  if Length(aArgs)>1 then
+    begin
+    sharedArgs:=aArgs;
+    for i:=1 to High(sharedArgs) do
+      sharedArgs[i]:=userArgs[i-1];
+    end;
+end;
+
+
+procedure TVirtualMethodInterceptor.Proxify(aInstance: TObject);
+
+begin
+  if not Assigned(aInstance) then
+    raise EArgumentNilException.Create(SErrVirtMethodInstanceNil);
+  if not aInstance.InheritsFrom(fOriginalClass) then
+    raise EArgumentException.CreateFmt(SErrVirtMethodNotOriginal, [fOriginalClass.ClassName]);
+  PPointer(aInstance)^:=fProxyVmt;
+end;
+
+
+procedure TVirtualMethodInterceptor.Unproxify(aInstance: TObject);
+
+begin
+  if not Assigned(aInstance) then
+    raise EArgumentNilException.Create(SErrVirtMethodInstanceNil);
+  if PPointer(aInstance)^ <> fProxyVmt then
+    raise EArgumentException.Create(SErrVirtMethodNotProxified);
+  PPointer(aInstance)^:=Pointer(fOriginalClass);
+end;
+
 
 function TRttiObject.GetAttribute(aClass: TCustomAttributeClass): TCustomAttribute;
 

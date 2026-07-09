@@ -3905,6 +3905,9 @@ implementation
             begin
               objsec:=TObjSection(ObjSectionWorkList.Last);
               if not assigned(objsec.exesection) then
+{$ifdef i8086}
+                if current_settings.x86memorymodel <> mm_tiny then
+{$endif}
                 internalerror(202102001);
               if assigned(exemap) then
                 exemap.Add('Keeping '+objsec.FullName+' '+ToStr(objsec.ObjRelocations.Count)+' references');
@@ -4022,6 +4025,11 @@ implementation
           begin
             exesec:=TExeSection(ExeSectionList[i]);
             if not assigned(exesec) then
+              continue;
+            { Disabled sections (e.g. debug sections when stripping) are not
+              removed from ExeSectionList until RemoveDisabledSections runs, and
+              their data is intentionally not loaded, so skip them here. }
+            if exesec.Disabled then
               continue;
             for j:=0 to exesec.ObjSectionlist.count-1 do
               begin

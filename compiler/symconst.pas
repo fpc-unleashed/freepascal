@@ -624,7 +624,8 @@ type
     ppo_implements,
     ppo_enumerator_current,       { implements current property for enumerator }
     ppo_overrides,                { overrides ancestor property }
-    ppo_dispid_write              { no longer used }
+    ppo_default_is_single,        { default is a single (required for correct PPU put/load) }
+    ppo_default_is_set            { default is a set (required for correct PPU put/load) }
   );
   tpropertyoptions=set of tpropertyoption;
 
@@ -786,8 +787,12 @@ type
     fullrtti,initrtti,
     { Objective-C }
     objcmetartti,objcmetarortti,
-    objcclassrtti,objcclassrortti
+    objcclassrtti,objcclassrortti,
+    objcprotocollist,objcprotocolmethodstypelist,
+    objcinstancemethods,objcclassmethods,
+    objcprotinstancemethodsopt,objcprotclassmethodsopt
   );
+  tobjcrttitype = objcmetartti..high(trttitype);
 
   { prefixes for internally generated type names (centralised to avoid
     accidental collisions) }
@@ -838,6 +843,7 @@ type
     itp_objc_method_list,
     itp_objc_proto_list,
     itp_objc_cat_methods,
+    itp_objc_prot_ext_methods,
     itb_objc_nf_ivars,
     itb_objc_nf_category,
     itb_objc_nf_class_ro_part,
@@ -993,6 +999,7 @@ inherited_objectoptions : tobjectoptions = [oo_has_virtual,oo_has_private,oo_has
        '$objc_method_list$',
        '$objc_proto_list$',
        '$objc_cat_methods$',
+       '$objc_prot_ext_methods$',
        '$objc_nf_ivars$',
        '$objc_nf_category$',
        '$objc_nf_class_ro_part$',

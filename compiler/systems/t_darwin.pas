@@ -364,9 +364,9 @@ implementation
            { This does not depend on the target version but on the toolchain
              version, but we only know the former and not the latter }
            if MacOSXVersionMin.relationto(11,0,0)>=0 then
-             result:='-macosx_version_min '+MacOSXVersionMin.str
+             result:='-macos_version_min '+MacOSXVersionMin.str
            else
-             result:='-macos_version_min '+MacOSXVersionMin.str;
+             result:='-macosx_version_min '+MacOSXVersionMin.str;
           end
         else if iPhoneOSVersionMin.isvalid then
           begin
@@ -583,7 +583,7 @@ implementation
       { create dsym file? }
       extdbgbinstr:='';
       extdbgcmdstr:='';
-      if (target_dbg.id in [dbg_dwarf2,dbg_dwarf3,dbg_dwarf4]) and
+      if (target_dbg.id in [dbg_dwarf2,dbg_dwarf3,dbg_dwarf4,dbg_dwarf5]) and
          (cs_link_separate_dbg_file in current_settings.globalswitches) then
         begin
           extdbgbinstr:=FindUtil(utilsprefix+'dsymutil');
@@ -702,7 +702,7 @@ implementation
       { create dsym file? }
       extdbgbinstr:='';
       extdbgcmdstr:='';
-      if (target_dbg.id in [dbg_dwarf2,dbg_dwarf3,dbg_dwarf4]) and
+      if (target_dbg.id in [dbg_dwarf2,dbg_dwarf3,dbg_dwarf4,dbg_dwarf5]) and
          (cs_link_separate_dbg_file in current_settings.globalswitches) then
         begin
           extdbgbinstr:=FindUtil(utilsprefix+'dsymutil');
