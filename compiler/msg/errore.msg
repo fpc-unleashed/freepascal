@@ -2696,7 +2696,7 @@ sym_e_wasm_ref_types_cannot_be_used_in_records=05101_E_WebAssembly reference typ
 #
 # Codegenerator
 #
-# 06068 is the last used one
+# 06088 is the last used one
 #
 % \section{Code generator messages}
 % This section lists all messages that can be displayed if the code
@@ -3008,6 +3008,21 @@ cg_n_loop_reduction_vectorized=06086_N_Reduction loop vectorized (SSE, $1-wide p
 % this only fires under fast-math (\var{-OoFASTMATH}), matching the reduction-
 % reassociation pass. This diagnostic is only emitted while the pass is enabled and
 % is shown at note verbosity (\var{-vn}).
+cg_h_proc_pure=06087_H_Function "$1" proven pure by -OoPURE (reads state but never writes it, no side effects)
+% The interprocedural pure/const discovery pass (\var{-OoPURE}) proved that this
+% routine is \i{pure}: its result depends only on its arguments and the state it
+% reads (globals and, for a read-only method, the object referenced by
+% \var{self}); it never writes global/static/threadvar or referenced memory,
+% performs no I/O, and cannot raise or trap. A later occurrence of the same call
+% with that state unchanged in between may therefore be commoned by \var{-OoGVNPRE}.
+% This hint is only emitted while the pass is enabled and is shown at hint
+% verbosity (\var{-vh}).
+cg_h_proc_const=06088_H_Function "$1" proven const by -OoPURE (result depends only on its by-value arguments)
+% The interprocedural pure/const discovery pass (\var{-OoPURE}) proved that this
+% routine is \i{const}: its result depends only on its by-value arguments -- it
+% reads no global/static/threadvar/referenced memory and has no side effect -- so
+% two calls with equal arguments always yield the same value. This hint is only
+% emitted while the pass is enabled and is shown at hint verbosity (\var{-vh}).
 %
 % \end{description}
 # EndOfTeX

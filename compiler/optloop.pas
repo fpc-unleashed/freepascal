@@ -10249,9 +10249,15 @@ unit optloop;
       never writes global state, no I/O, cannot raise/trap) whose every actual
       argument is itself a side-effect-free expression. Such a call may be value-
       numbered: two structurally-identical occurrences with the arguments and the
-      (pure-read) global memory unchanged between them compute the same value, so
-      the second can reuse the first. Methods / indirect / procvar calls are
-      excluded (self / dynamic dispatch is not modelled here). }
+      (pure-read) memory unchanged between them compute the same value, so the
+      second can reuse the first. Indirect / procvar calls are excluded (unknown
+      target). A read-only METHOD proven pure is also accepted, but ONLY when the
+      dispatch is provably direct (non-virtual, non-abstract) and its self
+      expression (methodpointer) is a side-effect-free reference: the call is then
+      value-numbered as a memory reader (gvn_mem) keyed additionally on the locals
+      self / the arguments read, so any intervening store (including a write to
+      one of the object's fields) or any call invalidates it -- two getter calls
+      with an intervening field write are therefore NOT commoned. }
     function gvn_pure_call(n : tnode) : boolean;
       var
         cn : tcallnode;
@@ -10263,11 +10269,21 @@ unit optloop;
         if not(cs_opt_pure in current_settings.optimizerswitches) then
           exit;
         cn:=tcallnode(n);
-        { direct, non-method, real procdef only }
-        if assigned(cn.methodpointer) then
-          exit;
+        { real, resolved procdef only (excludes indirect / procvar calls) }
         if not assigned(cn.procdefinition) or not(cn.procdefinition is tprocdef) then
           exit;
+        { a method call: the dispatch must be statically direct and self must be a
+          side-effect-free reference. Virtual / abstract methods are never folded
+          (the concrete body is not known at the call site); -OoPURE also never
+          marks them pure, but guard explicitly for defence in depth. }
+        if assigned(cn.methodpointer) then
+          begin
+            if (po_virtualmethod in tprocdef(cn.procdefinition).procoptions) or
+               (po_abstractmethod in tprocdef(cn.procdefinition).procoptions) then
+              exit;
+            if might_have_sideeffects(cn.methodpointer,[]) then
+              exit;
+          end;
         { scalar result: no aggregate return machinery (funcret/init/cleanup) }
         if assigned(cn.funcretnode) or assigned(cn.callinitblock) or
            assigned(cn.callcleanupblock) then
@@ -10455,6 +10471,12 @@ unit optloop;
             ai.hasmem:=false;
             ai.hasvarread:=false;
             ai.syms:=nil;
+            { for a method call, self (the methodpointer) is part of the value's
+              inputs: analyze it too so that reassigning the local holding the
+              object kills the entry, and a field/deref self marks it gvn_mem
+              (dropped by any memstore). }
+            if assigned(tcallnode(n).methodpointer) then
+              foreachnodestatic(pm_postprocess,tcallnode(n).methodpointer,@gvn_analyze_cb,@ai);
             foreachnodestatic(pm_postprocess,tcallnode(n).left,@gvn_analyze_cb,@ai);
             kind:=gvn_mem;
             syms:=ai.syms;

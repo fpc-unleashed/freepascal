@@ -19,6 +19,23 @@
     indirect/virtual/external/method/nested routine or to a routine that is not
     itself proven pure/const.
 
+    Read-only instance methods (the classic  function TFoo.GetX:Integer;begin
+    Result:=FX end  accessor) are also eligible, but only in the "pure" flavour:
+    a method's result depends on the state referenced through self, so it can
+    never be "const" (that would require depending only on by-value arguments).
+    A method is proven pure exactly when it writes nothing reachable through self
+    (self.field stores are treated as side effects regardless of how self is
+    passed -- a by-value class pointer or a by-ref record self), reads only self /
+    globals / its read-only parameters, performs no virtual dispatch on self and
+    no method call, and calls only proven-pure ordinary routines. Virtual /
+    abstract methods and constructors / destructors are excluded. The resulting
+    "pure" verdict has the same consumer semantics as an ordinary pure function:
+    -OoGVNPRE value-numbers the call as a memory reader whose result is
+    invalidated by any intervening store or call (so a field write between two
+    getter calls, or a call across them, correctly prevents commoning), so no new
+    ppu summary flavour is needed -- a pure method serializes exactly like a pure
+    function (pure bit set, const bit clear).
+
     The per-routine summary is stored on the tprocdef.  A summary records the
     intrinsic facts of the body plus the list of ordinary routines it calls; the
     actual pure/const verdict is computed on demand with a greatest-fixpoint DFS
@@ -53,7 +70,7 @@ interface
 implementation
 
     uses
-      globtype,
+      globtype,globals,verbose,
       cclasses,
       symbase,symtype,symconst,symsym,symtable,
       defutil,
@@ -115,6 +132,14 @@ implementation
                   exit(true)
                 else if sym is tparavarsym then
                   begin
+                    { self is a reference to the object: any store reachable
+                      through it (self.field := ...) writes externally-observable
+                      state, whether self is a by-value class pointer (vs_value)
+                      or a by-ref record/object self (vs_var/constref). Treat it
+                      as a side effect unconditionally, so a read-only method
+                      that keeps this out of its body can still be proven pure. }
+                    if vo_is_self in tparavarsym(sym).varoptions then
+                      exit(true);
                     if (tparavarsym(sym).varspez in [vs_var,vs_out,vs_constref]) and
                        not(vo_is_funcret in tparavarsym(sym).varoptions) then
                       exit(true)
@@ -257,8 +282,9 @@ implementation
       simple by-value parameters (a plain local read) or const/constref parameters
       (read-only, cannot write caller memory). const/constref additionally accepts
       unmanaged record/array/set aggregates, so array/field-reading const helpers
-      qualify (their reads are pure memory reads). Methods (a mutable self alias)
-      remain out of scope. }
+      qualify (their reads are pure memory reads). Read-only methods are also
+      eligible (see proc_eligible): self is treated as a read-only reference and
+      any store through it is a side effect. }
     function simple_purity_type(def : tdef) : boolean;
       begin
         result:=assigned(def) and (def.typ in [orddef,enumdef,floatdef,pointerdef]);
@@ -289,14 +315,35 @@ implementation
         pv : tparavarsym;
       begin
         result:=false;
-        if procoptions_conflict(pd) then
+        { disqualifiers shared by plain routines and methods. Unlike
+          procoptions_conflict (the strict CALLEE filter, which rejects every
+          method) we allow a routine that lives in a struct here, provided it is
+          a non-virtual, non-abstract instance/class/static method that is not a
+          constructor/destructor: the body scan then proves it writes nothing
+          through self. Virtual/abstract dispatch on the routine itself is out
+          (a caller cannot know the concrete body). }
+        if (po_external in pd.procoptions) or
+           (po_virtualmethod in pd.procoptions) or
+           (po_abstractmethod in pd.procoptions) or
+           (po_assembler in pd.procoptions) or
+           (pd.owner.symtabletype=localsymtable) then
+          exit;
+        if assigned(pd.struct) and
+           (pd.proctypeoption in [potype_constructor,potype_destructor]) then
           exit;
         if not simple_purity_type(pd.returndef) then
           exit;
         for i:=0 to pd.paras.count-1 do
           begin
             pv:=tparavarsym(pd.paras[i]);
+            if vo_is_self in pv.varoptions then
+              { self: a read-only reference. Writes through it are rejected by
+                the body scan (lvalue_write_is_side_effect); reads through it are
+                pure memory reads (so a method is at best pure, never const). }
+              continue;
             if vo_is_hidden_para in pv.varoptions then
+              { any other hidden parameter (vmt, high, framepointer, ...): stay
+                conservative and bail }
               exit;
             case pv.varspez of
               vs_value:
@@ -342,6 +389,13 @@ implementation
         pd.pure_intrinsic_impure:=ctx.impure;
         pd.pure_reads_global:=ctx.readsglobal;
         pd.pure_analyzed:=true;
+        { -vh diagnostic: report the discovered verdict once, here, at the point
+          it is first available (not per call site), respecting -vh gating. const
+          is the stronger verdict (implies pure), so report only the strongest. }
+        if proc_is_const(pd) then
+          MessagePos1(pd.fileinfo,cg_h_proc_const,pd.fullprocname(false))
+        else if proc_is_pure(pd) then
+          MessagePos1(pd.fileinfo,cg_h_proc_pure,pd.fullprocname(false));
       end;
 
 
