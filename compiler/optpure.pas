@@ -19,12 +19,16 @@
     indirect/virtual/external/method/nested routine or to a routine that is not
     itself proven pure/const.
 
-    The per-routine summary is stored on the tprocdef (transient, not saved to
-    the ppu -- a cross-unit / WPO version is a follow-up).  A summary records
-    the intrinsic facts of the body plus the list of ordinary routines it calls;
-    the actual pure/const verdict is computed on demand with a greatest-fixpoint
-    DFS over that call graph, so mutually-recursive SCCs whose only impurity
-    would be the recursion itself are still proven.
+    The per-routine summary is stored on the tprocdef.  A summary records the
+    intrinsic facts of the body plus the list of ordinary routines it calls; the
+    actual pure/const verdict is computed on demand with a greatest-fixpoint DFS
+    over that call graph, so mutually-recursive SCCs whose only impurity would be
+    the recursion itself are still proven.  The raw facts/callee list are
+    transient (current-unit only), but the DERIVED pure/const verdict is
+    serialized into the ppu via the shared per-procdef optimizer-summary
+    mechanism (tprocdef.write_optimizer_summary): a routine loaded from a used
+    unit carries its resolved verdict as two booleans (pure_ppu_valid), so
+    cross-unit callers consult it instead of treating it as impure.
 
     This module is free software; see the FPC copying conditions.
 }
@@ -363,7 +367,20 @@ implementation
         i : longint;
         r : boolean;
       begin
-        if not assigned(pd) or not pd.pure_analyzed then
+        if not assigned(pd) then
+          exit(false);
+        { a routine read from another unit's ppu carries its already-resolved
+          cross-unit verdict as two booleans (shared PPU optimizer summary):
+          treat it as a leaf with that verdict instead of re-deriving its call
+          graph (which is not available here). }
+        if pd.pure_ppu_valid then
+          begin
+            if wantconst then
+              exit(pd.pure_ppu_is_const)
+            else
+              exit(pd.pure_ppu_is_pure);
+          end;
+        if not pd.pure_analyzed then
           exit(false);
         if pd.pure_qtoken=token then
           begin
@@ -408,4 +425,17 @@ implementation
         result:=dfs_pure(pd,pure_query_token,true);
       end;
 
+
+    { write-time hook consulted by tprocdef.ppuwrite to persist a routine's
+      final pure/const verdict into its ppu optimizer summary. }
+    function purity_verdict_hook(pd : tprocdef; wantconst : boolean) : boolean;
+      begin
+        if wantconst then
+          result:=proc_is_const(pd)
+        else
+          result:=proc_is_pure(pd);
+      end;
+
+initialization
+  proc_query_purity_verdict:=@purity_verdict_hook;
 end.

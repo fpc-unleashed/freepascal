@@ -1,8 +1,12 @@
 {
     Interprocedural register allocation (-OoIPARA)
 
-    Ports the idea of gcc's -fipa-ra to FPC, operating intra-unit at code-gen
-    time.  When the code generator finishes a routine, that routine's body has
+    Ports the idea of gcc's -fipa-ra to FPC, operating at code-gen time.  The
+    clobber mask is additionally serialized into the ppu (guarded by a
+    target/ABI/-Cf instruction-set signature) via the shared per-procdef
+    optimizer-summary mechanism, so a direct call to a leaf in a USED unit
+    narrows its caller-save spills too, not just intra-unit calls.  When the code
+    generator finishes a routine, that routine's body has
     already been register-allocated, so its instruction stream uses real
     physical registers and the register allocator knows exactly which physical
     registers the body touches (rg[bank].used_in_proc -- the very set FPC uses
