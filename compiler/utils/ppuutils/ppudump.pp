@@ -2590,7 +2590,8 @@ const
          'cs_opt_prefetch',
          'cs_opt_icf',
          'cs_opt_ipara',
-         'cs_opt_finalvalue'
+         'cs_opt_finalvalue',
+         'cs_opt_sibcall'
        );
     var
          globalswitch  : tglobalswitch;
