@@ -238,6 +238,11 @@ unit aoptx86;
           stack frame for a sibling tail call, i.e. tear the frame down before
           the call and jump instead of call/return. }
         function CurrentProcAllowsSiblingTailFrameReuse : Boolean;
+        { Sibling-call optimization (-OoSIBCALL): rewrite a direct tail call to
+          another routine into a frame-teardown + jmp.  Handles the
+          result-forwarded-through-a-callee-saved-register shape the -O4
+          post-peephole deliberately punts on. }
+        function OptSibCall(var p : tai) : Boolean;
         { Store merging (gcc -fstore-merging): coalesce a run of adjacent narrow
           constant stores off the same base register into one wider store. }
         function TryStoreMerge(var p : tai) : Boolean;
@@ -18178,6 +18183,255 @@ unit aoptx86;
           exit;
         Result:=true;
       end;
+
+
+    { -OoSIBCALL sibling-call optimization.  Rewrite a direct tail call to
+      ANOTHER routine into a frame teardown followed by a jmp, so the callee
+      reuses the caller's return slot (O(depth) -> O(1) stack for mutual
+      recursion / continuation dispatch).  Unlike the -O4 CallFrameRet2Jmp this
+      also accepts the shape where the call result is forwarded through a single
+      callee-saved register and moved back before the ret (rax->cs->rax
+      identity) -- the shape the register allocator emits for
+      `result := OtherFunc(args)` when the routine owns a callee-saved register,
+      which is exactly the mutual-recursion / continuation case.
+
+      Recognised epilogue after the call (only labels/markers may sit between
+      instructions; a crossed label means the teardown is shared with other exit
+      paths so its originals must be kept):
+
+          call   X
+          mov    %rax_sub, %cs_sub       (optional single result forward-save)
+       L: mov    %cs_sub, %rax_sub       (matching restore, before any pop)
+          leaq   N(%rsp),%rsp / addq $N  (optional rsp release, N>0)
+          popq   %cs...                  (>=0 callee-saved integer pops)
+          ret
+
+      Transform: hoist a copy of the rsp-release / pop teardown (NOT the result
+      movs -- the jmp leaves the result in rax directly) above the call and turn
+      the call into a jmp.  The callee-saved pops restore the caller's-caller
+      values so X is entered with correct callee-saved state, and the rsp
+      release restores entry alignment so X is entered ABI-correct.
+
+      Soundness gates (all must hold): x86-64 SysV (not ms_abi);
+      CurrentProcAllowsSiblingTailFrameReuse (no exception/finally frame, no
+      dynamic stack alloc, no nested-frame capture, no address-taken
+      local/parameter -> no @local can reach the callee); no outgoing stack
+      arguments anywhere in the routine (maxpushedparasize=0, so a callee whose
+      stack-argument area exceeds our zero incoming area is excluded); a plain
+      caller convention (register/cdecl/stdcall -- safecall and the exotic
+      conventions rejected); and a direct call to a symbol (indirect/procvar
+      calls rejected). }
+    function TX86AsmOptimizer.OptSibCall(var p : tai) : Boolean;
+      var
+        hp, hpret, hpnew, hpteardown, firstlabel : tai;
+        fwd_cs_sup : tsuperregister;
+        fwd_opsize : topsize;
+        have_fwd, restore_seen, crossed_label, walk_ok : Boolean;
+        teardown_count : integer;
+
+      function reg_is_calleesaved(reg : tregister) : Boolean;
+        begin
+          Result:=(getregtype(reg)=R_INTREGISTER) and
+            not(getsupreg(reg) in
+                paramanager.get_volatile_registers_int(current_procinfo.procdef.proccalloption));
+        end;
+
+      function is_teardown(hpx : tai) : Boolean;
+        begin
+          Result:=false;
+          if hpx.typ<>ait_instruction then
+            exit;
+          { rsp release via lea }
+          if MatchInstruction(hpx,A_LEA,[S_Q]) and
+            (taicpu(hpx).oper[1]^.typ=top_reg) and
+            (taicpu(hpx).oper[1]^.reg=NR_STACK_POINTER_REG) and
+            (taicpu(hpx).oper[0]^.typ=top_ref) and
+            (taicpu(hpx).oper[0]^.ref^.base=NR_STACK_POINTER_REG) and
+            (taicpu(hpx).oper[0]^.ref^.index=NR_NO) and
+            (taicpu(hpx).oper[0]^.ref^.offset>0) and
+            (taicpu(hpx).oper[0]^.ref^.symbol=nil) and
+            (taicpu(hpx).oper[0]^.ref^.relsymbol=nil) then
+            Result:=true
+          { rsp release via add const }
+          else if MatchInstruction(hpx,A_ADD,[S_Q]) and
+            (taicpu(hpx).oper[0]^.typ=top_const) and
+            (taicpu(hpx).oper[0]^.val>0) and
+            (taicpu(hpx).oper[1]^.typ=top_reg) and
+            (taicpu(hpx).oper[1]^.reg=NR_STACK_POINTER_REG) then
+            Result:=true
+          { pop of a callee-saved integer register }
+          else if MatchInstruction(hpx,A_POP,[S_Q]) and
+            (taicpu(hpx).oper[0]^.typ=top_reg) and
+            reg_is_calleesaved(taicpu(hpx).oper[0]^.reg) then
+            Result:=true;
+        end;
+
+      begin
+        Result:=false;
+        if not(cs_opt_sibcall in current_settings.optimizerswitches) then
+          exit;
+        if target_info.system in systems_x86_64_ms_abi then
+          exit;
+        if not assigned(current_procinfo) or not assigned(current_procinfo.procdef) then
+          exit;
+        { no outgoing stack arguments anywhere in the routine: a callee that
+          needs stack args would read them from a released frame }
+        if current_procinfo.maxpushedparasize>0 then
+          exit;
+        { plain caller convention only; safecall and the exotic conventions
+          change teardown / result handling }
+        if not(current_procinfo.procdef.proccalloption in
+               [pocall_register,pocall_cdecl,pocall_stdcall]) then
+          exit;
+        if not CurrentProcAllowsSiblingTailFrameReuse then
+          exit;
+        { p must be a direct call to a symbol }
+        if not MatchInstruction(p,A_CALL,[S_NO]) then
+          exit;
+        if (taicpu(p).ops<>1) or
+           (taicpu(p).oper[0]^.typ<>top_ref) or
+           (taicpu(p).oper[0]^.ref^.refaddr<>addr_full) or
+           (taicpu(p).oper[0]^.ref^.symbol=nil) or
+           (taicpu(p).oper[0]^.ref^.base<>NR_NO) or
+           (taicpu(p).oper[0]^.ref^.index<>NR_NO) then
+          exit;
+
+        have_fwd:=false;
+        restore_seen:=false;
+        crossed_label:=false;
+        walk_ok:=true;
+        teardown_count:=0;
+        fwd_cs_sup:=RS_INVALID;
+        fwd_opsize:=S_NO;
+        firstlabel:=nil;
+        hpret:=tai(p.Next);
+        while assigned(hpret) and walk_ok do
+          begin
+            if hpret.typ<>ait_instruction then
+              begin
+                if hpret.typ=ait_label then
+                  begin
+                    crossed_label:=true;
+                    if not assigned(firstlabel) then
+                      firstlabel:=hpret;
+                  end;
+                hpret:=tai(hpret.Next);
+                continue;
+              end;
+            { end of the epilogue }
+            if MatchInstruction(hpret,A_RET,[S_NO]) and (taicpu(hpret).ops=0) then
+              break;
+            { single result forward-save: mov %rax_sub,%cs_sub -- only valid as
+              the first thing, before any teardown/restore }
+            if (not have_fwd) and (not restore_seen) and (teardown_count=0) and
+              MatchInstruction(hpret,A_MOV,[S_B,S_W,S_L,S_Q]) and
+              (taicpu(hpret).oper[0]^.typ=top_reg) and
+              (taicpu(hpret).oper[1]^.typ=top_reg) and
+              (getsupreg(taicpu(hpret).oper[0]^.reg)=RS_FUNCTION_RETURN_REG) and
+              (getregtype(taicpu(hpret).oper[0]^.reg)=R_INTREGISTER) and
+              reg_is_calleesaved(taicpu(hpret).oper[1]^.reg) then
+              begin
+                have_fwd:=true;
+                fwd_cs_sup:=getsupreg(taicpu(hpret).oper[1]^.reg);
+                fwd_opsize:=taicpu(hpret).opsize;
+                hpret:=tai(hpret.Next);
+                continue;
+              end;
+            { matching restore: mov %cs_sub,%rax_sub (same width), before pops }
+            if have_fwd and (not restore_seen) and (teardown_count=0) and
+              MatchInstruction(hpret,A_MOV,[fwd_opsize]) and
+              (taicpu(hpret).oper[0]^.typ=top_reg) and
+              (taicpu(hpret).oper[1]^.typ=top_reg) and
+              (getsupreg(taicpu(hpret).oper[0]^.reg)=fwd_cs_sup) and
+              (getsupreg(taicpu(hpret).oper[1]^.reg)=RS_FUNCTION_RETURN_REG) and
+              (getregtype(taicpu(hpret).oper[1]^.reg)=R_INTREGISTER) then
+              begin
+                restore_seen:=true;
+                hpret:=tai(hpret.Next);
+                continue;
+              end;
+            { teardown }
+            if is_teardown(hpret) then
+              begin
+                { a pop before the result was restored would clobber the value
+                  still living in the callee-saved register }
+                if have_fwd and (not restore_seen) then
+                  begin
+                    walk_ok:=false;
+                    break;
+                  end;
+                inc(teardown_count);
+                hpret:=tai(hpret.Next);
+                continue;
+              end;
+            { anything else disqualifies }
+            walk_ok:=false;
+          end;
+
+        if not(walk_ok and (teardown_count>0) and
+               (not have_fwd or restore_seen) and
+               assigned(hpret) and (hpret.typ=ait_instruction) and
+               MatchInstruction(hpret,A_RET,[S_NO]) and (taicpu(hpret).ops=0)) then
+          exit;
+
+        { hoist a verbatim copy of the teardown (rsp release + pops only, never
+          the result movs) above the call }
+        hpteardown:=tai(p.Next);
+        while hpteardown<>hpret do
+          begin
+            if is_teardown(hpteardown) then
+              begin
+                case taicpu(hpteardown).opcode of
+                  A_LEA:
+                    hpnew:=taicpu.op_ref_reg(A_LEA,S_Q,
+                      taicpu(hpteardown).oper[0]^.ref^,NR_STACK_POINTER_REG);
+                  A_ADD:
+                    hpnew:=taicpu.op_const_reg(A_ADD,S_Q,
+                      taicpu(hpteardown).oper[0]^.val,NR_STACK_POINTER_REG);
+                  else {A_POP}
+                    hpnew:=taicpu.op_reg(A_POP,S_Q,taicpu(hpteardown).oper[0]^.reg);
+                end;
+                taicpu(hpnew).fileinfo:=taicpu(p).fileinfo;
+                InsertLLItem(p.previous,p,hpnew);
+              end;
+            hpteardown:=tai(hpteardown.Next);
+          end;
+
+        { turn the call into a jump to the sibling }
+        taicpu(p).opcode:=A_JMP;
+        taicpu(p).is_jmp:=true;
+        DebugMsg(SPeepholeOptimization + 'sibling-call optimization (OptSibCall)',p);
+
+        if not crossed_label then
+          begin
+            { the whole epilogue is reached only through this call path: drop it }
+            hpteardown:=tai(p.Next);
+            while hpteardown<>hpret do
+              begin
+                hpnew:=tai(hpteardown.Next);
+                if hpteardown.typ=ait_instruction then
+                  RemoveInstruction(hpteardown);
+                hpteardown:=hpnew;
+              end;
+            RemoveInstruction(hpret);
+          end
+        else
+          begin
+            { the epilogue is shared (label reached from other exits) and must
+              stay a valid return sequence for them; only the instructions
+              strictly between the (now) jmp and the first label are unreachable
+              -- that is the dead result forward-save, if any }
+            hp:=tai(p.Next);
+            while (hp<>firstlabel) and (hp<>hpret) do
+              begin
+                hpnew:=tai(hp.Next);
+                if hp.typ=ait_instruction then
+                  RemoveInstruction(hp);
+                hp:=hpnew;
+              end;
+          end;
+        Result:=true;
+      end;
 {$endif x86_64}
 
 
@@ -18400,6 +18654,12 @@ unit aoptx86;
                 Result:=true;
               end;
           end;
+
+        { -OoSIBCALL: opt-in sibling-call optimization, decoupled from -O4 and
+          also handling the result-forwarded-through-callee-saved shape above
+          does not }
+        if not Result then
+          Result:=OptSibCall(p);
 {$endif x86_64}
       end;
 

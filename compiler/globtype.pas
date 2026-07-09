@@ -753,7 +753,32 @@ interface
            exactly the single accumulator update (calls, stores, control flow,
            break/continue/exit, nested loops) never matches. Opt-in; NOT part
            of the -O4 defaults }
-         cs_opt_finalvalue
+         cs_opt_finalvalue,
+         { sibling-call optimization (-OoSIBCALL): the gcc
+           -foptimize-sibling-calls tail-call pass ported to FPC and applied at
+           the x86-64 assembler-peephole level.  When a routine's last action is
+           a direct call in tail position to ANOTHER routine
+           (result := OtherFunc(args) or a bare tail procedure call), the frame
+           teardown is hoisted above the call and the call is rewritten to a jmp,
+           so the callee reuses the caller's return slot instead of pushing a new
+           frame -- O(depth) stack becomes O(1) for mutually recursive pairs and
+           continuation-style dispatch.  Distinct from the self-recursion loop
+           rewrite (-OoTAILREC/cs_opt_tailrecursion, same routine) and from
+           partial inlining (no body duplication, the frame is reused).  Sound
+           subset (x86-64 SysV / Linux only): direct calls to a symbol, teardown
+           = a plain rsp release (leaq/addq) and/or pops of callee-saved integer
+           registers, an optional result forwarded through a single callee-saved
+           register and moved back (rax->cs->rax identity), NO outgoing stack
+           arguments in the routine (maxpushedparasize=0, so a callee whose
+           stack-argument area exceeds the caller's incoming zero area is
+           excluded), caller convention register/cdecl/stdcall (safecall and
+           the exotic conventions excluded), and -- via
+           CurrentProcAllowsSiblingTailFrameReuse -- no open try/finally or
+           exception frame, no dynamic stack allocation, no nested-frame capture
+           and no address-taken local or parameter (so no @local can escape into
+           the callee's arguments).  Anything not provably safe falls back to a
+           normal call.  Opt-in; NOT part of the -O4 defaults }
+         cs_opt_sibcall
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -833,7 +858,7 @@ interface
          'PREDCOM','SRA','STOREMERGE','CASECLUSTER','CROSSJUMP','BLOCKORDER',
          'SINK','STOREMOTION','VRP','REFELIDE','SWITCHTABLE','REE',
          'SHRINKWRAP','GVNPRE','PURE','PARTIALINLINE','STACKALLOC','SLP',
-         'UNROLLDYN','PREFETCH','ICF','IPARA','FINALVALUE'
+         'UNROLLDYN','PREFETCH','ICF','IPARA','FINALVALUE','SIBCALL'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
