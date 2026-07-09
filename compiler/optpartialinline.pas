@@ -41,21 +41,33 @@
     inside the body on the cold path changes nothing observable, and the guard
     branch's effects happen exactly once (only one of header/body ever runs it).
 
-    This is deliberately conservative -- correctness over coverage.  This first
-    landing splits only standalone (non-method, non-nested, non-generic)
-    PROCEDURES (void return) with simple by-value scalar/pointer/class parameters
-    and a single leading guard whose then-branch always exits.  Routines with
-    exception handlers, inline assembler, labels, gotos, nested routines,
-    varargs, open arrays or threadvar access, inherited calls, and routines that
-    are already inline or that have a separate forward/interface declaration are
-    skipped.
+    This is deliberately conservative -- correctness over coverage.  It splits
+    standalone (non-method, non-nested, non-generic) PROCEDURES and FUNCTIONS
+    with simple by-value scalar/pointer/class parameters and a single leading
+    guard whose then-branch always exits.  Routines with exception handlers,
+    inline assembler, labels, gotos, nested routines, varargs, open arrays or
+    threadvar access, inherited calls, and routines that are already inline or
+    that have a separate forward/interface declaration are skipped.
 
-    Functions (non-void return) are intentionally NOT split yet: splitting them
-    is sound in isolation, but when the tiny header is inlined at a call site the
-    inliner can route the guard arm's exit(value) and the tail's result
-    assignment to different result locations (funcret temp in memory vs. a return
-    register), giving a wrong value on one arm.  A function-safe header shape is
-    a follow-up.
+    Functions (non-void return) use a function-safe header shape.  The subtlety
+    is that after typecheck an "exit(value)" is lowered into "$result := value;
+    exit", whose assignment targets the routine's funcret local.  When such a
+    guard is copied into the header the header must (a) own a funcret local of
+    its own -- getcopyas does not copy the body's localst -- and (b) have BOTH
+    arms write that single local:
+
+        function Foo(...): T;
+        begin
+          if <cond> then exit(value);   ->   $result := value; exit;   (guard arm)
+          $result := Body(...);                                        (tail arm)
+        end;
+
+    Because both arms assign the identical header funcret local, when the header
+    is inlined the inliner's funcret substitution routes both writes to the one
+    funcretnode the caller materialised -- there is no funcret-temp-vs-return-
+    register divergence.  Only simple register-returned result types are allowed;
+    results returned via a hidden pointer parameter (ret_in_param) and managed
+    types are skipped.
 
     Opt-in via -OoPARTIALINLINE (NOT part of -O4 defaults).
 
@@ -90,7 +102,7 @@ implementation
     uses
       cclasses,
       symconst,symbase,symtype,symsym,symtable,
-      defutil,
+      defutil,paramgr,pparautl,
       nbas,nld,ncal,nflw,ninl,nutils,
       compinnr,
       symcreat;
@@ -129,17 +141,24 @@ implementation
         pv : tparavarsym;
       begin
         result:=false;
-        { standalone ordinary procedure only. NOTE: functions (non-void return)
-          are deliberately excluded in this first landing. Splitting them is
-          sound in isolation, but when the tiny header is inlined at a call site
-          the inliner can route the guard arm's exit(value) and the tail's
-          "result := Body(...)" to different result locations (the funcret temp
-          in memory vs. a return register), yielding a wrong value on one arm.
-          Supporting functions needs a header shape the inliner funnels through a
-          single result location -- a follow-up. }
-        if pd.proctypeoption<>potype_procedure then
+        { standalone ordinary procedure or function. Functions (non-void return)
+          are supported by giving the header its own funcret local and funnelling
+          BOTH arms through a single result location (headerpd.funcretsym): the
+          guard arm's "$result := value; exit" is remapped onto the header's
+          funcret, and the tail is built as "$result := Body(...)" against the
+          same funcret. The two arms therefore write the identical local, so when
+          the header is inlined the funcret substitution routes both to the one
+          funcretnode the caller created (no funcret-temp-vs-return-register
+          divergence). Only simple register-returned result types are allowed
+          (see simple_split_type + the ret_in_param guard below); managed types
+          and results returned via a hidden pointer parameter are skipped. }
+        if not(pd.proctypeoption in [potype_procedure,potype_function]) then
           exit;
-        if not is_void(pd.returndef) then
+        { the result must come back in a register, never via a hidden funcret
+          pointer parameter -- otherwise the header would forward the caller's
+          result pointer and the "single funcret local" reasoning breaks }
+        if not is_void(pd.returndef) and
+           paramanager.ret_in_param(pd.returndef,pd) then
           exit;
         if assigned(pd.struct) then
           exit;
@@ -411,6 +430,7 @@ implementation
       premap = ^tremap;
       tremap = record
         oldpd,newpd : tprocdef;
+        oldfuncret,newfuncret : tsym;   { body's vs. header's $result local }
       end;
 
     { find the visible (non-hidden) parameter of PD at visible-index IDX }
@@ -482,6 +502,17 @@ implementation
         if n.nodetype<>loadn then
           exit;
         ctx:=premap(arg);
+        { for a function, the guard's "exit(value)" was lowered by the exit
+          node's typecheck into "$result := value; exit", whose assignment
+          targets the *body's* funcret local. Re-point it at the header's own
+          funcret so the header writes its own result location. }
+        if assigned(ctx^.oldfuncret) and
+           (tloadnode(n).symtableentry=ctx^.oldfuncret) then
+          begin
+            tloadnode(n).symtableentry:=ctx^.newfuncret;
+            tloadnode(n).symtable:=ctx^.newfuncret.owner;
+            exit;
+          end;
         idx:=visible_index_of(ctx^.oldpd,tloadnode(n).symtableentry);
         if idx<0 then
           exit;
@@ -553,16 +584,34 @@ implementation
         include(headerpd.procoptions,po_inline);
         exclude(headerpd.procoptions,po_noinline);
 
-        { 3. remap the copied guard from the body's parameters to the header's,
-             then re-create its exit nodes so they are re-analysed cleanly in the
-             header's context (the copies carry a resultdef/binding from the body) }
+        { 2b. for a function, give the header its own funcret local ($result)
+              so its guard arm and its tail both write the header's own result
+              location (getcopyas does not copy the body's localst/funcretsym) }
+        if not is_void(headerpd.returndef) then
+          insert_funcret_local(headerpd);
+
+        { 3. remap the copied guard from the body's parameters (and, for a
+             function, its funcret local) to the header's, then re-create its
+             exit nodes so they are re-analysed cleanly in the header's context
+             (the copies carry a resultdef/binding from the body) }
         ctx.oldpd:=pd;
         ctx.newpd:=headerpd;
+        ctx.oldfuncret:=pd.funcretsym;
+        ctx.newfuncret:=headerpd.funcretsym;
         foreachnodestatic(pm_postprocess,guard,@remap_load,@ctx);
         foreachnodestatic(pm_postprocess,guard,@rebuild_exit,nil);
 
-        { 4. build:  <guard> ;  Body(params)  (procedures only in this landing) }
+        { 4. build the tail that forwards to the out-of-line body:
+               procedure :  Body(params)
+               function  :  $result := Body(params)
+             The function tail writes the *same* header funcret local as the
+             remapped guard arm, so both arms funnel through one result location
+             and inline consistently. }
         callnode:=ccallnode.create(forward_paras(headerpd),bodysym,st,nil,[],nil);
+        if not is_void(headerpd.returndef) then
+          callnode:=cassignmentnode.create(
+            cloadnode.create(headerpd.funcretsym,headerpd.funcretsym.owner),
+            callnode);
 
         stmt:=cstatementnode.create(callnode,nil);
         stmt:=cstatementnode.create(guard,stmt);
