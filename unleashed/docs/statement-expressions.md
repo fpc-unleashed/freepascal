@@ -98,6 +98,18 @@ var i := case x of 1: 10; 2: 20; else 30; end;
 var x := if b then 42 else 'hello'; // Error
 ```
 
+Numeric branches widen to a common type - the result holds every branch's value regardless of branch order. Two integer branches take the smallest integer type covering both ranges; an integer branch mixed with a float branch promotes to the float type:
+
+```pas
+var big: SizeInt = 311;
+
+var a := if cond then 0 else big;    // Int64-wide, a = 311 (not truncated to 0's type)
+var b := if cond then 3.5 else big;  // Double
+var c := if cond then -1 else 100000; // LongInt (covers both)
+```
+
+String-ish branches promote the same way: char + string gives string, mixed short/ansi/wide literals pick the wider carrier.
+
 ## Where statement expressions can appear
 
 Anywhere an expression is expected:

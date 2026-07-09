@@ -126,6 +126,21 @@ implementation
           result:=cshortstringtype
         else if is_chararray(olddef) and (is_ansistring(branchdef) or is_unicodestring(branchdef)) then
           result:=branchdef
+        { numeric branches: widen to a common type instead of silently
+          truncating the other branch to the first one's type }
+        else if is_integer(olddef) and is_integer(branchdef) then
+          result:=get_common_intdef(torddef(olddef),torddef(branchdef),true)
+        else if (olddef.typ=floatdef) and (branchdef.typ=floatdef) then
+          begin
+            if branchdef.size>olddef.size then
+              result:=branchdef
+            else
+              result:=olddef;
+          end
+        else if is_integer(olddef) and (branchdef.typ=floatdef) then
+          result:=branchdef
+        else if (olddef.typ=floatdef) and is_integer(branchdef) then
+          result:=olddef
         else
           result:=olddef;
       end;
