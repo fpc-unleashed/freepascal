@@ -3509,6 +3509,11 @@ implementation
               cg.a_op_reg_reg(list,op,OS_64,regsrc.reglo,regdst.reglo);
               cg.a_op_reg_reg(list,op,OS_64,regsrc.reghi,regdst.reghi);
             end;
+          OP_NOT:
+            begin
+              cg.a_op_reg_reg(list,OP_NOT,OS_64,regsrc.reglo,regdst.reglo);
+              cg.a_op_reg_reg(list,OP_NOT,OS_64,regsrc.reghi,regdst.reghi);
+            end;
           else
             { carry chains and shifts are CPU specific }
             internalerror(2026071002);
