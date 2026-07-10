@@ -36,6 +36,7 @@ interface
          procedure second_add128bit; override;
          procedure second_cmp128bit; override;
          procedure second_mul;
+         procedure second_mul128;
        end;
 
   implementation
@@ -56,8 +57,9 @@ interface
 
     function tx8664addnode.use_generic_int128ops: boolean;
     begin
-      { mul still goes through the RTL helper }
-      result:=nodetype=muln;
+      { overflow-checked mul needs the 256 bit view of the helper }
+      result:=(nodetype=muln) and
+        (cs_check_overflow in current_settings.localswitches);
     end;
 
 
@@ -98,6 +100,11 @@ interface
             op:=OP_OR;
           andn:
             op:=OP_AND;
+          muln:
+            begin
+              second_mul128;
+              exit;
+            end;
           else
             internalerror(2026071008);
         end;
@@ -153,6 +160,45 @@ interface
           end;
 
         location_copy(location,left.location);
+      end;
+
+
+    procedure tx8664addnode.second_mul128;
+      var
+        t1,t2 : tregister;
+      begin
+        pass_left_right;
+
+        { both operands in register pairs }
+        if not (left.location.loc in [LOC_REGISTER,LOC_CREGISTER]) then
+          hlcg.location_force_reg(current_asmdata.CurrAsmList,left.location,left.resultdef,left.resultdef,true);
+        if not (right.location.loc in [LOC_REGISTER,LOC_CREGISTER]) then
+          hlcg.location_force_reg(current_asmdata.CurrAsmList,right.location,right.resultdef,right.resultdef,true);
+
+        { cross products of the halves; only their low 64 bits matter }
+        t1:=cg.getintregister(current_asmdata.CurrAsmList,OS_64);
+        cg.a_load_reg_reg(current_asmdata.CurrAsmList,OS_64,OS_64,left.location.register128.reglo,t1);
+        emit_reg_reg(A_IMUL,S_Q,right.location.register128.reghi,t1);
+        t2:=cg.getintregister(current_asmdata.CurrAsmList,OS_64);
+        cg.a_load_reg_reg(current_asmdata.CurrAsmList,OS_64,OS_64,left.location.register128.reghi,t2);
+        emit_reg_reg(A_IMUL,S_Q,right.location.register128.reglo,t2);
+        emit_reg_reg(A_ADD,S_Q,t2,t1);
+
+        { full 64x64 product of the low halves in RDX:RAX }
+        cg.getcpuregister(current_asmdata.CurrAsmList,NR_RAX);
+        cg.a_load_reg_reg(current_asmdata.CurrAsmList,OS_64,OS_64,left.location.register128.reglo,NR_RAX);
+        cg.getcpuregister(current_asmdata.CurrAsmList,NR_RDX);
+        emit_reg(A_MUL,S_Q,right.location.register128.reglo);
+        { fold the cross products into the high half }
+        emit_reg_reg(A_ADD,S_Q,t1,NR_RDX);
+        cg.ungetcpuregister(current_asmdata.CurrAsmList,NR_RDX);
+        cg.ungetcpuregister(current_asmdata.CurrAsmList,NR_RAX);
+
+        location_reset(location,LOC_REGISTER,def_cgsize(resultdef));
+        location.register128.reglo:=cg.getintregister(current_asmdata.CurrAsmList,OS_64);
+        location.register128.reghi:=cg.getintregister(current_asmdata.CurrAsmList,OS_64);
+        cg.a_load_reg_reg(current_asmdata.CurrAsmList,OS_64,OS_64,NR_RAX,location.register128.reglo);
+        cg.a_load_reg_reg(current_asmdata.CurrAsmList,OS_64,OS_64,NR_RDX,location.register128.reghi);
       end;
 
 
