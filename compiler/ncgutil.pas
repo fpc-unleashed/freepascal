@@ -568,10 +568,15 @@ implementation
                 end
               else
 {$endif cpu64bitalu and not cpuhighleveltarget}
-                if hlcg.def2regtyp(def)=R_ADDRESSREGISTER then
-                  loc.register:=hlcg.getaddressregister(list,def)
-                else
-                  loc.register:=cg.getintregister(list,loc.size);
+                begin
+                  if hlcg.def2regtyp(def)=R_ADDRESSREGISTER then
+                    loc.register:=hlcg.getaddressregister(list,def)
+                  else
+                    loc.register:=cg.getintregister(list,loc.size);
+                  { single register: clear the hi slot, which may still hold
+                    stale treference data if loc was a LOC_REFERENCE before }
+                  loc.registerhi:=NR_NO;
+                end;
             end;
           LOC_CFPUREGISTER:
             begin
