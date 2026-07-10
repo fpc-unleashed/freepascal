@@ -3502,6 +3502,9 @@ implementation
 
     procedure tcg128.a_op128_reg_reg(list: TAsmList; op: TOpCG; size: tcgsize;
       regsrc,regdst: tregister128);
+      var
+        cnt,tmp,revcnt : tregister;
+        l1,l2 : tasmlabel;
       begin
         case op of
           OP_AND,OP_OR,OP_XOR:
@@ -3514,8 +3517,71 @@ implementation
               cg.a_op_reg_reg(list,OP_NOT,OS_64,regsrc.reglo,regdst.reglo);
               cg.a_op_reg_reg(list,OP_NOT,OS_64,regsrc.reghi,regdst.reghi);
             end;
+          OP_SHL,OP_SHR,OP_SAR:
+            begin
+              { the count comes in regsrc.reglo; bit 6 decides whether the
+                low half moves into the high half (or back) completely,
+                the masked 6 bit count covers the rest }
+              cnt:=cg.getintregister(list,OS_64);
+              cg.a_op_const_reg_reg(list,OP_AND,OS_64,63,regsrc.reglo,cnt);
+              tmp:=cg.getintregister(list,OS_64);
+              current_asmdata.getjumplabel(l1);
+              current_asmdata.getjumplabel(l2);
+              cg.a_op_const_reg_reg(list,OP_AND,OS_64,64,regsrc.reglo,tmp);
+              cg.a_cmp_const_reg_label(list,OS_64,OC_EQ,0,tmp,l1);
+              case op of
+                OP_SHL:
+                  begin
+                    cg.a_op_reg_reg_reg(list,OP_SHL,OS_64,cnt,regdst.reglo,regdst.reghi);
+                    cg.a_load_const_reg(list,OS_64,0,regdst.reglo);
+                  end;
+                OP_SHR:
+                  begin
+                    cg.a_op_reg_reg_reg(list,OP_SHR,OS_64,cnt,regdst.reghi,regdst.reglo);
+                    cg.a_load_const_reg(list,OS_64,0,regdst.reghi);
+                  end;
+                OP_SAR:
+                  begin
+                    cg.a_op_reg_reg_reg(list,OP_SAR,OS_64,cnt,regdst.reghi,regdst.reglo);
+                    cg.a_op_const_reg_reg(list,OP_SAR,OS_64,63,regdst.reghi,regdst.reghi);
+                  end;
+                else
+                  ;
+              end;
+              cg.a_jmp_always(list,l2);
+              cg.a_label(list,l1);
+              { count 0..63: bits cross between the halves; the crossing
+                shift is split in a one bit pre-shift and a 63-cnt shift,
+                so a zero count degrades to a harmless no-op }
+              revcnt:=cg.getintregister(list,OS_64);
+              cg.a_op_const_reg_reg(list,OP_XOR,OS_64,63,cnt,revcnt);
+              case op of
+                OP_SHL:
+                  begin
+                    cg.a_op_const_reg_reg(list,OP_SHR,OS_64,1,regdst.reglo,tmp);
+                    cg.a_op_reg_reg_reg(list,OP_SHR,OS_64,revcnt,tmp,tmp);
+                    cg.a_op_reg_reg_reg(list,OP_SHL,OS_64,cnt,regdst.reghi,regdst.reghi);
+                    cg.a_op_reg_reg(list,OP_OR,OS_64,tmp,regdst.reghi);
+                    cg.a_op_reg_reg_reg(list,OP_SHL,OS_64,cnt,regdst.reglo,regdst.reglo);
+                  end;
+                OP_SHR,OP_SAR:
+                  begin
+                    cg.a_op_const_reg_reg(list,OP_SHL,OS_64,1,regdst.reghi,tmp);
+                    cg.a_op_reg_reg_reg(list,OP_SHL,OS_64,revcnt,tmp,tmp);
+                    cg.a_op_reg_reg_reg(list,OP_SHR,OS_64,cnt,regdst.reglo,regdst.reglo);
+                    cg.a_op_reg_reg(list,OP_OR,OS_64,tmp,regdst.reglo);
+                    if op=OP_SAR then
+                      cg.a_op_reg_reg_reg(list,OP_SAR,OS_64,cnt,regdst.reghi,regdst.reghi)
+                    else
+                      cg.a_op_reg_reg_reg(list,OP_SHR,OS_64,cnt,regdst.reghi,regdst.reghi);
+                  end;
+                else
+                  ;
+              end;
+              cg.a_label(list,l2);
+            end;
           else
-            { carry chains and shifts are CPU specific }
+            { carry chains are CPU specific }
             internalerror(2026071002);
         end;
       end;
