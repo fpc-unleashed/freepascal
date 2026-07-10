@@ -490,10 +490,16 @@ unit cgobj;
         procedure a_load128_loc_ref(list : TAsmList;const l : tlocation;const ref : treference);virtual;
         procedure a_load128_reg_loc(list : TAsmList;reg : tregister128;const l : tlocation);virtual;
         procedure a_load128_const_reg(list : TAsmList;valuelo,valuehi : int64;reg : tregister128);virtual;
+        procedure a_load128_loc_reg(list : TAsmList;const l : tlocation;reg : tregister128);virtual;
 
         procedure a_load128_loc_cgpara(list : TAsmList;const l : tlocation;const paraloc : TCGPara);virtual;
         procedure a_load128_ref_cgpara(list: TAsmList; const r: treference;const paraloc: tcgpara);
         procedure a_load128_reg_cgpara(list: TAsmList; reg: tregister128;const paraloc: tcgpara);
+
+        { operations on a register pair; for shifts the count is regsrc.reglo }
+        procedure a_op128_reg_reg(list : TAsmList;op:TOpCG;size : tcgsize;regsrc,regdst : tregister128);virtual;
+        procedure a_op128_ref_reg(list : TAsmList;op:TOpCG;size : tcgsize;const ref : treference;reg : tregister128);virtual;
+        procedure a_op128_loc_reg(list : TAsmList;op:TOpCG;size : tcgsize;const l : tlocation;reg : tregister128);virtual;
     end;
 
     { Creates a tregister128 record from 2 64 Bit registers. }
@@ -3478,6 +3484,62 @@ implementation
        cg.a_load_const_reg(list,OS_64,aint(valuelo),reg.reglo);
        cg.a_load_const_reg(list,OS_64,aint(valuehi),reg.reghi);
      end;
+
+
+    procedure tcg128.a_load128_loc_reg(list: TAsmList; const l: tlocation;
+      reg: tregister128);
+      begin
+        case l.loc of
+          LOC_REGISTER,LOC_CREGISTER:
+            a_load128_reg_reg(list,l.register128,reg);
+          LOC_REFERENCE,LOC_CREFERENCE:
+            a_load128_ref_reg(list,l.reference,reg);
+          else
+            internalerror(2026071001);
+        end;
+      end;
+
+
+    procedure tcg128.a_op128_reg_reg(list: TAsmList; op: TOpCG; size: tcgsize;
+      regsrc,regdst: tregister128);
+      begin
+        case op of
+          OP_AND,OP_OR,OP_XOR:
+            begin
+              cg.a_op_reg_reg(list,op,OS_64,regsrc.reglo,regdst.reglo);
+              cg.a_op_reg_reg(list,op,OS_64,regsrc.reghi,regdst.reghi);
+            end;
+          else
+            { carry chains and shifts are CPU specific }
+            internalerror(2026071002);
+        end;
+      end;
+
+
+    procedure tcg128.a_op128_ref_reg(list: TAsmList; op: TOpCG; size: tcgsize;
+      const ref: treference; reg: tregister128);
+      var
+        tmp : tregister128;
+      begin
+        tmp.reglo:=cg.getintregister(list,OS_64);
+        tmp.reghi:=cg.getintregister(list,OS_64);
+        a_load128_ref_reg(list,ref,tmp);
+        a_op128_reg_reg(list,op,size,tmp,reg);
+      end;
+
+
+    procedure tcg128.a_op128_loc_reg(list: TAsmList; op: TOpCG; size: tcgsize;
+      const l: tlocation; reg: tregister128);
+      begin
+        case l.loc of
+          LOC_REGISTER,LOC_CREGISTER:
+            a_op128_reg_reg(list,op,size,l.register128,reg);
+          LOC_REFERENCE,LOC_CREFERENCE:
+            a_op128_ref_reg(list,op,size,l.reference,reg);
+          else
+            internalerror(2026071003);
+        end;
+      end;
 
 
     procedure tcg128.a_load128_loc_cgpara(list: TAsmList; const l: tlocation;
