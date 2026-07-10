@@ -4,10 +4,13 @@
 #   2. RTL
 #   3. packages
 #   4. LCL (lclbase.lpk + lcl.lpk), if a sibling ../lazarus checkout exists
-# Usage: ./rebuildu.sh [--clean-packages]
-#   --clean-packages  run "make -C packages clean" first; needed after a
-#                     CurrentPPULongVersion bump, otherwise up-to-date-looking
-#                     units are skipped ("PPU Invalid Long Version" errors).
+# Usage: ./rebuildu.sh [--no-clean-packages]
+#   --no-clean-packages  skip "make -C packages clean" before building. By
+#                        default packages are cleaned: fpmake's dependency
+#                        check never compares against the compiler or RTL, so
+#                        without a clean, packages whose sources are unchanged
+#                        keep PPUs built by the previous compiler/RTL (stale
+#                        codegen, "PPU Invalid Long Version"/checksum errors).
 # Environment:
 #   SEED=/path/to/ppcXXX  override the auto-detected seed compiler
 set -e
@@ -49,7 +52,7 @@ make -C "$FP/compiler" clean cycle FPC="$SEED"
 echo "=== 2/4 rtl ==="
 make -C "$FP/rtl" clean all FPC="$FP/compiler/$PPC"
 
-if [ "$1" = "--clean-packages" ]; then
+if [ "$1" != "--no-clean-packages" ]; then
   echo "=== packages clean ==="
   make -C "$FP/packages" clean FPC="$FP/compiler/$PPC"
 fi
