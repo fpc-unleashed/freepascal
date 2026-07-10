@@ -71,6 +71,9 @@ interface
           }
           function first_shlshr64bitint: tnode; virtual;
 {$endif not cpu64bitalu and not cpuhighleveltarget}
+          { override and return false if the code generator inlines
+            128 bit shifts }
+          function use_generic_int128ops: boolean; virtual;
        end;
        tshlshrnodeclass = class of tshlshrnode;
 
@@ -79,6 +82,9 @@ interface
           function pass_1 : tnode;override;
           function pass_typecheck:tnode;override;
           function simplify(forinline : boolean) : tnode;override;
+          { override and return false if the code generator inlines
+            128 bit negation }
+          function use_generic_int128ops: boolean; virtual;
        end;
        tunaryminusnodeclass = class of tunaryminusnode;
 
@@ -94,6 +100,9 @@ interface
           function pass_1 : tnode;override;
           function pass_typecheck:tnode;override;
           function simplify(forinline : boolean) : tnode;override;
+          { override and return false if the code generator inlines
+            128 bit bitwise not }
+          function use_generic_int128ops: boolean; virtual;
        {$ifdef state_tracking}
           function track_state_pass(exec_known:boolean):boolean;override;
        {$endif}
@@ -1072,6 +1081,12 @@ implementation
 {$endif not cpu64bitalu and not cpuhighleveltarget}
 
 
+    function tshlshrnode.use_generic_int128ops: boolean;
+      begin
+        result:=true;
+      end;
+
+
     function tshlshrnode.pass_1 : tnode;
       var
         procname: string[31];
@@ -1086,6 +1101,14 @@ implementation
            payload so the signed entry points serve both signednesses }
          if is_128bit(left.resultdef) then
            begin
+             if not use_generic_int128ops then
+               begin
+                 { native codegen reads the count from a 64 bit register }
+                 inserttypeconv(right,s64inttype);
+                 firstpass(right);
+                 expectloc:=LOC_REGISTER;
+                 exit;
+               end;
              if nodetype=shln then
                procname:='fpc_shl_int128'
              else
@@ -1320,6 +1343,12 @@ implementation
            end;
       end;
 
+    function tunaryminusnode.use_generic_int128ops: boolean;
+      begin
+        result:=true;
+      end;
+
+
     { generic code     }
     { overridden by:   }
     {   i386           }
@@ -1334,6 +1363,11 @@ implementation
 
         if is_128bit(left.resultdef) then
           begin
+            if not use_generic_int128ops then
+              begin
+                expectloc:=LOC_REGISTER;
+                exit;
+              end;
             if cs_check_overflow in current_settings.localswitches then
               begin
                 if is_signed(resultdef) then
@@ -1613,6 +1647,12 @@ implementation
       end;
 
 
+    function tnotnode.use_generic_int128ops: boolean;
+      begin
+        result:=true;
+      end;
+
+
     function tnotnode.pass_1 : tnode;
       begin
          result:=nil;
@@ -1622,6 +1662,11 @@ implementation
 
          if is_128bit(left.resultdef) then
            begin
+             if not use_generic_int128ops then
+               begin
+                 expectloc:=LOC_REGISTER;
+                 exit;
+               end;
              inserttypeconv_internal(left,s128inttype);
              result:=ccallnode.createintern('fpc_not_int128',ccallparanode.create(left,nil));
              left:=nil;
