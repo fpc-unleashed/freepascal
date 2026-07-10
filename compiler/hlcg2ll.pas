@@ -1817,7 +1817,8 @@ implementation
                   via integer registers }
                 (vardef.typ=floatdef) or
                  is_methodpointer(vardef) or
-                 is_record(vardef)) then
+                 is_record(vardef) or
+                 is_128bit(vardef)) then
               begin
                 case paraloc^.loc of
                   LOC_REGISTER,
