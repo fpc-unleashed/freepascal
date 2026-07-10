@@ -172,12 +172,6 @@ unit cpupara;
             result:=true;
             exit;
           end;
-        { 128 bit ints pass by reference, as on the other targets }
-        if is_128bit(def) then
-          begin
-            result:=true;
-            exit;
-          end;
         case def.typ of
           objectdef:
             result:=is_object(def);

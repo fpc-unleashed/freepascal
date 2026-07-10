@@ -2594,13 +2594,13 @@ implementation
      begin
         case typ of
           orddef:
-{$ifdef x86_64}
+{$if defined(x86_64) or defined(aarch64)}
             { 128 bit ints live in a register pair }
             is_intregable:=true;
-{$else x86_64}
+{$else}
             { 128 bit ints need a register pair and always live in memory }
             is_intregable:=not(torddef(self).ordtype in [u128bit,s128bit]);
-{$endif x86_64}
+{$endif}
           pointerdef,
           enumdef,
           classrefdef:
