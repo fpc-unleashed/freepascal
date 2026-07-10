@@ -743,7 +743,15 @@ function clCreateCommandQueue(
   properties : cl_command_queue_properties;
   errcode_ret: pcl_int
   ): cl_command_queue; extdecl;
-  external {$ifdef DYNLINK}opencllib{$endif} name 'clCreateCommandQueue';
+  external {$ifdef DYNLINK}opencllib{$endif} name 'clCreateCommandQueue' overload;
+
+function clCreateCommandQueue(
+  context    : cl_context;
+  device     : cl_device_id;
+  properties : cl_command_queue_properties;
+  var errcode_ret: cl_int
+  ): cl_command_queue; extdecl;
+  external {$ifdef DYNLINK}opencllib{$endif} name 'clCreateCommandQueue' overload;
 
 function clRetainCommandQueue(command_queue : cl_command_queue): cl_int; extdecl;
   external {$ifdef DYNLINK}opencllib{$endif} name 'clRetainCommandQueue';
