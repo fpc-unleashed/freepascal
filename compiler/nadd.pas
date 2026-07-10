@@ -818,6 +818,8 @@ const
             { Avoid using custom integers due to the risk of unusual sizes and
               undesired effects in, say, bitpacked records. [Kit] }
             (torddef(tshlshrnode(left).left.resultdef).ordtype<>customint) and
+            { the code generators have no 128 bit rotate }
+            not is_128bit(tshlshrnode(left).left.resultdef) and
             not might_have_sideeffects(tshlshrnode(left).left) and
             tshlshrnode(left).left.isequal(tshlshrnode(right).left) then
             begin
