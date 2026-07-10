@@ -4261,30 +4261,42 @@ implementation
       current_asmdata.getjumplabel(donelab);
 {$if defined(cpu64bitalu) or defined(cpuhighleveltarget)}
       { materialize the value as a 64 bit pair }
-      lreg:=getintregister(list,u64inttype);
-      hreg:=getintregister(list,u64inttype);
-      if is_128bit(fromdef) then
+{$ifdef cpu64bitalu}
+      if is_128bit(fromdef) and
+         (l.loc in [LOC_REGISTER,LOC_CREGISTER]) then
         begin
-          if not(l.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
-            internalerror(2026070710);
-          href:=l.reference;
-          if target_info.endian=endian_big then
-            inc(href.offset,8);
-          a_load_ref_reg(list,u64inttype,u64inttype,href,lreg);
-          href:=l.reference;
-          if target_info.endian=endian_little then
-            inc(href.offset,8);
-          a_load_ref_reg(list,u64inttype,u64inttype,href,hreg);
-        end
-      else if from_signed then
-        begin
-          a_load_loc_reg(list,fromdef,s64inttype,l,lreg);
-          a_op_const_reg_reg(list,OP_SAR,s64inttype,63,lreg,hreg);
+          { the checks only read the pair, so use it in place }
+          lreg:=l.register128.reglo;
+          hreg:=l.register128.reghi;
         end
       else
+{$endif cpu64bitalu}
         begin
-          a_load_loc_reg(list,fromdef,u64inttype,l,lreg);
-          a_load_const_reg(list,u64inttype,0,hreg);
+          lreg:=getintregister(list,u64inttype);
+          hreg:=getintregister(list,u64inttype);
+          if is_128bit(fromdef) then
+            begin
+              if not(l.loc in [LOC_REFERENCE,LOC_CREFERENCE]) then
+                internalerror(2026070710);
+              href:=l.reference;
+              if target_info.endian=endian_big then
+                inc(href.offset,8);
+              a_load_ref_reg(list,u64inttype,u64inttype,href,lreg);
+              href:=l.reference;
+              if target_info.endian=endian_little then
+                inc(href.offset,8);
+              a_load_ref_reg(list,u64inttype,u64inttype,href,hreg);
+            end
+          else if from_signed then
+            begin
+              a_load_loc_reg(list,fromdef,s64inttype,l,lreg);
+              a_op_const_reg_reg(list,OP_SAR,s64inttype,63,lreg,hreg);
+            end
+          else
+            begin
+              a_load_loc_reg(list,fromdef,u64inttype,l,lreg);
+              a_load_const_reg(list,u64inttype,0,hreg);
+            end;
         end;
       if lto>lfrom then
         checkbound(lto,true);
