@@ -1233,9 +1233,12 @@ unit cpupara;
               numclasses:=classify_argument(pd.proccalloption,def,nil,vs_value,def.size,classes,0,False);
               result:=(numclasses=0);
             end;
-          { 128 bit ints are returned through a hidden pointer }
+          { 128 bit ints are returned in RAX:RDX }
           orddef:
-            result:=is_128bit(def) or inherited ret_in_param(def,pd);
+            if is_128bit(def) then
+              result:=false
+            else
+              result:=inherited ret_in_param(def,pd);
           else
             result:=inherited ret_in_param(def,pd);
         end;
@@ -1281,9 +1284,8 @@ unit cpupara;
         case def.typ of
           formaldef :
             result:=true;
-          { 128 bit ints are always passed by reference }
           orddef :
-            result:=is_128bit(def);
+            result:=false;
           recorddef :
             begin
               { MetroWerks Pascal: const records always passed by reference
