@@ -47,6 +47,7 @@ interface
           procedure second_cmp64bit; override;
        public
           function use_generic_mul32to64: boolean; override;
+          function use_generic_int128ops: boolean; override;
           function pass_1 : tnode;override;
        end;
 
@@ -567,6 +568,14 @@ interface
     function taarch64addnode.use_generic_mul32to64: boolean;
       begin
         result:=false;
+      end;
+
+
+    function taarch64addnode.use_generic_int128ops: boolean;
+      begin
+        { mul and the overflow-checked forms keep the RTL helpers }
+        result:=(nodetype=muln) or
+          ((nodetype in [addn,subn]) and needoverflowcheck);
       end;
 
     function taarch64addnode.pass_1: tnode;
