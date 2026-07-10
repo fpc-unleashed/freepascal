@@ -1026,12 +1026,12 @@ implementation
 
   procedure thlcg2ll.location_force_reg(list: TAsmList; var l: tlocation; src_size, dst_size: tdef; maybeconst: boolean);
     var
-{$ifndef cpu64bitalu}
       hregisterhi,
-{$endif}
       hregister : tregister;
 {$ifndef cpu64bitalu}
       hreg64 : tregister64;
+{$else cpu64bitalu}
+      hreg128 : tregister128;
 {$endif}
       hl: tasmlabel;
       oldloc : tlocation;
@@ -1040,6 +1040,84 @@ implementation
     begin
       oldloc:=l;
       dst_cgsize:=def_cgsize(dst_size);
+{$ifdef cpu64bitalu}
+      { handle transformations to 128bit separately }
+      if dst_cgsize in [OS_128,OS_S128] then
+       begin
+         if not (l.size in [OS_128,OS_S128]) then
+          begin
+            { widen a smaller value into a register pair }
+            hregister:=cg.getintregister(list,OS_64);
+            case l.loc of
+{$ifdef cpuflags}
+              LOC_FLAGS :
+                begin
+                  cg.g_flags2reg(list,OS_64,l.resflags,hregister);
+                  cg.a_reg_dealloc(list,NR_DEFAULTFLAGS);
+                end;
+{$endif cpuflags}
+              LOC_JUMP :
+                begin
+                  cg.a_label(list,l.truelabel);
+                  cg.a_load_const_reg(list,OS_64,1,hregister);
+                  current_asmdata.getjumplabel(hl);
+                  cg.a_jmp_always(list,hl);
+                  cg.a_label(list,l.falselabel);
+                  cg.a_load_const_reg(list,OS_64,0,hregister);
+                  cg.a_label(list,hl);
+                end;
+              else
+                a_load_loc_reg(list,src_size,u64inttype,l,hregister);
+            end;
+            { the high half is the sign/zero extension of the low half }
+            hregisterhi:=cg.getintregister(list,OS_64);
+            if l.size in [OS_S8,OS_S16,OS_S32,OS_S64] then
+              begin
+                if l.loc=LOC_CONSTANT then
+                  begin
+                    if l.value<0 then
+                      cg.a_load_const_reg(list,OS_64,-1,hregisterhi)
+                    else
+                      cg.a_load_const_reg(list,OS_64,0,hregisterhi);
+                  end
+                else
+                  cg.a_op_const_reg_reg(list,OP_SAR,OS_64,63,hregister,hregisterhi);
+              end
+            else
+              cg.a_load_const_reg(list,OS_64,0,hregisterhi);
+            location_reset(l,LOC_REGISTER,dst_cgsize);
+            l.register128.reglo:=hregister;
+            l.register128.reghi:=hregisterhi;
+          end
+         else
+          begin
+            { 128bit to 128bit }
+            if (l.loc=LOC_CREGISTER) and maybeconst then
+             begin
+               hregister:=l.register128.reglo;
+               hregisterhi:=l.register128.reghi;
+               const_location:=true;
+             end
+            else
+             begin
+               hregister:=cg.getintregister(list,OS_64);
+               hregisterhi:=cg.getintregister(list,OS_64);
+               const_location:=false;
+             end;
+            hreg128.reglo:=hregister;
+            hreg128.reghi:=hregisterhi;
+            { load value in new register }
+            cg128.a_load128_loc_reg(list,l,hreg128);
+            if not const_location then
+              location_reset(l,LOC_REGISTER,dst_cgsize)
+            else
+              location_reset(l,LOC_CREGISTER,dst_cgsize);
+            l.register128.reglo:=hregister;
+            l.register128.reghi:=hregisterhi;
+          end;
+       end
+      else
+{$endif cpu64bitalu}
 {$ifndef cpu64bitalu}
       { handle transformations to 64bit separate }
       if dst_cgsize in [OS_64,OS_S64] then

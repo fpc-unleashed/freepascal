@@ -66,6 +66,12 @@ interface
           procedure second_cmpsmallset;virtual;abstract;
           procedure second_cmp64bit;virtual;abstract;
           procedure second_cmpordinal;virtual;abstract;
+{$ifdef cpu64bitalu}
+          procedure second_op128bit;
+          { only implemented by CPUs that inline 128 bit operations }
+          procedure second_add128bit;virtual;
+          procedure second_cmp128bit;virtual;
+{$endif cpu64bitalu}
 
           function needoverflowcheck: boolean;
        end;
@@ -479,6 +485,29 @@ interface
       end;
 
 
+{$ifdef cpu64bitalu}
+    procedure tcgaddnode.second_op128bit;
+      begin
+        if nodetype in [ltn,lten,gtn,gten,equaln,unequaln] then
+          second_cmp128bit
+        else
+          second_add128bit;
+      end;
+
+
+    procedure tcgaddnode.second_add128bit;
+      begin
+        internalerror(2026071006);
+      end;
+
+
+    procedure tcgaddnode.second_cmp128bit;
+      begin
+        internalerror(2026071007);
+      end;
+{$endif cpu64bitalu}
+
+
     procedure tcgaddnode.second_add64bit;
       var
         op         : TOpCG;
@@ -791,6 +820,10 @@ interface
               { 64bit operations }
               else if is_64bit(left.resultdef) then
                 second_op64bit
+{$else cpu64bitalu}
+              { 128bit operations }
+              else if is_128bit(left.resultdef) then
+                second_op128bit
 {$endif cpu64bitalu}
               else
                 second_opordinal;

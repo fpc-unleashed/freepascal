@@ -31,7 +31,10 @@ interface
     type
        tx8664addnode = class(tx86addnode)
          function use_generic_mul64bit: boolean; override;
+         function use_generic_int128ops: boolean; override;
          procedure second_addordinal; override;
+         procedure second_add128bit; override;
+         procedure second_cmp128bit; override;
          procedure second_mul;
        end;
 
@@ -39,6 +42,7 @@ interface
 
     uses
       globtype,globals,verbose,
+      symconst,symdef,
       aasmbase,aasmdata,
       defutil,
       cgbase,cgutils,cga,cgobj,hlcgobj,cgx86,
@@ -48,6 +52,234 @@ interface
     begin
       result:=false;
     end;
+
+
+    function tx8664addnode.use_generic_int128ops: boolean;
+    begin
+      { mul still goes through the RTL helper }
+      result:=nodetype=muln;
+    end;
+
+
+{*****************************************************************************
+                                128-bit
+*****************************************************************************}
+
+    procedure tx8664addnode.second_add128bit;
+      var
+        op : TOpCG;
+        hregister,
+        hregister2 : tregister;
+        hl4 : tasmlabel;
+        mboverflow,
+        unsigned : boolean;
+      begin
+        pass_left_right;
+
+        mboverflow:=false;
+        unsigned:=((left.resultdef.typ=orddef) and
+                   (torddef(left.resultdef).ordtype=u128bit)) or
+                  ((right.resultdef.typ=orddef) and
+                   (torddef(right.resultdef).ordtype=u128bit));
+        case nodetype of
+          addn :
+            begin
+              op:=OP_ADD;
+              mboverflow:=true;
+            end;
+          subn :
+            begin
+              op:=OP_SUB;
+              mboverflow:=true;
+            end;
+          xorn:
+            op:=OP_XOR;
+          orn:
+            op:=OP_OR;
+          andn:
+            op:=OP_AND;
+          else
+            internalerror(2026071008);
+        end;
+
+        { the operand modified in place must live in a register pair }
+        if (left.location.loc<>LOC_REGISTER) then
+          begin
+            if (right.location.loc<>LOC_REGISTER) then
+              begin
+                hregister:=cg.getintregister(current_asmdata.CurrAsmList,OS_64);
+                hregister2:=cg.getintregister(current_asmdata.CurrAsmList,OS_64);
+                cg128.a_load128_loc_reg(current_asmdata.CurrAsmList,left.location,joinreg128(hregister,hregister2));
+                location_reset(left.location,LOC_REGISTER,left.location.size);
+                left.location.register128.reglo:=hregister;
+                left.location.register128.reghi:=hregister2;
+              end
+            else
+              begin
+                location_swap(left.location,right.location);
+                toggleflag(nf_swapped);
+              end;
+          end;
+
+        { subtraction is not commutative, so swap back, with the right
+          operand in a register pair as well }
+        if (nodetype=subn) and (nf_swapped in flags) then
+          begin
+            if right.location.loc<>LOC_REGISTER then
+              hlcg.location_force_reg(current_asmdata.CurrAsmList,right.location,right.resultdef,right.resultdef,false);
+            location_swap(left.location,right.location);
+            toggleflag(nf_swapped);
+          end;
+
+        if mboverflow and needoverflowcheck then
+          cg.a_reg_alloc(current_asmdata.CurrAsmList,NR_DEFAULTFLAGS);
+
+        cg128.a_op128_loc_reg(current_asmdata.CurrAsmList,op,left.location.size,
+          right.location,left.location.register128);
+        if right.location.loc<>LOC_REGISTER then
+          location_freetemp(current_asmdata.CurrAsmList,right.location);
+
+        { emit overflow check }
+        if mboverflow and needoverflowcheck then
+          begin
+            current_asmdata.getjumplabel(hl4);
+            if unsigned then
+              cg.a_jmp_flags(current_asmdata.CurrAsmList,F_AE,hl4)
+            else
+              cg.a_jmp_flags(current_asmdata.CurrAsmList,F_NO,hl4);
+            cg.a_reg_dealloc(current_asmdata.CurrAsmList,NR_DEFAULTFLAGS);
+            cg.a_call_name(current_asmdata.CurrAsmList,'FPC_OVERFLOW',false);
+            cg.a_label(current_asmdata.CurrAsmList,hl4);
+          end;
+
+        location_copy(location,left.location);
+      end;
+
+
+    procedure tx8664addnode.second_cmp128bit;
+      var
+        truelabel,
+        falselabel : tasmlabel;
+        href : treference;
+        unsigned : boolean;
+
+      procedure firstjmp128bitcmp;
+        var
+          oldnodetype : tnodetype;
+        begin
+          { the jump sequence is the same as for 64 bit on i386 }
+          case nodetype of
+            ltn,gtn:
+              begin
+                cg.a_jmp_flags(current_asmdata.CurrAsmList,getresflags(unsigned),location.truelabel);
+                { cheat a little bit for the negative test }
+                toggleflag(nf_swapped);
+                cg.a_jmp_flags(current_asmdata.CurrAsmList,getresflags(unsigned),location.falselabel);
+                toggleflag(nf_swapped);
+              end;
+            lten,gten:
+              begin
+                oldnodetype:=nodetype;
+                if nodetype=lten then
+                  nodetype:=ltn
+                else
+                  nodetype:=gtn;
+                cg.a_jmp_flags(current_asmdata.CurrAsmList,getresflags(unsigned),location.truelabel);
+                { cheat for the negative test }
+                if nodetype=ltn then
+                  nodetype:=gtn
+                else
+                  nodetype:=ltn;
+                cg.a_jmp_flags(current_asmdata.CurrAsmList,getresflags(unsigned),location.falselabel);
+                nodetype:=oldnodetype;
+              end;
+            equaln:
+              cg.a_jmp_flags(current_asmdata.CurrAsmList,F_NE,location.falselabel);
+            unequaln:
+              cg.a_jmp_flags(current_asmdata.CurrAsmList,F_NE,location.truelabel);
+            else
+              internalerror(2026071009);
+          end;
+        end;
+
+      procedure secondjmp128bitcmp;
+        begin
+          case nodetype of
+            ltn,gtn,lten,gten:
+              begin
+                { the comparison of the low halves is always unsigned }
+                cg.a_jmp_flags(current_asmdata.CurrAsmList,getresflags(true),location.truelabel);
+                cg.a_jmp_always(current_asmdata.CurrAsmList,location.falselabel);
+              end;
+            equaln:
+              begin
+                cg.a_jmp_flags(current_asmdata.CurrAsmList,F_NE,location.falselabel);
+                cg.a_jmp_always(current_asmdata.CurrAsmList,location.truelabel);
+              end;
+            unequaln:
+              begin
+                cg.a_jmp_flags(current_asmdata.CurrAsmList,F_NE,location.truelabel);
+                cg.a_jmp_always(current_asmdata.CurrAsmList,location.falselabel);
+              end;
+            else
+              internalerror(2026071010);
+          end;
+        end;
+
+      begin
+        pass_left_right;
+
+        unsigned:=((left.resultdef.typ=orddef) and
+                   (torddef(left.resultdef).ordtype=u128bit)) or
+                  ((right.resultdef.typ=orddef) and
+                   (torddef(right.resultdef).ordtype=u128bit));
+
+        { we have LOC_JUMP as result }
+        current_asmdata.getjumplabel(truelabel);
+        current_asmdata.getjumplabel(falselabel);
+        location_reset_jump(location,truelabel,falselabel);
+
+        { one operand must live in a register pair }
+        if not (left.location.loc in [LOC_REGISTER,LOC_CREGISTER]) then
+          begin
+            if not (right.location.loc in [LOC_REGISTER,LOC_CREGISTER]) then
+              hlcg.location_force_reg(current_asmdata.CurrAsmList,left.location,left.resultdef,left.resultdef,true)
+            else
+              begin
+                location_swap(left.location,right.location);
+                toggleflag(nf_swapped);
+              end;
+          end;
+
+        case right.location.loc of
+          LOC_REGISTER,
+          LOC_CREGISTER :
+            begin
+              cg.a_reg_alloc(current_asmdata.CurrAsmList,NR_DEFAULTFLAGS);
+              emit_reg_reg(A_CMP,S_Q,right.location.register128.reghi,left.location.register128.reghi);
+              firstjmp128bitcmp;
+              emit_reg_reg(A_CMP,S_Q,right.location.register128.reglo,left.location.register128.reglo);
+              secondjmp128bitcmp;
+              cg.a_reg_dealloc(current_asmdata.CurrAsmList,NR_DEFAULTFLAGS);
+            end;
+          LOC_CREFERENCE,
+          LOC_REFERENCE :
+            begin
+              tcgx86(cg).make_simple_ref(current_asmdata.CurrAsmList,right.location.reference);
+              href:=right.location.reference;
+              inc(href.offset,8);
+              cg.a_reg_alloc(current_asmdata.CurrAsmList,NR_DEFAULTFLAGS);
+              emit_ref_reg(A_CMP,S_Q,href,left.location.register128.reghi);
+              firstjmp128bitcmp;
+              emit_ref_reg(A_CMP,S_Q,right.location.reference,left.location.register128.reglo);
+              secondjmp128bitcmp;
+              cg.a_reg_dealloc(current_asmdata.CurrAsmList,NR_DEFAULTFLAGS);
+              location_freetemp(current_asmdata.CurrAsmList,right.location);
+            end;
+          else
+            internalerror(2026071011);
+        end;
+      end;
 
 {*****************************************************************************
                                 Addordinal

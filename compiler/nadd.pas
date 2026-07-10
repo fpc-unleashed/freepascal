@@ -74,7 +74,8 @@ interface
           { only implements "muln" nodes, the rest always has to be done in }
           { the code generator for performance reasons (JM)                 }
           function first_add64bitint: tnode; virtual;
-          { lowers all 128 bit operations and comparisons to helper calls }
+          { lowers 128 bit operations and comparisons to helper calls;
+            returns nil when the code generator handles the node inline }
           function first_add128bitint: tnode; virtual;
           function first_addpointer: tnode; virtual;
           function first_cmppointer: tnode; virtual;
@@ -89,6 +90,10 @@ interface
           { override and return false if code generator can handle }
           { full 64 bit multiplies.                                }
           function use_generic_mul64bit: boolean; virtual;
+
+          { override and return false if the code generator handles }
+          { the current 128 bit operation or comparison inline      }
+          function use_generic_int128ops: boolean; virtual;
 
 {$ifdef cpuneedsmulhelper}
           { override to customize to decide if the code generator }
@@ -4349,6 +4354,12 @@ const
       end;
 
 
+    function taddnode.use_generic_int128ops: boolean;
+      begin
+        result := true;
+      end;
+
+
     function taddnode.try_make_mul32to64: boolean;
 
       function canbe32bitint(v: tconstexprint; out canbesignedconst, canbeunsignedconst: boolean): boolean;
@@ -4644,6 +4655,15 @@ const
         procname: string[31];
         cmpcall: tnode;
       begin
+        if not use_generic_int128ops then
+          begin
+            result:=nil;
+            if nodetype in [addn,subn,andn,orn,xorn] then
+              expectloc:=LOC_REGISTER
+            else
+              expectloc:=LOC_JUMP;
+            exit;
+          end;
         case nodetype of
           addn:
             procname:='add';
@@ -5077,13 +5097,13 @@ const
                    we're done here }
                  expectloc:=LOC_REGISTER;
                end
-             { 128 bit ints are lowered to helper calls }
+             { 128 bit ints are lowered to helper calls unless the
+               code generator handles them inline }
              else if torddef(ld).ordtype in [s128bit,u128bit] then
                begin
                  result := first_add128bitint;
-                 if not assigned(result) then
-                   internalerror(2026070706);
-                 exit;
+                 if assigned(result) then
+                   exit;
                end
 {$if not defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
               { is there a 64 bit type ? }
