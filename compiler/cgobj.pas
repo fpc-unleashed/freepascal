@@ -3517,6 +3517,45 @@ implementation
               cg.a_op_reg_reg(list,OP_NOT,OS_64,regsrc.reglo,regdst.reglo);
               cg.a_op_reg_reg(list,OP_NOT,OS_64,regsrc.reghi,regdst.reghi);
             end;
+          OP_ADD:
+            begin
+              { branch-based carry; CPUs override this with their carry
+                flag or set-less-than chains }
+              tmp:=cg.getintregister(list,OS_64);
+              cg.a_load_reg_reg(list,OS_64,OS_64,regdst.reglo,tmp);
+              cg.a_op_reg_reg(list,OP_ADD,OS_64,regsrc.reglo,regdst.reglo);
+              cg.a_op_reg_reg(list,OP_ADD,OS_64,regsrc.reghi,regdst.reghi);
+              current_asmdata.getjumplabel(l1);
+              { the sum wrapped when it ends up below either operand }
+              cg.a_cmp_reg_reg_label(list,OS_64,OC_AE,tmp,regdst.reglo,l1);
+              cg.a_op_const_reg(list,OP_ADD,OS_64,1,regdst.reghi);
+              cg.a_label(list,l1);
+            end;
+          OP_SUB:
+            begin
+              tmp:=cg.getintregister(list,OS_64);
+              cg.a_load_reg_reg(list,OS_64,OS_64,regdst.reglo,tmp);
+              cg.a_op_reg_reg(list,OP_SUB,OS_64,regsrc.reglo,regdst.reglo);
+              cg.a_op_reg_reg(list,OP_SUB,OS_64,regsrc.reghi,regdst.reghi);
+              current_asmdata.getjumplabel(l1);
+              { borrow when the minuend was below the subtrahend }
+              cg.a_cmp_reg_reg_label(list,OS_64,OC_AE,regsrc.reglo,tmp,l1);
+              cg.a_op_const_reg(list,OP_SUB,OS_64,1,regdst.reghi);
+              cg.a_label(list,l1);
+            end;
+          OP_NEG:
+            begin
+              if regsrc.reglo<>regdst.reglo then
+                a_load128_reg_reg(list,regsrc,regdst);
+              { two's complement: invert the high half, negate the low
+                half and propagate the carry out of the low zero }
+              cg.a_op_reg_reg(list,OP_NOT,OS_64,regdst.reghi,regdst.reghi);
+              cg.a_op_reg_reg(list,OP_NEG,OS_64,regdst.reglo,regdst.reglo);
+              current_asmdata.getjumplabel(l1);
+              cg.a_cmp_const_reg_label(list,OS_64,OC_NE,0,regdst.reglo,l1);
+              cg.a_op_const_reg(list,OP_ADD,OS_64,1,regdst.reghi);
+              cg.a_label(list,l1);
+            end;
           OP_SHL,OP_SHR,OP_SAR:
             begin
               { the count comes in regsrc.reglo; bit 6 decides whether the
@@ -3581,7 +3620,6 @@ implementation
               cg.a_label(list,l2);
             end;
           else
-            { carry chains are CPU specific }
             internalerror(2026071002);
         end;
       end;
