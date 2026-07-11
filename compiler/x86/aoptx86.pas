@@ -16043,6 +16043,13 @@ unit aoptx86;
                     Result := True;
                     Exit;
                   end;
+
+                { If hp1 also writes to the target or source register (e.g. a
+                  partial write to a subregister), the registers no longer
+                  hold equal values, so stop searching }
+                if RegModifiedByInstruction(FullTargetReg,hp1) or
+                  RegModifiedByInstruction(FullSourceReg,hp1) then
+                  Break;
               end
             else
               Break;
