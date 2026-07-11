@@ -145,6 +145,16 @@ interface
                (not is_signed(left.resultdef) or is_signed(resultdef)) then
               location.size:=newsize
 {$endif}
+{$ifdef cpu64bitalu}
+            { narrowing a 128 bit register pair takes its low half }
+            else if is_128bit(left.resultdef) and
+               (left.location.loc in [LOC_REGISTER,LOC_CREGISTER]) then
+              begin
+                location_reset(location,LOC_REGISTER,newsize);
+                location.register:=cg.getintregister(current_asmdata.CurrAsmList,newsize);
+                cg.a_load_reg_reg(current_asmdata.CurrAsmList,OS_64,newsize,left.location.register128.reglo,location.register);
+              end
+{$endif cpu64bitalu}
             else if is_128bit(resultdef) then
               begin
                 { widen into a 16 byte temp: the low half is the 64 bit
