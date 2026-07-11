@@ -2594,7 +2594,7 @@ implementation
      begin
         case typ of
           orddef:
-{$if defined(x86_64) or defined(aarch64)}
+{$if defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
             { 128 bit ints live in a register pair }
             is_intregable:=true;
 {$else}

@@ -1083,7 +1083,11 @@ implementation
 
     function tshlshrnode.use_generic_int128ops: boolean;
       begin
+{$if defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
+        result:=false;
+{$else}
         result:=true;
+{$endif}
       end;
 
 
@@ -1345,7 +1349,12 @@ implementation
 
     function tunaryminusnode.use_generic_int128ops: boolean;
       begin
+{$if defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
+        { overflow-checked negation keeps the RTL helper }
+        result:=cs_check_overflow in current_settings.localswitches;
+{$else}
         result:=true;
+{$endif}
       end;
 
 
@@ -1649,7 +1658,11 @@ implementation
 
     function tnotnode.use_generic_int128ops: boolean;
       begin
+{$if defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
+        result:=false;
+{$else}
         result:=true;
+{$endif}
       end;
 
 

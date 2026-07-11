@@ -4358,7 +4358,15 @@ const
 
     function taddnode.use_generic_int128ops: boolean;
       begin
+{$if defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
+        { 64 bit register targets inline everything except mul and the
+          overflow-checked forms; CPU overrides narrow this further }
+        result := (nodetype=muln) or
+          ((nodetype in [addn,subn]) and
+           (cs_check_overflow in current_settings.localswitches));
+{$else}
         result := true;
+{$endif}
       end;
 
 
