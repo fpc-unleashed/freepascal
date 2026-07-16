@@ -49,6 +49,8 @@ await w;
 writeln(counter + 1);            // 42
 ```
 
+Inside a method the block has the method's full class context, like an anonymous function: `Self` and strict private members (including auto-property backing fields) resolve as usual.
+
 A bare expression with neither a call nor a block (`async (a + b)`) is a syntax error - wrap it in a routine.
 
 ## `await` - join and read
@@ -153,7 +155,7 @@ The exception is delivered exactly once: after the first `await` re-raises it, a
 
 ## Targets of the call form
 
-The call form accepts an ordinary routine, a method (the `self` reference is snapshotted like an argument), an overloaded routine, a generic specialization (`async TwoOf<Integer>(21)`), and a call through a procedural variable (`async pv()` - the procvar value is snapshotted, later reassignment does not affect the spawned work).
+The call form accepts an ordinary routine, a method of any visibility including strict private (the `self` reference is snapshotted like an argument), an overloaded routine, a generic specialization (`async TwoOf<Integer>(21)`), and a call through a procedural variable (`async pv()` - the procvar value is snapshotted, later reassignment does not affect the spawned work).
 
 Not accepted, with dedicated errors:
 

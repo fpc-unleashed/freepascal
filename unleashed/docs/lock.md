@@ -92,7 +92,7 @@ lock(CacheLock) do Cache.Add(key, value);
 trylock(CacheLock) wait 50 do Cache.Add(key, value) else ;
 ```
 
-The explicit CS may be a global, a class var, a local variable, or a `var` parameter - the compiler does not constrain its storage class because the user is on the hook for the lifetime.
+The explicit CS may be a global, a class var, a local variable, a `var` parameter, an instance field, or a dereferenced pointer (`lock(p^)`) - the compiler does not constrain its storage class because the user is on the hook for the lifetime. An instance field CS serializes per instance: `lock(cs) do ...` inside a method of a class with `cs: TRTLCriticalSection` locks only that object. For field and pointer targets the address is evaluated once, before the first acquisition attempt, so mutating the pointer inside the body cannot unbalance the release.
 
 ## `trylock` semantics
 
@@ -120,9 +120,9 @@ Inside the target list and the `wait` clause the bare names are taken contextual
 
 ## Restrictions
 
-- Every `lock(...)` / `trylock(...)` target must be a **variable reference** (identifier or qualified identifier). Expressions, function calls, and literals are rejected (`E_lock argument must be a variable reference`).
+- Every `lock(...)` / `trylock(...)` target must be an **assignable location**: a variable, or for an explicit `TRTLCriticalSection` also an instance field or a dereferenced pointer. Expressions, function calls, and literals are rejected (`E_lock argument must be a variable reference`).
 - For the auto path (non-CS type), the target must be a **global** (unit `var`) or a **class var**. Local variables and parameters are rejected because the hidden CS lives in the unit's init/fini, which has no per-call instance to wire to (`E_lock auto-locking only supports global variables and class vars`).
-- **Instance fields** (`lock(self.field)`) are rejected - they would need per-instance lock storage that is not provided (`E_lock cannot target an instance field`). Workarounds: promote to `class var`, or pass an explicit `TRTLCriticalSection` field through a parameter.
+- **Auto-locking on a field** (`lock(self.field)` with a non-CS field) is rejected - the hidden CS is keyed by the target symbol, not by the instance, so all instances would share one lock (`E_lock cannot auto-lock on a field`). For per-instance locking give the object an explicit `TRTLCriticalSection` field and lock on that; otherwise promote the target to a `class var` or a global.
 - There is no warning when the body modifies a global that is **not** named in the target list - the compiler trusts the programmer to pick the right lock granularity.
 
 ## Re-entrancy
