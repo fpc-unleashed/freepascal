@@ -5287,12 +5287,12 @@ implementation
       end;
 
 
-    { Build a `proc(sym)` system-procedure call node where sym is loaded
-      verbatim (the routine expects a var/out TRTLCriticalSection). }
-    function lock_build_cs_call(const procname: string; sym: tsym): tnode;
+    { Build a `proc(target)` system-procedure call node from a copy of the
+      target lvalue (the routine expects a var/out TRTLCriticalSection). }
+    function lock_build_cs_call(const procname: string; target: tnode): tnode;
       begin
         result:=ccallnode.createintern(procname,
-          ccallparanode.create(cloadnode.create(sym, sym.owner), nil));
+          ccallparanode.create(target.getcopy, nil));
       end;
 
 
@@ -5330,34 +5330,55 @@ implementation
       end;
 
 
-    { Insertion-sort `syms` by realname so any two `lock(...)` sites that
-      mention the same set of variables lock them in the same order; that's
-      enough to prevent the AB-vs-BA deadlock pattern. }
-    procedure lock_sort_syms(var syms: array of tsym);
+    { Stable ordering key for a lock target: the dotted source path of the
+      variable / field / deref chain it names. }
+    function lock_target_name(n: tnode): ansistring;
+      begin
+        case n.nodetype of
+          loadn:
+            result:=tloadnode(n).symtableentry.realname;
+          subscriptn:
+            result:=lock_target_name(tsubscriptnode(n).left)+'.'+tsubscriptnode(n).vs.realname;
+          derefn:
+            result:=lock_target_name(tderefnode(n).left)+'^';
+          else
+            result:='';
+        end;
+      end;
+
+
+    { Insertion-sort targets by their ordering key so any two `lock(...)`
+      sites that mention the same set of variables lock them in the same
+      order; that's enough to prevent the AB-vs-BA deadlock pattern. }
+    procedure lock_sort_targets(var targets: array of tnode; var names: array of ansistring);
       var
         i, j: longint;
-        tmp: tsym;
+        tmpn: tnode;
+        tmps: ansistring;
       begin
-        for i:=1 to high(syms) do
+        for i:=1 to high(targets) do
           begin
             j:=i;
-            while (j>0) and (CompareStr(syms[j-1].realname, syms[j].realname) > 0) do
+            while (j>0) and (CompareStr(names[j-1], names[j]) > 0) do
               begin
-                tmp:=syms[j-1];
-                syms[j-1]:=syms[j];
-                syms[j]:=tmp;
+                tmpn:=targets[j-1];
+                targets[j-1]:=targets[j];
+                targets[j]:=tmpn;
+                tmps:=names[j-1];
+                names[j-1]:=names[j];
+                names[j]:=tmps;
                 dec(j);
               end;
           end;
       end;
 
 
-    { TryEnterCriticalSection(sym) <> 0 }
-    function lock_build_tryenter(sym: tsym): tnode;
+    { TryEnterCriticalSection(target) <> 0 }
+    function lock_build_tryenter(target: tnode): tnode;
       begin
         result:=caddnode.create(unequaln,
           ccallnode.createintern('TRYENTERCRITICALSECTION',
-            ccallparanode.create(cloadnode.create(sym, sym.owner), nil)),
+            ccallparanode.create(target.getcopy, nil)),
           cordconstnode.create(0, s32inttype, false));
       end;
 
@@ -5366,27 +5387,27 @@ implementation
       take each CS with TryEnter in order; on the first failure release
       the ones already taken (reverse order) so a partial grab can never
       deadlock against another multi-lock site }
-    function lock_build_tryall(const syms: array of tsym; acquired: tlocalvarsym; idx: longint): tnode;
+    function lock_build_tryall(const targets: array of tnode; acquired: tlocalvarsym; idx: longint): tnode;
       var
         rollback: tblocknode;
         rstat: tstatementnode;
         succ: tnode;
         j: longint;
       begin
-        if idx=high(syms) then
+        if idx=high(targets) then
           succ:=cassignmentnode.create(
             cloadnode.create(acquired, acquired.owner),
             cordconstnode.create(1, pasbool1type, false))
         else
-          succ:=lock_build_tryall(syms, acquired, idx+1);
+          succ:=lock_build_tryall(targets, acquired, idx+1);
         if idx=0 then
-          result:=cifnode.create(lock_build_tryenter(syms[idx]), succ, nil)
+          result:=cifnode.create(lock_build_tryenter(targets[idx]), succ, nil)
         else
           begin
             rollback:=internalstatements(rstat);
             for j:=idx-1 downto 0 do
-              addstatement(rstat, lock_build_cs_call('LEAVECRITICALSECTION', syms[j]));
-            result:=cifnode.create(lock_build_tryenter(syms[idx]), succ, rollback);
+              addstatement(rstat, lock_build_cs_call('LEAVECRITICALSECTION', targets[j]));
+            result:=cifnode.create(lock_build_tryenter(targets[idx]), succ, rollback);
           end;
       end;
 
@@ -5400,7 +5421,7 @@ implementation
       summing slept slices stays an honest elapsed-time estimate without
       reading any clock. The event is created on demand - the uncontended
       fast path allocates nothing. }
-    function trylock_build(const syms: array of tsym; waitnode, body, elsebody: tnode; const filepos: tfileposinfo): tnode;
+    function trylock_build(const targets: array of tnode; waitnode, body, elsebody: tnode; const filepos: tfileposinfo): tnode;
       const
         spin_yields = 3;
         slice_ms = 16;
@@ -5455,12 +5476,12 @@ implementation
               cloadnode.create(remaining_sym, remaining_sym.owner),
               waitnode));
           end;
-        addstatement(stmts, lock_build_tryall(syms, acquired_sym, 0));
+        addstatement(stmts, lock_build_tryall(targets, acquired_sym, 0));
         for i:=1 to spin_yields do
           begin
             spin_block:=internalstatements(spin_stat);
             addstatement(spin_stat, ccallnode.createintern('THREADSWITCH', nil));
-            addstatement(spin_stat, lock_build_tryall(syms, acquired_sym, 0));
+            addstatement(spin_stat, lock_build_tryall(targets, acquired_sym, 0));
             addstatement(stmts, cifnode.create(
               cnotnode.create(cloadnode.create(acquired_sym, acquired_sym.owner)),
               spin_block, nil));
@@ -5497,7 +5518,7 @@ implementation
               caddnode.create(subn,
                 cloadnode.create(remaining_sym, remaining_sym.owner),
                 cloadnode.create(slice_sym, slice_sym.owner))));
-            addstatement(loop_stat, lock_build_tryall(syms, acquired_sym, 0));
+            addstatement(loop_stat, lock_build_tryall(targets, acquired_sym, 0));
             addstatement(sleep_stat, cwhilerepeatnode.create(
               caddnode.create(andn,
                 cnotnode.create(cloadnode.create(acquired_sym, acquired_sym.owner)),
@@ -5521,8 +5542,8 @@ implementation
           an empty body cannot raise, so skip the try-finally - it would
           otherwise emit an unused exception frame (objfpc-family hint) }
         leave_block:=internalstatements(leave_stat);
-        for i:=high(syms) downto 0 do
-          addstatement(leave_stat, lock_build_cs_call('LEAVECRITICALSECTION', syms[i]));
+        for i:=high(targets) downto 0 do
+          addstatement(leave_stat, lock_build_cs_call('LEAVECRITICALSECTION', targets[i]));
         if has_no_code(body) then
           begin
             body.free;
@@ -5547,25 +5568,57 @@ implementation
       mandatory else branch without the lock held. }
     function lock_statement(is_try: boolean) : tnode;
       var
-        cs_syms: array of tsym;
-        body, arg, waitnode, elsebody: tnode;
-        enter_stat, leave_stat: tstatementnode;
-        enter_block, leave_block: tblocknode;
+        cs_targets: array of tnode;
+        cs_names: array of ansistring;
+        addr_inits: array of tnode;
+        body, arg, waitnode, elsebody, built: tnode;
+        enter_stat, leave_stat, init_stat: tstatementnode;
+        enter_block, leave_block, init_block: tblocknode;
         i: longint;
         filepos: tfileposinfo;
         arg_sym: tsym;
+        hidden_cs: tstaticvarsym;
+        addrtemp: tlocalvarsym;
         cs_typesym: ttypesym;
-        is_explicit_cs: boolean;
+        is_explicit_cs, arg_error: boolean;
         sline, scol: string[12];
         csname: ansistring;
+
+      procedure add_target(target: tnode; const name: ansistring);
+        begin
+          setlength(cs_targets, length(cs_targets)+1);
+          cs_targets[high(cs_targets)]:=target;
+          setlength(cs_names, length(cs_names)+1);
+          cs_names[high(cs_names)]:=name;
+        end;
+
+      { the enter/leave builders only ever copy the targets, so the originals
+        (and, on the error path, the unconsumed address initializers) are
+        always freed here }
+      procedure free_targets(free_inits: boolean);
+        var
+          j: longint;
+        begin
+          for j:=0 to high(cs_targets) do
+            cs_targets[j].free;
+          if free_inits then
+            for j:=0 to high(addr_inits) do
+              addr_inits[j].free;
+        end;
+
       begin
         if is_try then
           consume(_TRYLOCK)
         else
           consume(_LOCK);
         filepos:=current_tokenpos;
-        setlength(cs_syms, 0);
+        str(filepos.line, sline);
+        str(filepos.column, scol);
+        setlength(cs_targets, 0);
+        setlength(cs_names, 0);
+        setlength(addr_inits, 0);
         waitnode:=nil;
+        arg_error:=false;
         cs_typesym:=search_named_unit_globaltype('SYSTEM','TRTLCRITICALSECTION',false);
         if try_to_consume(_LKLAMMER) then
           begin
@@ -5574,58 +5627,97 @@ implementation
               if (not assigned(arg)) or (arg.nodetype=errorn) then
                 begin
                   arg.free;
-                  exit(cerrornode.create);
+                  arg_error:=true;
+                  continue;
                 end;
-              arg_sym:=nil;
-              if arg.nodetype=loadn then
-                arg_sym:=tloadnode(arg).symtableentry;
-              if not assigned(arg_sym) then
-                begin
-                  MessagePos(arg.fileinfo, parser_e_lock_arg_not_variable);
-                  arg.free;
-                  exit(cerrornode.create);
-                end;
-              if arg_sym.typ=fieldvarsym then
-                begin
-                  MessagePos(arg.fileinfo, parser_e_lock_field_arg);
-                  arg.free;
-                  exit(cerrornode.create);
-                end;
-              is_explicit_cs:=assigned(cs_typesym) and
+              is_explicit_cs:=assigned(cs_typesym) and assigned(arg.resultdef) and
                               equal_defs(arg.resultdef, cs_typesym.typedef);
               if is_explicit_cs then
                 begin
-                  setlength(cs_syms, length(cs_syms)+1);
-                  cs_syms[high(cs_syms)]:=arg_sym;
+                  { any assignable location works: the lowering only needs a
+                    stable lvalue to pass to Enter/Leave/TryEnter }
+                  if not valid_for_var(arg, false) then
+                    begin
+                      MessagePos(arg.fileinfo, parser_e_lock_arg_not_variable);
+                      arg.free;
+                      arg_error:=true;
+                    end
+                  else if arg.nodetype=loadn then
+                    add_target(arg, tloadnode(arg).symtableentry.realname)
+                  else
+                    begin
+                      { instance field, deref, ... - snapshot the address once
+                        into a hidden local so every Enter/Leave hits the same
+                        section even if parts of the expression change while
+                        the lock is held }
+                      csname:=lock_target_name(arg);
+                      addrtemp:=clocalvarsym.create(
+                        '$lock_tgt'+tostr(length(cs_targets))+'_'+sline+'_'+scol,
+                        vs_value, cpointerdef.getreusable(cs_typesym.typedef), []);
+                      include(addrtemp.symoptions, sp_internal);
+                      { the initializer is prepended after the acquisition
+                        block is already typechecked, so DFA must not flag
+                        the loads in it }
+                      addrtemp.varstate:=vs_initialised;
+                      symtablestack.top.insertsym(addrtemp);
+                      setlength(addr_inits, length(addr_inits)+1);
+                      addr_inits[high(addr_inits)]:=cassignmentnode.create(
+                        cloadnode.create(addrtemp, addrtemp.owner),
+                        ctypeconvnode.create_internal(caddrnode.create_internal(arg),
+                          addrtemp.vardef));
+                      add_target(cderefnode.create(
+                        cloadnode.create(addrtemp, addrtemp.owner)), csname);
+                    end;
                 end
               else
                 begin
-                  if arg_sym.typ<>staticvarsym then
+                  arg_sym:=nil;
+                  if arg.nodetype=loadn then
+                    arg_sym:=tloadnode(arg).symtableentry;
+                  { an auto target's hidden CS is keyed by symbol, not by
+                    instance, so a field makes no sense here - only an
+                    explicit TRTLCriticalSection field does }
+                  if (arg.nodetype=subscriptn) or
+                     (assigned(arg_sym) and (arg_sym.typ=fieldvarsym)) then
+                    begin
+                      MessagePos(arg.fileinfo, parser_e_lock_field_arg);
+                      arg.free;
+                      arg_error:=true;
+                    end
+                  else if not assigned(arg_sym) then
+                    begin
+                      MessagePos(arg.fileinfo, parser_e_lock_arg_not_variable);
+                      arg.free;
+                      arg_error:=true;
+                    end
+                  else if arg_sym.typ<>staticvarsym then
                     begin
                       MessagePos(arg.fileinfo, parser_e_lock_local_arg);
                       arg.free;
-                      exit(cerrornode.create);
+                      arg_error:=true;
+                    end
+                  else
+                    begin
+                      hidden_cs:=lock_find_or_create_hidden_cs(
+                        '$lock_var_'+arg_sym.realname);
+                      add_target(cloadnode.create(hidden_cs, hidden_cs.owner),
+                        arg_sym.realname);
+                      arg.free;
                     end;
-                  setlength(cs_syms, length(cs_syms)+1);
-                  cs_syms[high(cs_syms)]:=lock_find_or_create_hidden_cs(
-                    '$lock_var_'+arg_sym.realname);
                 end;
-              arg.free;
             until not try_to_consume(_COMMA);
             consume(_RKLAMMER);
-            if length(cs_syms)>1 then
-              lock_sort_syms(cs_syms);
+            if length(cs_targets)>1 then
+              lock_sort_targets(cs_targets, cs_names);
           end;
-        if length(cs_syms)=0 then
+        if (length(cs_targets)=0) and not arg_error then
           begin
             { per-callsite hidden CS named by source position - two bare
               statements never share a lock, even when they touch the same
               variable }
-            str(filepos.line, sline);
-            str(filepos.column, scol);
             csname:='$lock_cs_'+sline+'_'+scol;
-            setlength(cs_syms, 1);
-            cs_syms[0]:=lock_find_or_create_hidden_cs(csname);
+            hidden_cs:=lock_find_or_create_hidden_cs(csname);
+            add_target(cloadnode.create(hidden_cs, hidden_cs.owner), csname);
           end;
         { `wait <expr>` - only the trylock form can give up, so only it can
           bound the acquisition. Nothing else is legal between the target
@@ -5640,6 +5732,7 @@ implementation
             if (not assigned(waitnode)) or (waitnode.nodetype=errorn) or not is_try then
               begin
                 waitnode.free;
+                free_targets(true);
                 exit(cerrornode.create);
               end;
           end;
@@ -5649,6 +5742,7 @@ implementation
           begin
             body.free;
             waitnode.free;
+            free_targets(true);
             exit(cerrornode.create);
           end;
         if is_try then
@@ -5660,6 +5754,7 @@ implementation
                 Message(parser_e_trylock_needs_else);
                 body.free;
                 waitnode.free;
+                free_targets(true);
                 exit(cerrornode.create);
               end;
             elsebody:=statement;
@@ -5668,18 +5763,49 @@ implementation
                 elsebody.free;
                 body.free;
                 waitnode.free;
+                free_targets(true);
                 exit(cerrornode.create);
               end;
-            exit(trylock_build(cs_syms, waitnode, body, elsebody, filepos));
+            { a bad target already got its own error; the statement is fully
+              parsed, so bail without the misleading syntax cascade }
+            if arg_error then
+              begin
+                elsebody.free;
+                body.free;
+                waitnode.free;
+                free_targets(true);
+                exit(cerrornode.create);
+              end;
+            built:=trylock_build(cs_targets, waitnode, body, elsebody, filepos);
+            if length(addr_inits)>0 then
+              begin
+                init_block:=internalstatements(init_stat);
+                for i:=0 to high(addr_inits) do
+                  addstatement(init_stat, addr_inits[i]);
+                addstatement(init_stat, built);
+                init_block.fileinfo:=filepos;
+                typecheckpass(tnode(init_block));
+                built:=init_block;
+              end;
+            free_targets(false);
+            exit(built);
+          end;
+        if arg_error then
+          begin
+            body.free;
+            free_targets(true);
+            exit(cerrornode.create);
           end;
         enter_block:=internalstatements(enter_stat);
-        for i:=0 to high(cs_syms) do
+        for i:=0 to high(addr_inits) do
+          addstatement(enter_stat, addr_inits[i]);
+        for i:=0 to high(cs_targets) do
           addstatement(enter_stat,
-            lock_build_cs_call('ENTERCRITICALSECTION', cs_syms[i]));
+            lock_build_cs_call('ENTERCRITICALSECTION', cs_targets[i]));
         leave_block:=internalstatements(leave_stat);
-        for i:=high(cs_syms) downto 0 do
+        for i:=high(cs_targets) downto 0 do
           addstatement(leave_stat,
-            lock_build_cs_call('LEAVECRITICALSECTION', cs_syms[i]));
+            lock_build_cs_call('LEAVECRITICALSECTION', cs_targets[i]));
         { an empty body cannot raise - acquire then release directly, skipping
           the try-finally that would emit an unused exception frame }
         if has_no_code(body) then
@@ -5691,6 +5817,7 @@ implementation
           addstatement(enter_stat, ctryfinallynode.create(body, leave_block));
         enter_block.fileinfo:=filepos;
         typecheckpass(tnode(enter_block));
+        free_targets(false);
         result:=enter_block;
       end;
 

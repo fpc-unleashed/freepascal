@@ -1859,14 +1859,14 @@ parser_e_field_bitsize_not_allowed_on_enum=03410_E_"bitsize N" is not allowed on
 % type for the enum itself.
 parser_e_lock_arg_not_variable=03413_E_`lock` argument must be a variable reference
 % Inside the parenthesised list of `lock(...)` / `trylock(...)`, every entry
-% must name a variable directly (an identifier or qualified identifier).
-% Expressions, function calls, literals, and other non-variable forms are
-% not accepted.
-parser_e_lock_field_arg=03414_E_`lock` cannot target an instance field - use a global, class var, or an explicit `TRTLCriticalSection`
-% Locking on an instance field would require a per-instance critical
-% section, which the v1 implementation does not provide. Promote the lock
-% target to a global, a class var, or pass an explicit `TRTLCriticalSection`
-% variable that you manage yourself.
+% must be an assignable location: a variable, or for an explicit
+% `TRTLCriticalSection` also an instance field or a dereferenced pointer.
+% Function calls, literals, and other non-variable forms are not accepted.
+parser_e_lock_field_arg=03414_E_`lock` cannot auto-lock on a field - use an explicit `TRTLCriticalSection`, a global, or a class var
+% An auto-generated critical section is keyed by the target symbol, not by
+% the instance, so all instances would share one lock. For per-instance
+% locking give the object an explicit `TRTLCriticalSection` field and lock
+% on that; otherwise promote the target to a global or a class var.
 parser_e_lock_local_arg=03415_E_`lock` auto-locking only supports global variables and class vars - for locals pass an explicit `TRTLCriticalSection`
 % Auto-generated critical sections live in the unit's init/fini sections,
 % so the target must be reachable from there. Local variables and
