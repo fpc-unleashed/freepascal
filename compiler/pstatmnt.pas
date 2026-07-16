@@ -56,7 +56,7 @@ implementation
        nutils,ngenutil,nbas,nadd,ncal,nmem,nset,ncnv,ncon,nld,nflw,ninl,nmat,
        { parser }
        scanner,
-       pbase,ptype,pexpr,ptconst,pdecl,pparautl,
+       pbase,ptype,pexpr,ptconst,pdecl,pparautl,procdefutil,
        { codegen }
        procinfo,cgbase,ncgutil,
        { assembler reader }
@@ -3906,6 +3906,21 @@ implementation
               consume(_COLON);
               read_anon_type(hdef, false, nil);
               block_type := bt_var;
+              // anonymous function reference type: convert it to its
+              // interface representation like regular var sections do
+              if (hdef.typ=procvardef) and (hdef.typesym=nil) and
+                 (po_is_function_ref in tprocvardef(hdef).procoptions) then
+                begin
+                  if not (m_function_references in current_settings.modeswitches) and
+                     not (po_is_block in tprocvardef(hdef).procoptions) then
+                    Message(sym_e_error_in_type_def)
+                  else
+                    begin
+                      adjust_funcref(hdef,nil,nil);
+                      if current_scanner.replay_stack_depth=0 then
+                        hdef.register_def;
+                    end;
+                end;
               for i := 0 to sc.count - 1 do
                 begin
                   tabstractnormalvarsym(sc[i]).vardef := hdef;
