@@ -712,12 +712,15 @@ implementation
           newparams:=nil;
           for i:=0 to argfields.count-1 do
             newparams:=ccallparanode.create(impl_field(tfieldvarsym(argfields[i])),newparams);
+          { visibility was already checked when the async site resolved the
+            call; the rebuilt call typechecks inside the impl class, where a
+            strict private target would wrongly drop out of the candidates }
           if isprocvar then
             workcall:=ccallnode.create_procvar(newparams,impl_field(fPv))
           else if ismethod then
-            workcall:=ccallnode.create(newparams,origprocsym,origst,impl_field(fSelf),[],nil)
+            workcall:=ccallnode.create(newparams,origprocsym,origst,impl_field(fSelf),[cnf_ignore_visibility],nil)
           else
-            workcall:=ccallnode.create(newparams,origprocsym,origst,nil,[],nil);
+            workcall:=ccallnode.create(newparams,origprocsym,origst,nil,[cnf_ignore_visibility],nil);
           if not isvoid then
             workcall:=cassignmentnode.create(impl_field(fRes),workcall);
         end;

@@ -3053,7 +3053,10 @@ implementation
         old_current_structdef:=current_structdef;
         current_procinfo:=nil;
         current_structdef:=nil;
-        if parse_proc_head(nil,potype_procedure,[ppf_anonymous],nil,nil,pd) then
+        { hand the enclosing struct over like parse_proc_dec does for regular
+          anonymous functions - the block body then sees strict private
+          members and `Self` when spawned inside a method }
+        if parse_proc_head(old_current_structdef,potype_procedure,[ppf_anonymous],nil,nil,pd) then
           begin
             if assigned(pd) then
               begin
@@ -3065,7 +3068,7 @@ implementation
                 include(cancelsym.varoptions,vo_volatile);
                 include(cancelsym.symoptions,sp_internal);
                 pd.parast.insertsym(cancelsym);
-                parse_proc_dec_finish(pd,[ppf_anonymous],nil);
+                parse_proc_dec_finish(pd,[ppf_anonymous],old_current_structdef);
                 { the usefwpd path of read_proc skips the calling-convention
                   setup, so do it here (this also fills pd.paras) }
                 handle_calling_convention(pd,hcc_default_actions_impl);
