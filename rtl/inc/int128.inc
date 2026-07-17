@@ -630,11 +630,11 @@ begin
 end;
 
 { shared Val core: parses [sign][base-prefix]digits; sets code to 0 on
-  success or the 1-based position of the offending char }
-procedure int128_val(const s:shortstring;out lo,hi:qword;out negative:boolean;out code:SizeInt);
+  success or the 1-based position of the offending char; base is returned
+  so the callers can apply base specific range rules }
+procedure int128_val(const s:shortstring;out lo,hi:qword;out negative:boolean;out base:byte;out code:SizeInt);
 var
   i,ns,stop:SizeInt;
-  base:byte;
 begin
   lo:=0;
   hi:=0;
@@ -686,9 +686,10 @@ function fpc_val_uint128_shortstr(const s:shortstring;out code:ValSInt):UInt128;
 var
   lo,hi:qword;
   negative:boolean;
+  base:byte;
   cd:SizeInt;
 begin
-  int128_val(s,lo,hi,negative,cd);
+  int128_val(s,lo,hi,negative,base,cd);
   if (cd=0) and negative and ((lo<>0) or (hi<>0)) then
     { a negative value does not fit an unsigned target }
     cd:=1;
@@ -706,9 +707,10 @@ function fpc_val_int128_shortstr(const s:shortstring;out code:ValSInt):Int128; [
 var
   lo,hi:qword;
   negative:boolean;
+  base:byte;
   cd:SizeInt;
 begin
-  int128_val(s,lo,hi,negative,cd);
+  int128_val(s,lo,hi,negative,base,cd);
   if cd=0 then
     begin
       if negative then
@@ -721,7 +723,9 @@ begin
             int128_neg(lo,hi);
         end
       else
-        if int64(hi)<0 then
+        { decimal input must fit the positive range; the other bases
+          accept the full bit pattern like the smaller signed types }
+        if (base=10) and (int64(hi)<0) then
           cd:=1;
     end;
   code:=cd;
