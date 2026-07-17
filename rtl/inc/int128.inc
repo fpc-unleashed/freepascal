@@ -80,6 +80,102 @@ begin
   ovf:=ovf or (rhi<t);
 end;
 
+{ unsigned 128 by 64 bit division: (alo,ahi) div b with a 128 bit quotient
+  and 64 bit remainder; schoolbook on 32 bit limbs (Knuth algorithm D), one
+  hardware 64 by 32 division per quotient digit instead of a 128 pass bit
+  loop }
+procedure int128_divmodu64(alo,ahi,b:qword;out qlo,qhi:qword;out r:qword);
+var
+  sh,j:longint;
+  v,v1,v0,t,p,qhat,rhat:qword;
+  k,bw:int64;
+  un:array[0..4] of qword;
+  q:array[0..2] of qword;
+begin
+  if b<qword($100000000) then
+    begin
+      { single limb divisor: roll the remainder through the four limbs }
+      t:=ahi shr 32;
+      q[2]:=t div b;
+      t:=((t mod b) shl 32) or (ahi and $ffffffff);
+      qhi:=(q[2] shl 32) or (t div b);
+      t:=((t mod b) shl 32) or (alo shr 32);
+      q[1]:=t div b;
+      t:=((t mod b) shl 32) or (alo and $ffffffff);
+      qlo:=(q[1] shl 32) or (t div b);
+      r:=t mod b;
+      exit;
+    end;
+  { normalize the divisor so its top bit is set; at most 31 steps }
+  sh:=0;
+  v:=b;
+  while int64(v)>=0 do
+    begin
+      v:=v shl 1;
+      inc(sh);
+    end;
+  v1:=v shr 32;
+  v0:=v and $ffffffff;
+  { the dividend shifted left in step, split into 32 bit limbs }
+  if sh=0 then
+    begin
+      un[4]:=0;
+      un[3]:=ahi shr 32;
+      un[2]:=ahi and $ffffffff;
+      un[1]:=alo shr 32;
+      un[0]:=alo and $ffffffff;
+    end
+  else
+    begin
+      un[4]:=ahi shr (64-sh);
+      t:=(ahi shl sh) or (alo shr (64-sh));
+      un[3]:=t shr 32;
+      un[2]:=t and $ffffffff;
+      t:=alo shl sh;
+      un[1]:=t shr 32;
+      un[0]:=t and $ffffffff;
+    end;
+  for j:=2 downto 0 do
+    begin
+      { estimate the digit from the top two limbs of the window }
+      t:=(un[j+2] shl 32) or un[j+1];
+      qhat:=t div v1;
+      rhat:=t mod v1;
+      while (qhat>$ffffffff) or (qhat*v0>(rhat shl 32) or un[j]) do
+        begin
+          dec(qhat);
+          inc(rhat,v1);
+          if rhat>$ffffffff then
+            break;
+        end;
+      { subtract the digit's product from the window, tracking the borrow }
+      p:=qhat*v0;
+      bw:=int64(un[j])-int64(p and $ffffffff);
+      un[j]:=qword(bw) and $ffffffff;
+      k:=int64(p shr 32)-SarInt64(bw,32);
+      p:=qhat*v1;
+      bw:=int64(un[j+1])-k-int64(p and $ffffffff);
+      un[j+1]:=qword(bw) and $ffffffff;
+      k:=int64(p shr 32)-SarInt64(bw,32);
+      bw:=int64(un[j+2])-k;
+      un[j+2]:=qword(bw) and $ffffffff;
+      q[j]:=qhat;
+      { the estimate can be one too large, then add the divisor back }
+      if bw<0 then
+        begin
+          dec(q[j]);
+          t:=un[j]+v0;
+          un[j]:=t and $ffffffff;
+          t:=un[j+1]+v1+(t shr 32);
+          un[j+1]:=t and $ffffffff;
+          un[j+2]:=(un[j+2]+(t shr 32)) and $ffffffff;
+        end;
+    end;
+  qlo:=(q[1] shl 32) or q[0];
+  qhi:=q[2];
+  r:=((un[1] shl 32) or un[0]) shr sh;
+end;
+
 { unsigned 128 bit division with remainder (binary long division) }
 procedure int128_divmodu(alo,ahi,blo,bhi:qword;out qlo,qhi,rlo,rhi:qword);
 var
@@ -91,6 +187,12 @@ begin
       qlo:=alo div blo;
       qhi:=0;
       rlo:=alo mod blo;
+      rhi:=0;
+      exit;
+    end;
+  if bhi=0 then
+    begin
+      int128_divmodu64(alo,ahi,blo,qlo,qhi,rlo);
       rhi:=0;
       exit;
     end;
@@ -501,24 +603,41 @@ end;
                           decimal conversion core
 ****************************************************************************}
 
-{ unsigned 128 bit magnitude to its shortstring decimal digits }
+{ unsigned 128 bit magnitude to its shortstring decimal digits; the value
+  is cut into chunks of 10^19 so the digits come from 64 bit arithmetic
+  instead of a 128 bit division per digit }
 procedure int128_udecimal(lo,hi:qword;out s:shortstring);
+const
+  p19=qword(10000000000000000000);
+  zeros:string[18]='000000000000000000';
 var
-  qlo,qhi,rlo,rhi:qword;
-  i,n:longint;
-  tmp:array[0..39] of ansichar;
+  qlo,qhi,dhi,c0,c1,c2:qword;
+  t:shortstring;
 begin
-  n:=0;
-  repeat
-    int128_divmodu(lo,hi,10,0,qlo,qhi,rlo,rhi);
-    tmp[n]:=ansichar(ord('0')+longint(rlo));
-    inc(n);
-    lo:=qlo;
-    hi:=qhi;
-  until (lo=0) and (hi=0);
-  s[0]:=ansichar(n);
-  for i:=1 to n do
-    s[i]:=tmp[n-i];
+  if hi=0 then
+    begin
+      int_str_unsigned(lo,s);
+      exit;
+    end;
+  { hi<>0 means the value exceeds 10^19, so a higher chunk always exists }
+  int128_divmodu64(lo,hi,p19,qlo,qhi,c0);
+  if qhi=0 then
+    begin
+      c2:=qlo div p19;
+      c1:=qlo mod p19;
+    end
+  else
+    int128_divmodu64(qlo,qhi,p19,c2,dhi,c1);
+  if c2<>0 then
+    begin
+      int_str_unsigned(c2,s);
+      int_str_unsigned(c1,t);
+      s:=s+copy(zeros,1,19-length(t))+t;
+    end
+  else
+    int_str_unsigned(c1,s);
+  int_str_unsigned(c0,t);
+  s:=s+copy(zeros,1,19-length(t))+t;
 end;
 
 procedure int128_str_unsigned(lo,hi:qword;len:SizeInt;out s:shortstring);
