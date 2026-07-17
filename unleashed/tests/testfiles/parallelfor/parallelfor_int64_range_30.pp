@@ -1,3 +1,4 @@
+{ %CPU=x86_64,aarch64 }
 program parallelfor_int64_range_30;
 {$mode unleashed}
 uses SysUtils;

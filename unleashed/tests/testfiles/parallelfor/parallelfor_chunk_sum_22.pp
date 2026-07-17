@@ -1,3 +1,4 @@
+{ %CPU=x86_64,aarch64 }
 program parallelfor_chunk_sum_22;
 {$mode unleashed}
 uses SysUtils;
