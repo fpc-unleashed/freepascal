@@ -2221,6 +2221,11 @@ implementation
         { if we didn't find an appropriate type conversion yet
           then we search also the := operator }
         if (eq=te_incompatible) and
+           { a variant cannot represent a 128 bit integer, without this
+             guard the operator search settles on a narrowing integer
+             overload and silently truncates the value }
+           not(((def_from.typ=variantdef) and is_128bitint(def_to)) or
+               ((def_to.typ=variantdef) and is_128bitint(def_from))) and
            { make sure there is not a single variant if variants   }
            { are not allowed (otherwise if only cdo_check_operator }
            { and e.g. fromdef=stringdef and todef=variantdef, then }
