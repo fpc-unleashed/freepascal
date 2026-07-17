@@ -76,6 +76,14 @@ interface
         mboverflow,
         unsigned : boolean;
       begin
+        { second_mul128 runs pass_left_right itself; entering it after the
+          one below would secondpass the operand trees twice }
+        if nodetype=muln then
+          begin
+            second_mul128;
+            exit;
+          end;
+
         pass_left_right;
 
         mboverflow:=false;
@@ -100,11 +108,6 @@ interface
             op:=OP_OR;
           andn:
             op:=OP_AND;
-          muln:
-            begin
-              second_mul128;
-              exit;
-            end;
           else
             internalerror(2026071008);
         end;
