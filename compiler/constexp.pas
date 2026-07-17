@@ -83,6 +83,11 @@ function shr128(const a,b:Tconstexprint):Tconstexprint;
   into a 128 bit value; error is set when malformed or out of range }
 function str_to_tconstexprint(const s:shortstring;out error:boolean):Tconstexprint;
 
+{ parses a string with the exact runtime semantics of Val on the 128 bit
+  types: leading blanks, sign, $/&/%/x/0x prefixes; returns 0 on success
+  or the position Val would leave in its code parameter }
+function val_to_tconstexprint(const s:shortstring;unsigned:boolean;out value:Tconstexprint):longint;
+
 operator := (const u:qword):Tconstexprint;inline;
 operator := (const s:int64):Tconstexprint;inline;
 operator := (const c:Tconstexprint):qword;
@@ -791,6 +796,139 @@ begin
     end;
   error:=false;
 end;
+
+{$push} {$q-,r-}
+function val_to_tconstexprint(const s:shortstring;unsigned:boolean;out value:Tconstexprint):longint;
+var
+  i,ns:longint;
+  base,d:longint;
+  lo,hi,plo,phi,plo2,phi2:qword;
+  negative,ovf:boolean;
+begin
+  value:=0;
+  lo:=0;
+  hi:=0;
+  negative:=false;
+  ns:=length(s);
+  i:=1;
+  while (i<=ns) and (s[i] in [' ',#9]) do
+    inc(i);
+  if i>ns then
+    begin
+      result:=i;
+      exit;
+    end;
+  case s[i] of
+    '-':
+      begin
+        negative:=true;
+        inc(i);
+      end;
+    '+':
+      inc(i);
+    else
+      ;
+  end;
+  base:=10;
+  if i<=ns then
+    case s[i] of
+      '$','x','X':
+        begin
+          base:=16;
+          inc(i);
+        end;
+      '&':
+        begin
+          base:=8;
+          inc(i);
+        end;
+      '%':
+        begin
+          base:=2;
+          inc(i);
+        end;
+      '0':
+        if (i<ns) and (s[i+1] in ['x','X']) then
+          begin
+            base:=16;
+            inc(i,2);
+          end;
+      else
+        ;
+    end;
+  if i>ns then
+    begin
+      result:=i;
+      exit;
+    end;
+  while i<=ns do
+    begin
+      case s[i] of
+        '0'..'9':
+          d:=ord(s[i])-ord('0');
+        'a'..'f':
+          d:=ord(s[i])-ord('a')+10;
+        'A'..'F':
+          d:=ord(s[i])-ord('A')+10;
+        else
+          break;
+      end;
+      if d>=base then
+        break;
+      { value := value*base + d, stopping at the digit that overflows }
+      mulu128(lo,hi,qword(base),0,plo,phi,ovf);
+      if ovf then
+        break;
+      plo2:=plo+qword(d);
+      phi2:=phi;
+      if plo2<plo then
+        inc(phi2);
+      { a wrap past bit 127 is an overflow too }
+      if ltu128(plo2,phi2,plo,phi) then
+        break;
+      lo:=plo2;
+      hi:=phi2;
+      inc(i);
+    end;
+  { a #0 terminates the parse quietly, like the runtime helpers }
+  if (i<=ns) and (s[i]<>#0) then
+    begin
+      result:=i;
+      exit;
+    end;
+  if unsigned then
+    begin
+      { a negative value does not fit an unsigned target }
+      if negative and ((lo or hi)<>0) then
+        begin
+          result:=1;
+          exit;
+        end;
+      value.signed:=false;
+    end
+  else if negative then
+    begin
+      { magnitude must not exceed 2^127 }
+      if (hi>qword($8000000000000000)) or
+         ((hi=qword($8000000000000000)) and (lo<>0)) then
+        begin
+          result:=1;
+          exit;
+        end;
+      neg128(lo,hi);
+    end
+  else if (base=10) and (int64(hi)<0) then
+    begin
+      { decimal input must fit the positive range; the other bases accept
+        the full bit pattern like the smaller signed types }
+      result:=1;
+      exit;
+    end;
+  value.vlo:=lo;
+  value.vhi:=hi;
+  result:=0;
+end;
+{$pop}
 
 function tostr(const i:Tconstexprint):shortstring;overload;
 var
