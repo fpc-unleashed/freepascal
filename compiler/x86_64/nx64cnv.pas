@@ -33,7 +33,7 @@ interface
        tx8664typeconvnode = class(tx86typeconvnode)
          protected
          function first_nothing : tnode;override;
-         { procedure second_int_to_int;override; }
+         procedure second_int_to_int;override;
          { procedure second_string_to_string;override; }
          { procedure second_cstring_to_pchar;override; }
          { procedure second_string_to_chararray;override; }
@@ -84,6 +84,38 @@ implementation
           expectloc:=LOC_REGISTER
         else
           result:=inherited first_nothing;
+      end;
+
+
+    procedure tx8664typeconvnode.second_int_to_int;
+      var
+        newsize : tcgsize;
+      begin
+        { 128 bit conversions are done on register pairs }
+        if is_128bit(resultdef) and
+           (left.resultdef.size<resultdef.size) then
+          begin
+            { insert range check if not explicit or internally generated conversion }
+            if (flags*[nf_explicit,nf_internal])=[] then
+              hlcg.g_rangecheck(current_asmdata.CurrAsmList,left.location,left.resultdef,resultdef);
+            location_copy(location,left.location);
+            hlcg.location_force_reg(current_asmdata.CurrAsmList,location,left.resultdef,resultdef,true);
+            exit;
+          end;
+        if is_128bit(left.resultdef) and
+           (resultdef.size<left.resultdef.size) and
+           (left.location.loc in [LOC_REGISTER,LOC_CREGISTER]) then
+          begin
+            if (flags*[nf_explicit,nf_internal])=[] then
+              hlcg.g_rangecheck(current_asmdata.CurrAsmList,left.location,left.resultdef,resultdef);
+            { the narrowed value is the low half of the pair }
+            newsize:=def_cgsize(resultdef);
+            location_reset(location,LOC_REGISTER,newsize);
+            location.register:=cg.getintregister(current_asmdata.CurrAsmList,newsize);
+            cg.a_load_reg_reg(current_asmdata.CurrAsmList,OS_64,newsize,left.location.register128.reglo,location.register);
+            exit;
+          end;
+        inherited second_int_to_int;
       end;
 
 

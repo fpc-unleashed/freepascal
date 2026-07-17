@@ -71,7 +71,7 @@ interface
 
     uses
       cutils,verbose,globtype,globals,
-      aasmbase,aasmdata,symconst,symdef,symtable,
+      aasmbase,aasmdata,symconst,symtype,symdef,symtable,
       nutils,ncon,
       cpubase,systems,
       pass_2,
@@ -99,6 +99,9 @@ interface
         newsize : tcgsize;
         ressize,
         leftsize : longint;
+        widedef : tdef;
+        href,hrefhalf : treference;
+        hreg : tregister;
       begin
         newsize:=def_cgsize(resultdef);
 
@@ -142,6 +145,44 @@ interface
                (not is_signed(left.resultdef) or is_signed(resultdef)) then
               location.size:=newsize
 {$endif}
+{$ifdef cpu64bitalu}
+            { narrowing a 128 bit register pair takes its low half }
+            else if is_128bit(left.resultdef) and
+               (left.location.loc in [LOC_REGISTER,LOC_CREGISTER]) then
+              begin
+                location_reset(location,LOC_REGISTER,newsize);
+                location.register:=cg.getintregister(current_asmdata.CurrAsmList,newsize);
+                cg.a_load_reg_reg(current_asmdata.CurrAsmList,OS_64,newsize,left.location.register128.reglo,location.register);
+              end
+{$endif cpu64bitalu}
+            else if is_128bit(resultdef) then
+              begin
+                { widen into a 16 byte temp: the low half is the 64 bit
+                  value, the high half its sign/zero extension }
+                if is_signed(left.resultdef) then
+                  widedef:=s64inttype
+                else
+                  widedef:=u64inttype;
+                hlcg.location_force_reg(current_asmdata.CurrAsmList,location,left.resultdef,widedef,false);
+                tg.gethltemp(current_asmdata.CurrAsmList,resultdef,resultdef.size,tt_normal,href);
+                hrefhalf:=href;
+                if target_info.endian=endian_big then
+                  inc(hrefhalf.offset,8);
+                hlcg.a_load_reg_ref(current_asmdata.CurrAsmList,widedef,u64inttype,location.register,hrefhalf);
+                hrefhalf:=href;
+                if target_info.endian=endian_little then
+                  inc(hrefhalf.offset,8);
+                if is_signed(left.resultdef) then
+                  begin
+                    hreg:=hlcg.getintregister(current_asmdata.CurrAsmList,s64inttype);
+                    hlcg.a_op_const_reg_reg(current_asmdata.CurrAsmList,OP_SAR,s64inttype,63,location.register,hreg);
+                    hlcg.a_load_reg_ref(current_asmdata.CurrAsmList,s64inttype,u64inttype,hreg,hrefhalf);
+                  end
+                else
+                  hlcg.a_load_const_ref(current_asmdata.CurrAsmList,u64inttype,0,hrefhalf);
+                location_reset_ref(location,LOC_REFERENCE,newsize,href.alignment,[]);
+                location.reference:=href;
+              end
             else
               hlcg.location_force_reg(current_asmdata.CurrAsmList,location,left.resultdef,resultdef,false);
           end

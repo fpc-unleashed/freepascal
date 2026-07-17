@@ -52,6 +52,8 @@ interface
           { parts explicitely in the code generator (JM)    }
           function use_moddiv64bitint_helper: boolean; virtual;
           function first_moddiv64bitint: tnode; virtual;
+          { lowers 128 bit div/mod to helper calls }
+          function first_moddiv128bitint: tnode; virtual;
           function firstoptimize: tnode; virtual;
           function first_moddivint: tnode; virtual;
        end;
@@ -69,6 +71,9 @@ interface
           }
           function first_shlshr64bitint: tnode; virtual;
 {$endif not cpu64bitalu and not cpuhighleveltarget}
+          { override and return false if the code generator inlines
+            128 bit shifts }
+          function use_generic_int128ops: boolean; virtual;
        end;
        tshlshrnodeclass = class of tshlshrnode;
 
@@ -77,6 +82,9 @@ interface
           function pass_1 : tnode;override;
           function pass_typecheck:tnode;override;
           function simplify(forinline : boolean) : tnode;override;
+          { override and return false if the code generator inlines
+            128 bit negation }
+          function use_generic_int128ops: boolean; virtual;
        end;
        tunaryminusnodeclass = class of tunaryminusnode;
 
@@ -92,6 +100,9 @@ interface
           function pass_1 : tnode;override;
           function pass_typecheck:tnode;override;
           function simplify(forinline : boolean) : tnode;override;
+          { override and return false if the code generator inlines
+            128 bit bitwise not }
+          function use_generic_int128ops: boolean; virtual;
        {$ifdef state_tracking}
           function track_state_pass(exec_known:boolean):boolean;override;
        {$endif}
@@ -340,7 +351,7 @@ implementation
          { Additionally, do the same for cardinal/qwords and other positive types, but    }
          { always in a way that a smaller type is converted to a bigger type              }
          { (webtbs/tw8870)                                                                }
-         if (rd.ordtype in [u8bit,u16bit,u32bit,u64bit]) and
+         if (rd.ordtype in [u8bit,u16bit,u32bit,u64bit,u128bit]) and
             ((is_constintnode(left) and
               (tordconstnode(left).value >= 0) and
               (tordconstnode(left).value <= get_max_value(rd))) or
@@ -356,7 +367,7 @@ implementation
                inserttypeconv(left,rd);
              resultdef:=right.resultdef;
            end
-         else if (ld.ordtype in [u8bit,u16bit,u32bit,u64bit]) and
+         else if (ld.ordtype in [u8bit,u16bit,u32bit,u64bit,u128bit]) and
             ((is_constintnode(right) and
               (tordconstnode(right).value >= 0) and
               (tordconstnode(right).value <= get_max_value(ld))) or
@@ -383,6 +394,28 @@ implementation
               inserttypeconv(left,s64currencytype);
              if (rd.ordtype<>scurrency) then
               inserttypeconv(right,s64currencytype);
+             resultdef:=left.resultdef;
+           end
+         else
+          { when there is one 128bit value, everything is done
+            in 128bit }
+          if (is_128bitint(left.resultdef) or
+              is_128bitint(right.resultdef)) then
+           begin
+             if is_signed(rd) or is_signed(ld) then
+               begin
+                  if (ld.ordtype<>s128bit) then
+                    inserttypeconv(left,s128inttype);
+                  if (rd.ordtype<>s128bit) then
+                    inserttypeconv(right,s128inttype);
+               end
+             else
+               begin
+                  if (ld.ordtype<>u128bit) then
+                    inserttypeconv(left,u128inttype);
+                  if (rd.ordtype<>u128bit) then
+                    inserttypeconv(right,u128inttype);
+               end;
              resultdef:=left.resultdef;
            end
          else
@@ -586,6 +619,42 @@ implementation
       end;
 
 
+    function tmoddivnode.first_moddiv128bitint: tnode;
+      var
+        procname: string[31];
+      begin
+        if nodetype = divn then
+          procname := 'fpc_div_'
+        else
+          procname := 'fpc_mod_';
+        if is_signed(resultdef) then
+          begin
+            procname := procname + 'int128';
+            inserttypeconv_internal(left,s128inttype);
+            inserttypeconv_internal(right,s128inttype);
+          end
+        else
+          begin
+            procname := procname + 'uint128';
+            inserttypeconv_internal(left,u128inttype);
+            inserttypeconv_internal(right,u128inttype);
+          end;
+
+        result := ccallnode.createintern(procname,ccallparanode.create(left,
+          ccallparanode.create(right,nil)));
+        left := nil;
+        right := nil;
+        firstpass(result);
+        if result.resultdef.typ<>orddef then
+          internalerror(2026070707);
+        if torddef(result.resultdef).ordtype<>torddef(resultdef).ordtype then
+          begin
+            result:=ctypeconvnode.create_internal(result,resultdef);
+            firstpass(result);
+          end;
+      end;
+
+
     function tmoddivnode.firstoptimize: tnode;
       var
         power,shiftval : longint;
@@ -596,7 +665,9 @@ implementation
       begin
         result := nil;
         { divide/mod a number by a constant which is a power of 2? }
+        { 128 bit is handled by helpers, the masks below are 64 bit only }
         if (right.nodetype = ordconstn) and
+          not is_128bit(resultdef) and
           isabspowerof2(tordconstnode(right).value,power) and
 {$if defined(cpu64bitalu) or defined(cpuhighleveltarget)}
           { for 64 bit, we leave the optimization to the cg }
@@ -754,6 +825,15 @@ implementation
          if assigned(result) then
            exit;
 
+         { 128bit }
+         if is_128bit(resultdef) then
+           begin
+             result := first_moddiv128bitint;
+             if not assigned(result) then
+               internalerror(2026070708);
+             exit;
+           end;
+
          { 64bit }
          if use_moddiv64bitint_helper then
            begin
@@ -815,6 +895,8 @@ implementation
                     rvalue:=tordconstnode(right).value and byte($1f);
                   8:
                     rvalue:=tordconstnode(right).value and byte($3f);
+                  16:
+                    rvalue:=tordconstnode(right).value and byte($7f);
                   else
                     internalerror(2013122302);
                 end;
@@ -828,11 +910,19 @@ implementation
                  { shr is an unsigned operation, so cut off upper bits }
                  if forinline then
                    lvalue:=lvalue and mask;
+                 { 128 bit types shift over the full payload, the operators
+                   keep the historical 64 bit window }
                  case nodetype of
                     shrn:
-                      lvalue:=lvalue shr rvalue;
+                      if is_128bitint(resultdef) then
+                        lvalue:=shr128(lvalue,rvalue)
+                      else
+                        lvalue:=lvalue shr rvalue;
                     shln:
-                      lvalue:=lvalue shl rvalue;
+                      if is_128bitint(resultdef) then
+                        lvalue:=shl128(lvalue,rvalue)
+                      else
+                        lvalue:=lvalue shl rvalue;
                     else
                       internalerror(2019050517);
                  end;
@@ -925,6 +1015,7 @@ implementation
                32 bit for backwards compatibility. That way 'shl 33' is
                the same as 'shl 1'. It's ugly but compatible with delphi/tp/gcc }
              if (not is_64bit(left.resultdef)) and
+                (not is_128bit(left.resultdef)) and
                 (torddef(left.resultdef).ordtype<>u32bit) then
                begin
                  { keep signedness of original type }
@@ -990,13 +1081,58 @@ implementation
 {$endif not cpu64bitalu and not cpuhighleveltarget}
 
 
+    function tshlshrnode.use_generic_int128ops: boolean;
+      begin
+{$if defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
+        result:=false;
+{$else}
+        result:=true;
+{$endif}
+      end;
+
+
     function tshlshrnode.pass_1 : tnode;
+      var
+        procname: string[31];
       begin
          result:=nil;
          firstpass(left);
          firstpass(right);
          if codegenerror then
            exit;
+
+         { 128 bit shifts become helper calls; shl/shr work on the raw
+           payload so the signed entry points serve both signednesses }
+         if is_128bit(left.resultdef) then
+           begin
+             if not use_generic_int128ops then
+               begin
+                 { native codegen reads the count from a 64 bit register }
+                 inserttypeconv(right,s64inttype);
+                 firstpass(right);
+                 expectloc:=LOC_REGISTER;
+                 exit;
+               end;
+             if nodetype=shln then
+               procname:='fpc_shl_int128'
+             else
+               procname:='fpc_shr_int128';
+             inserttypeconv_internal(left,s128inttype);
+             inserttypeconv(right,s64inttype);
+             result:=ccallnode.createintern(procname,ccallparanode.create(right,
+               ccallparanode.create(left,nil)));
+             left:=nil;
+             right:=nil;
+             firstpass(result);
+             if result.resultdef.typ<>orddef then
+               internalerror(2026070709);
+             if torddef(result.resultdef).ordtype<>torddef(resultdef).ordtype then
+               begin
+                 result:=ctypeconvnode.create_internal(result,resultdef);
+                 firstpass(result);
+               end;
+             exit;
+           end;
 
          expectloc:=LOC_REGISTER;
 {$if not defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
@@ -1018,12 +1154,23 @@ implementation
 
 
     function tunaryminusnode.simplify(forinline : boolean):tnode;
+      var
+        v : tconstexprint;
       begin
         result:=nil;
         { constant folding }
         if is_constintnode(left) then
           begin
-             result:=create_simplified_ord_const(-tordconstnode(left).value,resultdef,forinline,cs_check_overflow in localswitches);
+             v:=-tordconstnode(left).value;
+             if v.overflow or
+                (not(m_int128 in current_settings.modeswitches) and not v.representable64) then
+               begin
+                 Message(parser_e_arithmetic_operation_overflow);
+                 { Recover }
+                 result:=genintconstnode(0);
+                 exit;
+               end;
+             result:=create_simplified_ord_const(v,resultdef,forinline,cs_check_overflow in localswitches);
              exit;
           end;
         if is_constrealnode(left) then
@@ -1161,6 +1308,14 @@ implementation
                }
              end
 {$endif SUPPORT_MMX}
+         else if is_128bit(left.resultdef) then
+           begin
+             { express as 0 - l so it lowers through the int128 sub helper }
+             result:=caddnode.create(subn,cordconstnode.create(0,s128inttype,false),left);
+             left:=nil;
+             typecheckpass(result);
+             exit;
+           end
          else if is_oversizedord(left.resultdef) then
            begin
              if is_64bit(left.resultdef) then
@@ -1192,6 +1347,17 @@ implementation
            end;
       end;
 
+    function tunaryminusnode.use_generic_int128ops: boolean;
+      begin
+{$if defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
+        { overflow-checked negation keeps the RTL helper }
+        result:=cs_check_overflow in current_settings.localswitches;
+{$else}
+        result:=true;
+{$endif}
+      end;
+
+
     { generic code     }
     { overridden by:   }
     {   i386           }
@@ -1203,6 +1369,34 @@ implementation
         firstpass(left);
         if codegenerror then
           exit;
+
+        if is_128bit(left.resultdef) then
+          begin
+            if not use_generic_int128ops then
+              begin
+                expectloc:=LOC_REGISTER;
+                exit;
+              end;
+            if cs_check_overflow in current_settings.localswitches then
+              begin
+                if is_signed(resultdef) then
+                  procname:='fpc_neg_int128_checkoverflow'
+                else
+                  procname:='fpc_neg_uint128_checkoverflow';
+              end
+            else
+              procname:='fpc_neg_int128';
+            inserttypeconv_internal(left,s128inttype);
+            result:=ccallnode.createintern(procname,ccallparanode.create(left,nil));
+            left:=nil;
+            firstpass(result);
+            if torddef(result.resultdef).ordtype<>torddef(resultdef).ordtype then
+              begin
+                result:=ctypeconvnode.create_internal(result,resultdef);
+                firstpass(result);
+              end;
+            exit;
+          end;
 
         if (cs_fp_emulation in current_settings.moduleswitches) and (left.resultdef.typ=floatdef) then
           begin
@@ -1462,12 +1656,41 @@ implementation
       end;
 
 
+    function tnotnode.use_generic_int128ops: boolean;
+      begin
+{$if defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
+        result:=false;
+{$else}
+        result:=true;
+{$endif}
+      end;
+
+
     function tnotnode.pass_1 : tnode;
       begin
          result:=nil;
          firstpass(left);
          if codegenerror then
            exit;
+
+         if is_128bit(left.resultdef) then
+           begin
+             if not use_generic_int128ops then
+               begin
+                 expectloc:=LOC_REGISTER;
+                 exit;
+               end;
+             inserttypeconv_internal(left,s128inttype);
+             result:=ccallnode.createintern('fpc_not_int128',ccallparanode.create(left,nil));
+             left:=nil;
+             firstpass(result);
+             if torddef(result.resultdef).ordtype<>torddef(resultdef).ordtype then
+               begin
+                 result:=ctypeconvnode.create_internal(result,resultdef);
+                 firstpass(result);
+               end;
+             exit;
+           end;
 
          expectloc:=left.expectloc;
          if is_boolean(resultdef) then

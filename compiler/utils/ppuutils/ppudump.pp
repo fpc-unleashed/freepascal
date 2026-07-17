@@ -1372,10 +1372,34 @@ end;
 
 function getexprint:Tconstexprint;
 
+var
+  marker : byte;
+  v : int64;
 begin
-  getexprint.overflow:=false;
-  getexprint.signed:=ppufile.getboolean;
-  getexprint.svalue:=ppufile.getint64;
+  marker:=ppufile.getbyte;
+  case marker of
+    0,1:
+      begin
+        { values in low(int64)..high(qword), the pre-128-bit layout }
+        v:=ppufile.getint64;
+        if marker=1 then
+          result:=v
+        else
+          result:=qword(v);
+      end;
+    2,3:
+      begin
+        result.overflow:=false;
+        result.signed:=marker=3;
+        result.vlo:=ppufile.getqword;
+        result.vhi:=ppufile.getqword;
+      end;
+    else
+      begin
+        WriteError('!! ppufile error: invalid exprint marker');
+        result:=0;
+      end;
+  end;
 end;
 
 Procedure ReadPosInfo(Def: TPpuDef = nil);
@@ -2530,7 +2554,8 @@ const
          'm_autoproperties',      { accessor-less property synthesizes a backing field and binds read/write to it directly }
          'm_lock',                { thread-safe locking: `lock(v) do stmt` / `trylock ... wait N do ... else ...` }
          'm_asyncawait',          { `async expr` runs on a worker thread yielding `future of T`; `await f` joins }
-         'm_parallelfor'          { run `for parallel ... do` body across worker threads }
+         'm_parallelfor',         { run `for parallel ... do` body across worker threads }
+         'm_int128'               { 128 bit integer types Int128/UInt128 with literals beyond 64 bit }
        );
        { optimizer }
        optimizerswitchname : array[toptimizerswitch] of string[50] =

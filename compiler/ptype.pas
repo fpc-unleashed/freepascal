@@ -2595,7 +2595,7 @@ implementation
                        l:=v;
                     end
                   else
-                    inc(l.svalue);
+                    l:=l+1;
                   first:=false;
                   { don't generate enum members if this is a specialization because aktenumdef is copied from the generic type }
                   if not is_specialize then

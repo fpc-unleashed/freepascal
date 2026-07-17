@@ -932,6 +932,54 @@ end;
 
 {$endif CPU64}
 
+{$if declared(int128)}
+
+Procedure fpc_WideStr_Int128(v : Int128; Len : SizeInt; out S : WideString);compilerproc;
+Var
+  SS: ShortString;
+begin
+  Str(v:Len,SS);
+  S:=WideString(SS);
+end;
+
+Procedure fpc_WideStr_UInt128(v : UInt128; Len : SizeInt; out S : WideString);compilerproc;
+Var
+  SS: ShortString;
+begin
+  str(v:Len,SS);
+  S:=WideString(SS);
+end;
+
+Function fpc_Val_Int128_WideStr(Const S : WideString; out Code : ValSInt): Int128; compilerproc;
+Var
+  SS : ShortString;
+begin
+  fpc_Val_Int128_WideStr:=0;
+  if length(S)>255 then
+    code:=256
+  else
+    begin
+      SS := ShortString(AnsiString(S));
+      Val(SS,fpc_Val_Int128_WideStr,Code);
+    end;
+end;
+
+Function fpc_Val_UInt128_WideStr(Const S : WideString; out Code : ValSInt): UInt128; compilerproc;
+Var
+  SS : ShortString;
+begin
+  fpc_Val_UInt128_WideStr:=0;
+  if length(S)>255 then
+    code:=256
+  else
+    begin
+      SS := ShortString(AnsiString(S));
+      Val(SS,fpc_Val_UInt128_WideStr,Code);
+    end;
+end;
+
+{$endif}
+
 function UTF8Encode(const s : WideString) : RawByteString;
   var
     i : SizeInt;

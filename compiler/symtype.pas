@@ -1084,10 +1084,34 @@ implementation
 
     function tcompilerppufile.getexprint:Tconstexprint;
 
+    var
+      marker : byte;
+      v : int64;
     begin
-      getexprint.overflow:=false;
-      getexprint.signed:=getboolean;
-      getexprint.svalue:=getint64;
+      marker:=getbyte;
+      case marker of
+        0,1:
+          begin
+            { values in low(int64)..high(qword), the pre-128-bit layout }
+            v:=getint64;
+            if marker=1 then
+              result:=v
+            else
+              result:=qword(v);
+          end;
+        2,3:
+          begin
+            result.overflow:=false;
+            result.signed:=marker=3;
+            result.vlo:=getqword;
+            result.vhi:=getqword;
+          end;
+        else
+          begin
+            error:=true;
+            result:=0;
+          end;
+      end;
     end;
 
 
@@ -1275,8 +1299,18 @@ implementation
     begin
       if v.overflow then
         internalerror(200706102);
-      putboolean(v.signed);
-      putint64(v.svalue);
+      if v.representable64 then
+        begin
+          { pre-128-bit layout, keeps PPUs without 128 bit values unchanged }
+          putbyte(byte(v.signed));
+          putint64(v.svalue);
+        end
+      else
+        begin
+          putbyte(2+byte(v.signed));
+          putqword(v.vlo);
+          putqword(v.vhi);
+        end;
     end;
 
 

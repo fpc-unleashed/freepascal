@@ -130,6 +130,11 @@ type
     procedure profilecode_restorepara(para : tparavarsym; list : TAsmList);
   end;
 
+  type
+    tcg128ppc64 = class(tcg128)
+      procedure a_op128_reg_reg(list : TAsmList;op:TOpCG;size : tcgsize;regsrc,regdst : tregister128);override;
+    end;
+
   procedure create_codegen;
 
 const
@@ -1879,10 +1884,35 @@ begin
 end;
 
 
+procedure tcg128ppc64.a_op128_reg_reg(list: TAsmList; op: TOpCG; size: tcgsize; regsrc,regdst: tregister128);
+begin
+  case op of
+    OP_ADD:
+      begin
+        list.concat(taicpu.op_reg_reg_reg(A_ADDC,regdst.reglo,regdst.reglo,regsrc.reglo));
+        list.concat(taicpu.op_reg_reg_reg(A_ADDE,regdst.reghi,regdst.reghi,regsrc.reghi));
+      end;
+    OP_SUB:
+      begin
+        { subfc/subfe compute rB - rA with the carry chain }
+        list.concat(taicpu.op_reg_reg_reg(A_SUBFC,regdst.reglo,regsrc.reglo,regdst.reglo));
+        list.concat(taicpu.op_reg_reg_reg(A_SUBFE,regdst.reghi,regsrc.reghi,regdst.reghi));
+      end;
+    OP_NEG:
+      begin
+        list.concat(taicpu.op_reg_reg_const(A_SUBFIC,regdst.reglo,regsrc.reglo,0));
+        list.concat(taicpu.op_reg_reg(A_SUBFZE,regdst.reghi,regsrc.reghi));
+      end;
+    else
+      inherited a_op128_reg_reg(list,op,size,regsrc,regdst);
+  end;
+end;
+
+
 procedure create_codegen;
 begin
   cg := tcgppc.create;
-  cg128:=tcg128.create;
+  cg128:=tcg128ppc64.create;
 end;
 
 end.

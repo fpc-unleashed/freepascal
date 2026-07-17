@@ -65,6 +65,11 @@ unit optloadmodifystore;
               when -O2 (via a call from tassignmentnode.simplify) or
               when cs_opt_use_load_modify_store is enabled (in a separate pass).
             }
+            { 128 bit ints have no load-modify-store forms: inc/dec and the
+              op-assign inlines lower straight back to i:=i op k, so the
+              rewrite would loop forever }
+            if is_128bit(left.resultdef) then
+              exit;
             { replace i:=succ/pred(i) by inc/dec(i)? }
             if (right.nodetype=inlinen) and
               ((tinlinenode(right).inlinenumber=in_succ_x) or (tinlinenode(right).inlinenumber=in_pred_x)) and

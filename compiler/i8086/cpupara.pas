@@ -132,6 +132,12 @@ unit cpupara;
             result:=true;
             exit;
           end;
+        { 128 bit ints pass by reference }
+        if is_128bit(def) then
+          begin
+            result:=true;
+            exit;
+          end;
         { Only vs_const, vs_value here }
         case def.typ of
           variantdef :

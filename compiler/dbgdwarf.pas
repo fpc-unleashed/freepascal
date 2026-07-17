@@ -1433,7 +1433,7 @@ implementation
           u128bit:
             begin
               append_entry(DW_TAG_base_type,false,[
-                DW_AT_name,DW_FORM_string,'Int128'#0,
+                DW_AT_name,DW_FORM_string,'UInt128'#0,
                 DW_AT_encoding,DW_FORM_data1,DW_ATE_unsigned,
                 DW_AT_byte_size,DW_FORM_data1,16
                 ]);

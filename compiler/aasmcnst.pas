@@ -374,6 +374,8 @@ type
      procedure emit_procdef_const(pd: tprocdef);
      { emit an ordinal constant }
      procedure emit_ord_const(value: int64; def: tdef);
+     { emit a 128 bit ordinal constant }
+     procedure emit_ord_const_128(const value: tconstexprint; def: tdef);
 
      { emit a reference to a pooled shortstring constant }
      procedure emit_pooled_shortstring_const_ref(const str:shortstring);
@@ -1912,6 +1914,25 @@ implementation
          else
            internalerror(2014100501);
        end;
+     end;
+
+
+   procedure ttai_typedconstbuilder.emit_ord_const_128(const value: tconstexprint; def: tdef);
+     begin
+       if def.size<>16 then
+         internalerror(2026070703);
+       maybe_begin_aggregate(def);
+       if target_info.endian=endian_little then
+         begin
+           emit_tai(Tai_const.Create_64bit(int64(value.vlo)),u64inttype);
+           emit_tai(Tai_const.Create_64bit(int64(value.vhi)),u64inttype);
+         end
+       else
+         begin
+           emit_tai(Tai_const.Create_64bit(int64(value.vhi)),u64inttype);
+           emit_tai(Tai_const.Create_64bit(int64(value.vlo)),u64inttype);
+         end;
+       maybe_end_aggregate(def);
      end;
 
 

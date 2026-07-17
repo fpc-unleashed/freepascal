@@ -74,6 +74,9 @@ interface
           { only implements "muln" nodes, the rest always has to be done in }
           { the code generator for performance reasons (JM)                 }
           function first_add64bitint: tnode; virtual;
+          { lowers 128 bit operations and comparisons to helper calls;
+            returns nil when the code generator handles the node inline }
+          function first_add128bitint: tnode; virtual;
           function first_addpointer: tnode; virtual;
           function first_cmppointer: tnode; virtual;
 
@@ -87,6 +90,10 @@ interface
           { override and return false if code generator can handle }
           { full 64 bit multiplies.                                }
           function use_generic_mul64bit: boolean; virtual;
+
+          { override and return false if the code generator handles }
+          { the current 128 bit operation or comparison inline      }
+          function use_generic_int128ops: boolean; virtual;
 
 {$ifdef cpuneedsmulhelper}
           { override to customize to decide if the code generator }
@@ -811,6 +818,8 @@ const
             { Avoid using custom integers due to the risk of unusual sizes and
               undesired effects in, say, bitpacked records. [Kit] }
             (torddef(tshlshrnode(left).left.resultdef).ordtype<>customint) and
+            { the code generators have no 128 bit rotate }
+            not is_128bit(tshlshrnode(left).left.resultdef) and
             not might_have_sideeffects(tshlshrnode(left).left) and
             tshlshrnode(left).left.isequal(tshlshrnode(right).left) then
             begin
@@ -938,7 +947,8 @@ const
                addn :
                  begin
                    v:=lv+rv;
-                   if v.overflow then
+                   if v.overflow or
+                      (not(m_int128 in current_settings.modeswitches) and not v.representable64) then
                      begin
                        Message(parser_e_arithmetic_operation_overflow);
                        { Recover }
@@ -955,7 +965,8 @@ const
                subn :
                  begin
                    v:=lv-rv;
-                   if v.overflow then
+                   if v.overflow or
+                      (not(m_int128 in current_settings.modeswitches) and not v.representable64) then
                      begin
                        Message(parser_e_arithmetic_operation_overflow);
                        { Recover }
@@ -982,7 +993,8 @@ const
                muln :
                  begin
                    v:=lv*rv;
-                   if v.overflow then
+                   if v.overflow or
+                      (not(m_int128 in current_settings.modeswitches) and not v.representable64) then
                      begin
                        message(parser_e_arithmetic_operation_overflow);
                        { Recover }
@@ -1139,8 +1151,10 @@ const
                 exit;
               end
 
-            { change "0 - val" to "-val" }
-            else if is_constintnode(left) and (is_integer(right.resultdef) or is_pointer(right.resultdef)) then
+            { change "0 - val" to "-val" (128 bit negates through this very sub
+              helper, so leave its 0 - val alone to avoid bouncing back) }
+            else if is_constintnode(left) and (is_integer(right.resultdef) or is_pointer(right.resultdef)) and
+                    not is_128bit(right.resultdef) then
               begin
                 if (tordconstnode(left).value = 0) then
                   result := ctypeconvnode.create_internal(cunaryminusnode.create(right.getcopy),right.resultdef);
@@ -2910,6 +2924,7 @@ const
                      ((nodetype=andn) or
                       ((nodetype in [orn,xorn,equaln,unequaln,gtn,gten,ltn,lten]) and
                         not is_64bitint(ld) and not is_64bitint(rd) and
+                        not is_128bitint(ld) and not is_128bitint(rd) and
                        (is_signed(ld)=is_signed(rd)))) then
                begin
                  { Delphi-compatible: prefer unsigned type for "and", when the
@@ -2944,6 +2959,22 @@ const
                      ) then
                begin
                  { done here }
+               end
+             { is there a signed 128 bit type ? }
+             else if ((torddef(rd).ordtype=s128bit) or (torddef(ld).ordtype=s128bit)) then
+               begin
+                  if (torddef(ld).ordtype<>s128bit) then
+                   inserttypeconv(left,s128inttype);
+                  if (torddef(rd).ordtype<>s128bit) then
+                   inserttypeconv(right,s128inttype);
+               end
+             { is there an unsigned 128 bit type ? }
+             else if ((torddef(rd).ordtype=u128bit) or (torddef(ld).ordtype=u128bit)) then
+               begin
+                  if (torddef(ld).ordtype<>u128bit) then
+                   inserttypeconv(left,u128inttype);
+                  if (torddef(rd).ordtype<>u128bit) then
+                   inserttypeconv(right,u128inttype);
                end
              { is there a signed 64 bit type ? }
              else if ((torddef(rd).ordtype=s64bit) or (torddef(ld).ordtype=s64bit)) then
@@ -4325,6 +4356,20 @@ const
       end;
 
 
+    function taddnode.use_generic_int128ops: boolean;
+      begin
+{$if defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
+        { 64 bit register targets inline everything except mul and the
+          overflow-checked forms; CPU overrides narrow this further }
+        result := (nodetype=muln) or
+          ((nodetype in [addn,subn]) and
+           (cs_check_overflow in current_settings.localswitches));
+{$else}
+        result := true;
+{$endif}
+      end;
+
+
     function taddnode.try_make_mul32to64: boolean;
 
       function canbe32bitint(v: tconstexprint; out canbesignedconst, canbeunsignedconst: boolean): boolean;
@@ -4611,6 +4656,94 @@ const
 
             result := ccallnode.createintern(procname,right);
             right := nil;
+          end;
+      end;
+
+
+    function taddnode.first_add128bitint: tnode;
+      var
+        procname: string[31];
+        cmpcall: tnode;
+      begin
+        if not use_generic_int128ops then
+          begin
+            result:=nil;
+            if nodetype in [addn,subn,andn,orn,xorn] then
+              expectloc:=LOC_REGISTER
+            else
+              expectloc:=LOC_JUMP;
+            exit;
+          end;
+        case nodetype of
+          addn:
+            procname:='add';
+          subn:
+            procname:='sub';
+          muln:
+            procname:='mul';
+          andn:
+            procname:='and';
+          orn:
+            procname:='or';
+          xorn:
+            procname:='xor';
+          equaln,unequaln,ltn,lten,gtn,gten:
+            begin
+              if is_signed(left.resultdef) then
+                begin
+                  inserttypeconv_internal(left,s128inttype);
+                  inserttypeconv_internal(right,s128inttype);
+                  procname:='fpc_cmp_int128';
+                end
+              else
+                begin
+                  inserttypeconv_internal(left,u128inttype);
+                  inserttypeconv_internal(right,u128inttype);
+                  procname:='fpc_cmp_uint128';
+                end;
+              cmpcall:=ccallnode.createintern(procname,
+                ccallparanode.create(right,ccallparanode.create(left,nil)));
+              left:=nil;
+              right:=nil;
+              result:=caddnode.create(nodetype,cmpcall,cordconstnode.create(0,s32inttype,false));
+              firstpass(result);
+              exit;
+            end;
+          else
+            internalerror(2026070704);
+        end;
+        { the unchecked helpers work on the raw two's complement payload, so
+          the signed entry points serve both signednesses; only overflow
+          detection needs sign specific variants }
+        if (nodetype in [addn,subn,muln]) and
+           (cs_check_overflow in current_settings.localswitches) and
+           not is_signed(resultdef) then
+          begin
+            procname:='fpc_'+procname+'_uint128_checkoverflow';
+            inserttypeconv_internal(left,u128inttype);
+            inserttypeconv_internal(right,u128inttype);
+          end
+        else
+          begin
+            if (nodetype in [addn,subn,muln]) and
+               (cs_check_overflow in current_settings.localswitches) then
+              procname:='fpc_'+procname+'_int128_checkoverflow'
+            else
+              procname:='fpc_'+procname+'_int128';
+            inserttypeconv_internal(left,s128inttype);
+            inserttypeconv_internal(right,s128inttype);
+          end;
+        result:=ccallnode.createintern(procname,
+          ccallparanode.create(right,ccallparanode.create(left,nil)));
+        left:=nil;
+        right:=nil;
+        firstpass(result);
+        if result.resultdef.typ<>orddef then
+          internalerror(2026070705);
+        if torddef(result.resultdef).ordtype<>torddef(resultdef).ordtype then
+          begin
+            result:=ctypeconvnode.create_internal(result,resultdef);
+            firstpass(result);
           end;
       end;
 
@@ -4973,6 +5106,14 @@ const
                  { if the code generator can handle 32 to 64-bit muls,
                    we're done here }
                  expectloc:=LOC_REGISTER;
+               end
+             { 128 bit ints are lowered to helper calls unless the
+               code generator handles them inline }
+             else if torddef(ld).ordtype in [s128bit,u128bit] then
+               begin
+                 result := first_add128bitint;
+                 if assigned(result) then
+                   exit;
                end
 {$if not defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
               { is there a 64 bit type ? }

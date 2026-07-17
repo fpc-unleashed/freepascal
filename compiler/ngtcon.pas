@@ -708,6 +708,16 @@ function get_next_varsym(def: tabstractrecorddef; const SymList:TFPHashObjectLis
                 else
                   do_error;
              end;
+           s128bit,u128bit :
+             begin
+                if is_constintnode(node) then
+                  begin
+                    adaptrange(def,tordconstnode(node).value,false,false,cs_check_range in current_settings.localswitches);
+                    ftcb.emit_ord_const_128(tordconstnode(node).value,def);
+                  end
+                else
+                  do_error;
+             end;
            scurrency:
              begin
                 if is_constintnode(node) then

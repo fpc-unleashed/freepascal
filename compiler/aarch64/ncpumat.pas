@@ -34,11 +34,17 @@ interface
          procedure pass_generate_code;override;
       end;
 
+      taarch64shlshrnode = class(tcgshlshrnode)
+         function use_generic_int128ops: boolean; override;
+      end;
+
       taarch64notnode = class(tcgnotnode)
+         function use_generic_int128ops: boolean; override;
          procedure second_boolean;override;
       end;
 
       taarch64unaryminusnode = class(tcgunaryminusnode)
+         function use_generic_int128ops: boolean; override;
          function pass_1: tnode; override;
          procedure second_float; override;
       end;
@@ -491,6 +497,25 @@ implementation
                                    taarch64unaryminusnode
 *****************************************************************************}
 
+    function taarch64shlshrnode.use_generic_int128ops: boolean;
+      begin
+        result:=false;
+      end;
+
+
+    function taarch64notnode.use_generic_int128ops: boolean;
+      begin
+        result:=false;
+      end;
+
+
+    function taarch64unaryminusnode.use_generic_int128ops: boolean;
+      begin
+        { overflow-checked negation keeps the RTL helper }
+        result:=cs_check_overflow in current_settings.localswitches;
+      end;
+
+
     function taarch64unaryminusnode.pass_1: tnode;
       begin
         Result:=inherited pass_1;
@@ -512,6 +537,7 @@ implementation
 
 begin
    cmoddivnode:=taarch64moddivnode;
+   cshlshrnode:=taarch64shlshrnode;
    cnotnode:=taarch64notnode;
    cunaryminusnode:=taarch64unaryminusnode;
 end.

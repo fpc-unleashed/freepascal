@@ -66,6 +66,13 @@ interface
           procedure second_cmpsmallset;virtual;abstract;
           procedure second_cmp64bit;virtual;abstract;
           procedure second_cmpordinal;virtual;abstract;
+{$ifdef cpu64bitalu}
+          procedure second_op128bit;
+          { generic register-pair implementations, reached only on CPUs
+            that inline 128 bit operations }
+          procedure second_add128bit;virtual;
+          procedure second_cmp128bit;virtual;
+{$endif cpu64bitalu}
 
           function needoverflowcheck: boolean;
        end;
@@ -479,6 +486,156 @@ interface
       end;
 
 
+{$ifdef cpu64bitalu}
+    procedure tcgaddnode.second_op128bit;
+      begin
+        if nodetype in [ltn,lten,gtn,gten,equaln,unequaln] then
+          second_cmp128bit
+        else
+          second_add128bit;
+      end;
+
+
+    { generic register-pair implementation; CPUs only need the carry ops in
+      their tcg128 subclass, overflow-checked forms must stay on the helpers
+      or in a CPU specific override }
+    procedure tcgaddnode.second_add128bit;
+      var
+        op : TOpCG;
+      begin
+        case nodetype of
+          addn:
+            op:=OP_ADD;
+          subn:
+            op:=OP_SUB;
+          xorn:
+            op:=OP_XOR;
+          orn:
+            op:=OP_OR;
+          andn:
+            op:=OP_AND;
+          else
+            internalerror(2026071006);
+        end;
+        if (nodetype in [addn,subn]) and needoverflowcheck then
+          internalerror(2026071012);
+
+        pass_left_right;
+        if (nodetype=subn) and (nf_swapped in flags) then
+          swapleftright;
+
+        { load the left operand into the result pair, operate in place }
+        location_reset(location,LOC_REGISTER,def_cgsize(resultdef));
+        location.register128.reglo:=cg.getintregister(current_asmdata.CurrAsmList,OS_64);
+        location.register128.reghi:=cg.getintregister(current_asmdata.CurrAsmList,OS_64);
+        cg128.a_load128_loc_reg(current_asmdata.CurrAsmList,left.location,location.register128);
+
+        if not(right.location.loc in [LOC_REGISTER,LOC_CREGISTER]) then
+          hlcg.location_force_reg(current_asmdata.CurrAsmList,right.location,right.resultdef,right.resultdef,true);
+        cg128.a_op128_reg_reg(current_asmdata.CurrAsmList,op,location.size,
+          right.location.register128,location.register128);
+      end;
+
+
+    { generic jump-based compare on register pairs }
+    procedure tcgaddnode.second_cmp128bit;
+      var
+        truelabel,
+        falselabel : tasmlabel;
+        unsigned : boolean;
+        hicond,hirevcond,locond : topcmp;
+      begin
+        pass_left_right;
+
+        unsigned:=((left.resultdef.typ=orddef) and
+                   (torddef(left.resultdef).ordtype=u128bit)) or
+                  ((right.resultdef.typ=orddef) and
+                   (torddef(right.resultdef).ordtype=u128bit));
+
+        current_asmdata.getjumplabel(truelabel);
+        current_asmdata.getjumplabel(falselabel);
+        location_reset_jump(location,truelabel,falselabel);
+
+        { both operands in register pairs, in source order }
+        if nf_swapped in flags then
+          swapleftright;
+        if not(left.location.loc in [LOC_REGISTER,LOC_CREGISTER]) then
+          hlcg.location_force_reg(current_asmdata.CurrAsmList,left.location,left.resultdef,left.resultdef,true);
+        if not(right.location.loc in [LOC_REGISTER,LOC_CREGISTER]) then
+          hlcg.location_force_reg(current_asmdata.CurrAsmList,right.location,right.resultdef,right.resultdef,true);
+
+        case nodetype of
+          equaln:
+            begin
+              cg.a_cmp_reg_reg_label(current_asmdata.CurrAsmList,OS_64,OC_NE,
+                right.location.register128.reghi,left.location.register128.reghi,falselabel);
+              cg.a_cmp_reg_reg_label(current_asmdata.CurrAsmList,OS_64,OC_NE,
+                right.location.register128.reglo,left.location.register128.reglo,falselabel);
+              cg.a_jmp_always(current_asmdata.CurrAsmList,truelabel);
+            end;
+          unequaln:
+            begin
+              cg.a_cmp_reg_reg_label(current_asmdata.CurrAsmList,OS_64,OC_NE,
+                right.location.register128.reghi,left.location.register128.reghi,truelabel);
+              cg.a_cmp_reg_reg_label(current_asmdata.CurrAsmList,OS_64,OC_NE,
+                right.location.register128.reglo,left.location.register128.reglo,truelabel);
+              cg.a_jmp_always(current_asmdata.CurrAsmList,falselabel);
+            end;
+          else
+            begin
+              if nodetype in [ltn,lten] then
+                begin
+                  if unsigned then
+                    begin
+                      hicond:=OC_B;
+                      hirevcond:=OC_A;
+                    end
+                  else
+                    begin
+                      hicond:=OC_LT;
+                      hirevcond:=OC_GT;
+                    end;
+                end
+              else
+                begin
+                  if unsigned then
+                    begin
+                      hicond:=OC_A;
+                      hirevcond:=OC_B;
+                    end
+                  else
+                    begin
+                      hicond:=OC_GT;
+                      hirevcond:=OC_LT;
+                    end;
+                end;
+              case nodetype of
+                ltn:
+                  locond:=OC_B;
+                lten:
+                  locond:=OC_BE;
+                gtn:
+                  locond:=OC_A;
+                gten:
+                  locond:=OC_AE;
+                else
+                  internalerror(2026071007);
+              end;
+              { the high halves decide unless they are equal }
+              cg.a_cmp_reg_reg_label(current_asmdata.CurrAsmList,OS_64,hicond,
+                right.location.register128.reghi,left.location.register128.reghi,truelabel);
+              cg.a_cmp_reg_reg_label(current_asmdata.CurrAsmList,OS_64,hirevcond,
+                right.location.register128.reghi,left.location.register128.reghi,falselabel);
+              { equal high halves: the low compare is always unsigned }
+              cg.a_cmp_reg_reg_label(current_asmdata.CurrAsmList,OS_64,locond,
+                right.location.register128.reglo,left.location.register128.reglo,truelabel);
+              cg.a_jmp_always(current_asmdata.CurrAsmList,falselabel);
+            end;
+        end;
+      end;
+{$endif cpu64bitalu}
+
+
     procedure tcgaddnode.second_add64bit;
       var
         op         : TOpCG;
@@ -791,6 +948,10 @@ interface
               { 64bit operations }
               else if is_64bit(left.resultdef) then
                 second_op64bit
+{$else cpu64bitalu}
+              { 128bit operations }
+              else if is_128bit(left.resultdef) then
+                second_op128bit
 {$endif cpu64bitalu}
               else
                 second_opordinal;

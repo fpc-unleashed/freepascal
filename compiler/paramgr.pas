@@ -215,7 +215,8 @@ implementation
          { This handles all managed types, including COM interfaces and Variants }
          if handle_common_ret_in_param(def,pd,result) then
            exit;
-         ret_in_param:=(def.typ=arraydef) or
+         ret_in_param:=is_128bit(def) or
+           (def.typ=arraydef) or
            (def.typ=recorddef) or
            (def.typ=stringdef) or
            ((def.typ=procvardef) and not tprocvardef(def).is_addressonly) or

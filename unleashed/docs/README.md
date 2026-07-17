@@ -80,6 +80,12 @@ C99-style records with a variable-length tail: `data: array[] of T` as the last 
 
 Enabled via `{$modeswitch flexiblearrays}`.
 
+## [Int128 / UInt128](int128.md)
+
+Native 128-bit signed and unsigned integers that behave like any other ordinal - literals, arithmetic, `div` / `mod`, shifts, bitwise, comparisons, `inc` / `dec` / `succ` / `pred`, `abs` / `odd` / `sqr`, `for`, `case`, range / overflow checks, `Str` / `Val`, and `Write` / `Read`. 128-bit literals are gated by the switch; the types are always available. On the 64-bit register targets the common operations are inline register-pair code; `div` / `mod`, overflow-checked `mul` / `neg` and `Str` / `Val` stay RTL helpers (the gcc `__divti3` model), and the remaining CPUs run entirely on the helpers.
+
+Enabled via `{$modeswitch int128}`.
+
 ## [Compound Assignment Operators](compound-assignment.md)
 
 Word-based modify-and-assign operators that the standard set is missing: `div=`, `mod=`, `and=`, `or=`, `xor=`, `shl=`, `shr=`.

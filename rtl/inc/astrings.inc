@@ -1173,6 +1173,56 @@ end;
 
 {$endif CPU64}
 
+{$if declared(int128)}
+
+Procedure fpc_AnsiStr_Int128(v : Int128; Len : SizeInt; out S : RawByteString;cp : TSystemCodePage);[Public,Alias : 'FPC_ANSISTR_INT128']; compilerproc; inline;
+Var
+  SS : ShortString;
+begin
+  str (v:Len,SS);
+  S:=SS;
+  SetCodePage(s,cp,false);
+end;
+
+Procedure fpc_AnsiStr_UInt128(v : UInt128; Len : SizeInt; out S : RawByteString;cp : TSystemCodePage);[Public,Alias : 'FPC_ANSISTR_UINT128']; compilerproc; inline;
+Var
+  SS : ShortString;
+begin
+  str (v:Len,SS);
+  S:=SS;
+  SetCodePage(s,cp,false);
+end;
+
+Function fpc_Val_Int128_AnsiStr(Const S : RawByteString; out Code : ValSInt): Int128; [public, alias:'FPC_VAL_INT128_ANSISTR']; compilerproc;
+Var
+  SS : ShortString;
+begin
+  fpc_Val_Int128_AnsiStr:=0;
+  if length(S)>255 then
+    code:=256
+  else
+    begin
+      SS := S;
+      Val(SS,fpc_Val_Int128_AnsiStr,Code);
+    end;
+end;
+
+Function fpc_Val_UInt128_AnsiStr(Const S : RawByteString; out Code : ValSInt): UInt128; [public, alias:'FPC_VAL_UINT128_ANSISTR']; compilerproc;
+Var
+  SS : ShortString;
+begin
+  fpc_Val_UInt128_AnsiStr:=0;
+  if length(S)>255 then
+    code:=256
+  else
+    begin
+      SS := S;
+      Val(SS,fpc_Val_UInt128_AnsiStr,Code);
+    end;
+end;
+
+{$endif}
+
 {$if defined(CPU16) or defined(CPU8)}
 Procedure fpc_AnsiStr_LongWord(v : LongWord;Len : SizeInt; out S : RawByteString;cp : TSystemCodePage);[Public,Alias : 'FPC_ANSISTR_LONGWORD']; compilerproc; inline;
 Var

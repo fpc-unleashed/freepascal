@@ -2890,6 +2890,7 @@ implementation
         i64: Int64;
         qw: QWord;
         paracount: Integer;
+        val128: Boolean;
       begin
         result := nil;
         case intrinsiccode of
@@ -3020,11 +3021,17 @@ implementation
                     begin
                       valnode:=para.left;
                       name:=tprocdef(procdefinition).fullprocname(true);
+                      { the 128 bit helpers carry no data size parameter, so they
+                        must not reach the GetParaFromIndex(2) case below }
+                      val128:=(copy(name,1,16)='$fpc_val_int128_') or (copy(name,1,17)='$fpc_val_uint128_');
                       if is_conststringnode(valnode) and
-                        { we can handle only the fpc_val_sint helpers so far }
-                        ((copy(name,1,13)='$fpc_val_sint') or (copy(name,1,13)='$fpc_val_uint')) then
+                        { we can handle only the integer val helpers so far }
+                        (val128 or (copy(name,1,13)='$fpc_val_sint') or (copy(name,1,13)='$fpc_val_uint')) then
                         begin
                           ValOutput.signed := is_signed(ResultDef);
+                          if val128 then
+                            ValCode:=val_to_tconstexprint(TStringConstNode(valnode).asrawbytestring,not ValOutput.signed,ValOutput)
+                          else
 {$PUSH}
 {$R-}
                           case Longint(tordconstnode(GetParaFromIndex(2).paravalue).value.svalue) of

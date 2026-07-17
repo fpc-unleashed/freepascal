@@ -61,6 +61,12 @@ implementation
             result:=true;
             exit;
           end;
+        { 128 bit ints pass by reference }
+        if is_128bit(def) then
+          begin
+            result:=true;
+            exit;
+          end;
         case def.typ of
           arraydef:
             result:=(tarraydef(def).highrange>=tarraydef(def).lowrange) or

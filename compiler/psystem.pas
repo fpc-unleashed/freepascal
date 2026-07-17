@@ -285,12 +285,8 @@ implementation
         u56inttype:=corddef.create(customint,0,int64(1) shl 56 - 1,true);
         u64inttype:=corddef.create(u64bit,low(qword),high(qword),true);
         s64inttype:=corddef.create(s64bit,low(int64),high(int64),true);
-        { upper/lower bound not yet properly set for 128 bit types, as we don't
-          support them yet at the Pascal level (nor for tconstexprint); they're
-          only used internally by the high level code generator for LLVM to
-          implement overflow checking }
-        u128inttype:=corddef.create(u128bit,0,0,true);
-        s128inttype:=corddef.create(s128bit,0,0,true);
+        u128inttype:=corddef.create(u128bit,0,uint128_high,true);
+        s128inttype:=corddef.create(s128bit,int128_low,int128_high,true);
         pasbool1type:=corddef.create(pasbool1,0,1,true);
         pasbool8type:=corddef.create(pasbool8,0,1,true);
         pasbool16type:=corddef.create(pasbool16,0,1,true);
@@ -548,6 +544,10 @@ implementation
         addtype('LongInt',s32inttype);
         addtype('QWord',u64inttype);
         addtype('Int64',s64inttype);
+{$if not defined(cpuhighleveltarget) or defined(wasm32)}
+        addtype('UInt128',u128inttype);
+        addtype('Int128',s128inttype);
+{$endif}
         addtype('AnsiChar',cansichartype);
         addtype('WideChar',cwidechartype);
         addtype('Text',cfiledef.createtext);

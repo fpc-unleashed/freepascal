@@ -5114,6 +5114,8 @@ implementation
          l          : longint;
          ic         : int64;
          qc         : qword;
+         ic128      : tconstexprint;
+         ic128err   : boolean;
          p1         : tnode;
          code       : integer;
          srsym      : tsym;
@@ -5475,6 +5477,20 @@ implementation
                           p1:=cordconstnode.create(qc,hdef,true);
                        end;
                    end;
+{$if not defined(cpuhighleveltarget) or defined(wasm32)}
+                 if (code<>0) and (m_int128 in current_settings.modeswitches) then
+                   begin
+                     { try 128 bit }
+                     ic128:=str_to_tconstexprint(current_scanner.pattern,ic128err);
+                     if not ic128err then
+                       begin
+                          code:=0;
+                          consume(_INTCONST);
+                          int_to_type(ic128,hdef);
+                          p1:=cordconstnode.create(ic128,hdef,true);
+                       end;
+                   end;
+{$endif not defined(cpuhighleveltarget) or defined(wasm32)}
                  if code<>0 then
                    begin
                      { finally float }

@@ -25,6 +25,7 @@
   - [For-Step](#for-step)
   - [Auto-Properties](#auto-properties)
   - [Parallel For](#parallel-for)
+  - [128-bit Integers (Int128, UInt128)](#128-bit-integers)
   - [Tweaks](#tweaks)
   - [Multiline Strings](#multiline-strings)
   - [String Interpolation](#string-interpolation)
@@ -67,6 +68,7 @@ The following modeswitches are enabled automatically:
 | `forstep`                          | `step N` clause in `for` loops to advance by N each iteration |
 | `autoproperties`                   | Accessor-less property synthesizes a backing field (`read FName write FName`) |
 | `parallelfor`                      | `for parallel` runs the loop body across a BeginThread worker pool |
+| `int128`                           | Integer literals beyond 64 bits for the always-available `Int128` / `UInt128` types |
 | `anonymousfunctions`               | Anonymous procedures and functions                            |
 | `functionreferences`               | Function pointers that capture context                        |
 | `advancedrecords`                  | Records with methods, properties, and operators               |
@@ -855,6 +857,35 @@ for parallel(4) var i := 1 to N do
 The body is hoisted into a hidden nested routine, so it can read and write the enclosing routine's locals across the threads (concurrently - same atomic/lock caveat). The first exception raised on any worker is caught and re-raised on the calling thread after the barrier, so a fault surfaces as an ordinary exception at the loop rather than a crash on a helper thread.
 
 `continue` works as usual. `break` cancels the loop cooperatively: no new iteration starts, the ones already running finish, then the barrier joins - with one worker it is exact, like a sequential loop. `exit` and `goto` out of the body are rejected (a pool that must join its threads cannot leave a routine mid-flight), as is `for ... in`. A parallel loop nested inside another runs its inner body sequentially by default - each loop has its own pool, so a default inner pool would oversubscribe the cores; an explicit `(N)` on the inner loop opts back into nested parallelism. On Unix the program needs a threading driver (`cthreads` first in `uses`), like any threaded FPC program.
+
+---
+
+### 128-bit Integers
+
+**Activate:** the types are always available; integer literals beyond 64 bits need modeswitch `int128` (on by default in Unleashed mode).
+
+Native 128-bit signed (`Int128`) and unsigned (`UInt128`) integers that behave like every other ordinal - the same way `Int64` / `QWord` extend the 32-bit types. Arithmetic, comparisons, `div` / `mod`, shifts, bitwise ops, `inc` / `dec` / `succ` / `pred`, `abs` / `odd` / `sqr`, `for` loops, `case`, range / overflow checking, `Str` / `Val` and `Write` / `Read` all work.
+
+```pascal
+var
+  a: Int128;
+  u: UInt128;
+begin
+  a := 170141183460469231731687303715884105727;   // high(Int128) = 2^127 - 1
+  u := 340282366920938463463374607431768211455;   // high(UInt128) = 2^128 - 1
+  a := a div 3;
+  u := u shr 100;
+  writeln(a, ' ', u);
+end;
+```
+
+The modeswitch gates only the oversized literal: outside it, a literal past `Int64` / `QWord` keeps the historical real-constant fallback, so existing code is unaffected, and the type names stay usable in `objfpc` / `delphi`.
+
+On x86_64 a value lives in a pair of 64-bit registers and the cheap operations (add, sub, logic, compares, shifts, mul, conversions) are inline instruction sequences; parameters follow the C `__int128` ABI on SysV, so `cdecl` interop matches gcc/clang. aarch64 and the other 64-bit register targets inline the same set through a generic pair layer; everywhere else the operations lower to runtime helpers, the model gcc uses with `__divti3`. Only `div` / `mod`, overflow-checked `mul` / `neg`, `Str` / `Val` and the float conversions stay helpers on x86_64.
+
+One rule inherited from the language: a hex literal that fits `Int64` is sign-extended in a 128-bit slot, so `$ffffffffffffffff` is `-1` (all 128 bits set), not `2^64 - 1` - use decimal for the low-64 mask.
+
+See [unleashed/docs/int128.md](unleashed/docs/int128.md) for the full reference (literals, conversions, `Val` semantics, codegen and ABI notes, platform scope).
 
 ---
 

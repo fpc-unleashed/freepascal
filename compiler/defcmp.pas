@@ -598,8 +598,8 @@ implementation
                       begin
                         case torddef(def_from).ordtype of
                           uchar,uwidechar,
-                          u8bit,u16bit,u32bit,u64bit,
-                          s8bit,s16bit,s32bit,s64bit:
+                          u8bit,u16bit,u32bit,u64bit,u128bit,
+                          s8bit,s16bit,s32bit,s64bit,s128bit:
                             begin
                               if (torddef(def_from).low>=torddef(def_to).low) and
                                  (torddef(def_from).high<=torddef(def_to).high) then
@@ -2221,6 +2221,11 @@ implementation
         { if we didn't find an appropriate type conversion yet
           then we search also the := operator }
         if (eq=te_incompatible) and
+           { a variant cannot represent a 128 bit integer, without this
+             guard the operator search settles on a narrowing integer
+             overload and silently truncates the value }
+           not(((def_from.typ=variantdef) and is_128bitint(def_to)) or
+               ((def_to.typ=variantdef) and is_128bitint(def_from))) and
            { make sure there is not a single variant if variants   }
            { are not allowed (otherwise if only cdo_check_operator }
            { and e.g. fromdef=stringdef and todef=variantdef, then }
@@ -2293,9 +2298,9 @@ implementation
               { see p.47 of Turbo Pascal 7.01 manual for the separation of types }
               { range checking for case statements is done with adaptrange        }
               case torddef(def1).ordtype of
-                u8bit,u16bit,u32bit,u64bit,
-                s8bit,s16bit,s32bit,s64bit :
-                  is_subequal:=(torddef(def2).ordtype in [s64bit,u64bit,s32bit,u32bit,u8bit,s8bit,s16bit,u16bit]);
+                u8bit,u16bit,u32bit,u64bit,u128bit,
+                s8bit,s16bit,s32bit,s64bit,s128bit :
+                  is_subequal:=(torddef(def2).ordtype in [s64bit,u64bit,s128bit,u128bit,s32bit,u32bit,u8bit,s8bit,s16bit,u16bit]);
                 pasbool1,pasbool8,pasbool16,pasbool32,pasbool64,
                 bool8bit,bool16bit,bool32bit,bool64bit :
                   is_subequal:=(torddef(def2).ordtype in [pasbool1,pasbool8,pasbool16,pasbool32,pasbool64,bool8bit,bool16bit,bool32bit,bool64bit]);
@@ -2305,7 +2310,6 @@ implementation
                   is_subequal:=(torddef(def2).ordtype=uwidechar);
                 customint:
                   is_subequal:=(torddef(def2).low=torddef(def1).low) and (torddef(def2).high=torddef(def1).high);
-                u128bit, s128bit,
                 scurrency,
                 uvoid:
                   ;

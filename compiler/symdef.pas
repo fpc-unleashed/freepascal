@@ -2593,7 +2593,14 @@ implementation
 {$endif cpuhighleveltarget}
      begin
         case typ of
-          orddef,
+          orddef:
+{$if defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
+            { 128 bit ints live in a register pair }
+            is_intregable:=true;
+{$else}
+            { 128 bit ints need a register pair and always live in memory }
+            is_intregable:=not(torddef(self).ordtype in [u128bit,s128bit]);
+{$endif}
           pointerdef,
           enumdef,
           classrefdef:
@@ -3587,6 +3594,19 @@ implementation
          ordtype:=tordtype(ppufile.getbyte);
          low:=ppufile.getexprint;
          high:=ppufile.getexprint;
+         { PPUs written before 128 bit support store 0,0 placeholder bounds }
+         if (low=0) and (high=0) then
+           case ordtype of
+             s128bit:
+               begin
+                 low:=int128_low;
+                 high:=int128_high;
+               end;
+             u128bit:
+               high:=uint128_high;
+             else
+               ;
+           end;
          setsize;
          ppuload_platform(ppufile);
       end;
@@ -3638,6 +3658,11 @@ implementation
         result := 0;
         if ordtype = uvoid then
           exit;
+        if ordtype in [s128bit,u128bit] then
+          begin
+            result:=128;
+            exit;
+          end;
 
 {$ifndef cpu64bitalu}
         if (ordtype in [s64bit,u64bit]) then

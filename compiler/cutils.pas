@@ -1032,17 +1032,24 @@ implementation
 
     function ispowerof2(const value: Tconstexprint; out power: longint): boolean;
       begin
-        if value.signed or
-           (value.uvalue<=high(int64)) then
-          result:=ispowerof2(value.svalue,power)
-        else if not value.signed and
-            (value.svalue=low(int64)) then
+        result:=false;
+        if value.is_negative or ((value.vlo or value.vhi)=0) then
+          exit;
+        if value.vhi=0 then
           begin
-            result:=true;
-            power:=63;
+            if (value.vlo and (value.vlo-1))<>0 then
+              exit;
+            power:=BsfQWord(value.vlo);
+          end
+        else if value.vlo=0 then
+          begin
+            if (value.vhi and (value.vhi-1))<>0 then
+              exit;
+            power:=64+BsfQWord(value.vhi);
           end
         else
-          result:=false;
+          exit;
+        result:=true;
       end;
 
 
@@ -1050,7 +1057,7 @@ implementation
       begin
         if ispowerof2(value,power) then
           result:=true
-        else if value.signed and (value.svalue<0) and (value.svalue<>low(int64)) and ispowerof2(-value.svalue,power) then
+        else if value.is_negative and ispowerof2(-value,power) then
           result:=true
         else
           result:=false;

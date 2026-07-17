@@ -3795,10 +3795,17 @@ implementation
                      end;
                    left.resultdef:=resultdef;
                    tordconstnode(left).typedef:=resultdef;
-                   if is_signed(resultdef) then
-                     tordconstnode(left).value.signed:=true
+                   { reinterpret the (possibly truncated) payload with the
+                     signedness of the target type }
+                   if resultdef.size<=8 then
+                     begin
+                       if is_signed(resultdef) then
+                         tordconstnode(left).value:=tordconstnode(left).value.svalue
+                       else
+                         tordconstnode(left).value:=tordconstnode(left).value.uvalue;
+                     end
                    else
-                     tordconstnode(left).value.signed:=false;
+                     tordconstnode(left).value.signed:=is_signed(resultdef);
                    result:=left;
                    left:=nil;
                    exit;
@@ -3918,6 +3925,23 @@ implementation
 
       begin
         first_int_to_int:=nil;
+{$ifndef cpu64bitalu}
+        { without a 64 bit ALU the inline 128 bit widening (which needs a 64 bit
+          register for the sign extension) is unavailable, so route it through a
+          helper the same way the arithmetic is lowered }
+        if is_128bit(resultdef) and not is_128bit(left.resultdef) then
+          begin
+            if is_signed(left.resultdef) then
+              result:=ccallnode.createinternres('fpc_int64_to_int128',
+                ccallparanode.create(ctypeconvnode.create_internal(left,s64inttype),nil),resultdef)
+            else
+              result:=ccallnode.createinternres('fpc_qword_to_uint128',
+                ccallparanode.create(ctypeconvnode.create_internal(left,u64inttype),nil),resultdef);
+            left:=nil;
+            firstpass(result);
+            exit;
+          end;
+{$endif not cpu64bitalu}
         expectloc:=left.expectloc;
         if not is_void(left.resultdef) then
           begin
@@ -4521,6 +4545,24 @@ implementation
 
     function ttypeconvnode._first_int_to_real : tnode;
       begin
+         { 128 bit sources go through a helper on all targets }
+         if is_128bit(left.resultdef) then
+           begin
+             if is_signed(left.resultdef) then
+               begin
+                 inserttypeconv_internal(left,s128inttype);
+                 result:=ccallnode.createintern('fpc_int128_to_double',ccallparanode.create(left,nil));
+               end
+             else
+               begin
+                 inserttypeconv_internal(left,u128inttype);
+                 result:=ccallnode.createintern('fpc_uint128_to_double',ccallparanode.create(left,nil));
+               end;
+             left:=nil;
+             result:=ctypeconvnode.create_internal(result,resultdef);
+             firstpass(result);
+             exit;
+           end;
          result:=first_int_to_real;
       end;
 

@@ -2072,6 +2072,15 @@ implementation
         result:=nil;
         expectloc:=LOC_VOID;
 
+        { 128 bit counters cannot live in a register; rewrite to a while loop
+          whose iteration and bound check lower to the int128 helpers }
+        if is_128bit(left.resultdef) then
+          begin
+            result:=makewhileloop;
+            firstpass(result);
+            exit;
+          end;
+
         firstpass(left);
         firstpass(right);
         firstpass(t1);

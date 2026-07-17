@@ -169,6 +169,9 @@ unit cpupara;
           else
             ;
         end;
+        { 128 bit ints are returned through a hidden pointer }
+        if is_128bit(def) then
+          exit(true);
         result:=inherited ret_in_param(def,pd);
       end;
 
@@ -202,6 +205,9 @@ unit cpupara;
             end;
           formaldef :
             result:=true;
+          { 128 bit ints are always passed by reference }
+          orddef :
+            result:=is_128bit(def);
           recorddef :
             begin
               { Delphi stdcall passes records on the stack for call by value }

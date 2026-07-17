@@ -49,6 +49,9 @@ interface
 {$if not defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
          procedure second_64bit;virtual;
 {$endif not cpu64bitalu and not cpuhighleveltarget}
+{$ifdef cpu64bitalu}
+         procedure second_neg128;virtual;
+{$endif cpu64bitalu}
          procedure second_integer;virtual;
          procedure second_float;virtual;
          procedure second_float_emulated;virtual;
@@ -108,6 +111,9 @@ interface
 {$if not defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
          procedure second_64bit;virtual;
 {$endif not cpu64bitalu and not cpuhighleveltarget}
+{$ifdef cpu64bitalu}
+         procedure second_shift128;virtual;
+{$endif cpu64bitalu}
          procedure second_integer;virtual;
          procedure pass_generate_code;override;
       end;
@@ -122,6 +128,9 @@ interface
 {$if not defined(cpu64bitalu) and not defined(cpuhighleveltarget)}
          procedure second_64bit;virtual;
 {$endif not cpu64bitalu and not cpuhighleveltarget}
+{$ifdef cpu64bitalu}
+         procedure second_not128;virtual;
+{$endif cpu64bitalu}
          procedure second_integer;virtual;
       public
          procedure pass_generate_code;override;
@@ -291,6 +300,21 @@ implementation
       end;
 
 
+{$ifdef cpu64bitalu}
+    procedure tcgunaryminusnode.second_neg128;
+      begin
+        secondpass(left);
+        if not(left.location.loc in [LOC_REGISTER,LOC_CREGISTER]) then
+          hlcg.location_force_reg(current_asmdata.CurrAsmList,left.location,left.resultdef,resultdef,true);
+        location_reset(location,LOC_REGISTER,def_cgsize(resultdef));
+        location.register128.reglo:=cg.getintregister(current_asmdata.CurrAsmList,OS_64);
+        location.register128.reghi:=cg.getintregister(current_asmdata.CurrAsmList,OS_64);
+        cg128.a_op128_reg_reg(current_asmdata.CurrAsmList,OP_NEG,location.size,
+          left.location.register128,location.register128);
+      end;
+{$endif cpu64bitalu}
+
+
     procedure tcgunaryminusnode.second_integer;
       var
         hl: tasmlabel;
@@ -323,6 +347,11 @@ implementation
            second_64bit
          else
 {$endif not cpu64bitalu and not cpuhighleveltarget}
+{$ifdef cpu64bitalu}
+         if is_128bit(left.resultdef) then
+           second_neg128
+         else
+{$endif cpu64bitalu}
 {$ifdef SUPPORT_MMX}
            if (cs_mmx in current_settings.localswitches) and is_mmx_able_array(left.resultdef) then
              second_mmx
@@ -491,6 +520,31 @@ implementation
 {$endif not cpu64bitalu and not cpuhighleveltarget}
 
 
+{$ifdef cpu64bitalu}
+    procedure tcgshlshrnode.second_shift128;
+      var
+        op : topcg;
+      begin
+        if nodetype=shln then
+          op:=OP_SHL
+        else
+          op:=OP_SHR;
+
+        { load the value into the result pair, shift in place }
+        location_reset(location,LOC_REGISTER,def_cgsize(resultdef));
+        location.register128.reglo:=cg.getintregister(current_asmdata.CurrAsmList,OS_64);
+        location.register128.reghi:=cg.getintregister(current_asmdata.CurrAsmList,OS_64);
+        cg128.a_load128_loc_reg(current_asmdata.CurrAsmList,left.location,location.register128);
+
+        { the count always goes through a register, the CPU masks it }
+        if not(right.location.loc in [LOC_REGISTER,LOC_CREGISTER]) then
+          hlcg.location_force_reg(current_asmdata.CurrAsmList,right.location,right.resultdef,right.resultdef,true);
+        cg128.a_op128_reg_reg(current_asmdata.CurrAsmList,op,location.size,
+          joinreg128(right.location.register,right.location.register),location.register128);
+      end;
+{$endif cpu64bitalu}
+
+
     procedure tcgshlshrnode.second_integer;
       var
          op : topcg;
@@ -622,6 +676,11 @@ implementation
            second_64bit
          else
 {$endif not cpu64bitalu and not cpuhighleveltarget}
+{$ifdef cpu64bitalu}
+         if is_128bit(left.resultdef) then
+           second_shift128
+         else
+{$endif cpu64bitalu}
            second_integer;
       end;
 
@@ -643,6 +702,21 @@ implementation
         cg64.a_op64_reg_reg(current_asmdata.CurrAsmList,OP_NOT,location.size,left.location.register64,location.register64);
       end;
 {$endif not cpu64bitalu and not cpuhighleveltarget}
+
+
+{$ifdef cpu64bitalu}
+    procedure tcgnotnode.second_not128;
+      begin
+        secondpass(left);
+        if not(left.location.loc in [LOC_REGISTER,LOC_CREGISTER]) then
+          hlcg.location_force_reg(current_asmdata.CurrAsmList,left.location,left.resultdef,left.resultdef,true);
+        location_reset(location,LOC_REGISTER,left.location.size);
+        location.register128.reglo:=cg.getintregister(current_asmdata.CurrAsmList,OS_64);
+        location.register128.reghi:=cg.getintregister(current_asmdata.CurrAsmList,OS_64);
+        cg128.a_op128_reg_reg(current_asmdata.CurrAsmList,OP_NOT,location.size,
+          left.location.register128,location.register128);
+      end;
+{$endif cpu64bitalu}
 
 
     procedure tcgnotnode.second_integer;
@@ -685,6 +759,10 @@ implementation
         else if is_64bit(left.resultdef) then
           second_64bit
 {$endif not cpu64bitalu and not cpuhighleveltarget}
+{$ifdef cpu64bitalu}
+        else if is_128bit(left.resultdef) then
+          second_not128
+{$endif cpu64bitalu}
         else
           second_integer;
       end;

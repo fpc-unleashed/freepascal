@@ -1675,10 +1675,56 @@ implementation
       end;
 
 
+    type
+      tcg128loongarch64 = class(tcg128)
+        procedure a_op128_reg_reg(list : TAsmList;op:TOpCG;size : tcgsize;regsrc,regdst : tregister128);override;
+      end;
+
+procedure tcg128loongarch64.a_op128_reg_reg(list: TAsmList; op: TOpCG; size: tcgsize; regsrc,regdst: tregister128);
+var
+  tmp : tregister;
+begin
+  case op of
+    OP_ADD:
+      begin
+        { the sum wrapped when it ends up below the old low half }
+        tmp:=cg.getintregister(list,OS_64);
+        cg.a_load_reg_reg(list,OS_64,OS_64,regdst.reglo,tmp);
+        cg.a_op_reg_reg(list,OP_ADD,OS_64,regsrc.reglo,regdst.reglo);
+        list.concat(taicpu.op_reg_reg_reg(A_SLTU,tmp,regdst.reglo,tmp));
+        cg.a_op_reg_reg(list,OP_ADD,OS_64,regsrc.reghi,regdst.reghi);
+        cg.a_op_reg_reg(list,OP_ADD,OS_64,tmp,regdst.reghi);
+      end;
+    OP_SUB:
+      begin
+        { borrow when the minuend is below the subtrahend }
+        tmp:=cg.getintregister(list,OS_64);
+        list.concat(taicpu.op_reg_reg_reg(A_SLTU,tmp,regdst.reglo,regsrc.reglo));
+        cg.a_op_reg_reg(list,OP_SUB,OS_64,regsrc.reglo,regdst.reglo);
+        cg.a_op_reg_reg(list,OP_SUB,OS_64,regsrc.reghi,regdst.reghi);
+        cg.a_op_reg_reg(list,OP_SUB,OS_64,tmp,regdst.reghi);
+      end;
+    OP_NEG:
+      begin
+        { the high half gets the carry out of the low zero }
+        tmp:=cg.getintregister(list,OS_64);
+        list.concat(taicpu.op_reg_reg_reg(A_SLTU,tmp,NR_R0,regsrc.reglo));
+        if regsrc.reglo<>regdst.reglo then
+          a_load128_reg_reg(list,regsrc,regdst);
+        cg.a_op_reg_reg(list,OP_NEG,OS_64,regdst.reglo,regdst.reglo);
+        cg.a_op_reg_reg(list,OP_NEG,OS_64,regdst.reghi,regdst.reghi);
+        cg.a_op_reg_reg(list,OP_SUB,OS_64,tmp,regdst.reghi);
+      end;
+    else
+      inherited a_op128_reg_reg(list,op,size,regsrc,regdst);
+  end;
+end;
+
+
     procedure create_codegen;
       begin
         cg := tcgloongarch64.create;
-        cg128:=tcg128.create;
+        cg128:=tcg128loongarch64.create;
       end;
 
 end.

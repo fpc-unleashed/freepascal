@@ -112,6 +112,10 @@ interface
         procedure load_regs(list: TAsmList; rt: tregistertype; lowsr, highsr: tsuperregister; sub: tsubregister);
       end;
 
+      tcg128aarch64 = class(tcg128)
+        procedure a_op128_reg_reg(list : TAsmList;op:TOpCG;size : tcgsize;regsrc,regdst : tregister128);override;
+      end;
+
     procedure create_codegen;
 
     const
@@ -2829,10 +2833,41 @@ implementation
       end;
 
 
+    procedure tcg128aarch64.a_op128_reg_reg(list: TAsmList; op: TOpCG; size: tcgsize; regsrc,regdst: tregister128);
+      begin
+        case op of
+          OP_ADD:
+            begin
+              cg.a_reg_alloc(list,NR_DEFAULTFLAGS);
+              list.concat(setoppostfix(taicpu.op_reg_reg_reg(A_ADD,regdst.reglo,regdst.reglo,regsrc.reglo),PF_S));
+              list.concat(taicpu.op_reg_reg_reg(A_ADC,regdst.reghi,regdst.reghi,regsrc.reghi));
+              cg.a_reg_dealloc(list,NR_DEFAULTFLAGS);
+            end;
+          OP_SUB:
+            begin
+              cg.a_reg_alloc(list,NR_DEFAULTFLAGS);
+              list.concat(setoppostfix(taicpu.op_reg_reg_reg(A_SUB,regdst.reglo,regdst.reglo,regsrc.reglo),PF_S));
+              list.concat(taicpu.op_reg_reg_reg(A_SBC,regdst.reghi,regdst.reghi,regsrc.reghi));
+              cg.a_reg_dealloc(list,NR_DEFAULTFLAGS);
+            end;
+          OP_NEG:
+            begin
+              { negs/ngc: zero minus the source with borrow }
+              cg.a_reg_alloc(list,NR_DEFAULTFLAGS);
+              list.concat(setoppostfix(taicpu.op_reg_reg_reg(A_SUB,regdst.reglo,NR_XZR,regsrc.reglo),PF_S));
+              list.concat(taicpu.op_reg_reg_reg(A_SBC,regdst.reghi,NR_XZR,regsrc.reghi));
+              cg.a_reg_dealloc(list,NR_DEFAULTFLAGS);
+            end;
+          else
+            inherited a_op128_reg_reg(list,op,size,regsrc,regdst);
+        end;
+      end;
+
+
     procedure create_codegen;
       begin
         cg:=tcgaarch64.Create;
-        cg128:=tcg128.Create;
+        cg128:=tcg128aarch64.Create;
       end;
 
 end.

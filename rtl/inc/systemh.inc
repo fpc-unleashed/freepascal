@@ -1027,6 +1027,13 @@ Function Odd(l:Longint):Boolean;[internconst:fpc_in_const_odd];{$ifdef SYSTEMINL
 Function Odd(l:Longword):Boolean;[internconst:fpc_in_const_odd];{$ifdef SYSTEMINLINE}inline;{$endif}
 Function Odd(l:Int64):Boolean;[internconst:fpc_in_const_odd];{$ifdef SYSTEMINLINE}inline;{$endif}
 Function Odd(l:QWord):Boolean;[internconst:fpc_in_const_odd];{$ifdef SYSTEMINLINE}inline;{$endif}
+{$if declared(int128)}
+Function Abs(l:Int128):Int128;{$ifdef SYSTEMINLINE}inline;{$endif}
+Function Sqr(l:Int128):Int128;{$ifdef SYSTEMINLINE}inline;{$endif}
+Function Sqr(l:UInt128):UInt128;{$ifdef SYSTEMINLINE}inline;{$endif}
+Function Odd(l:Int128):Boolean;{$ifdef SYSTEMINLINE}inline;{$endif}
+Function Odd(l:UInt128):Boolean;{$ifdef SYSTEMINLINE}inline;{$endif}
+{$endif}
 
 function SwapEndian(const AValue: SmallInt): SmallInt;{$ifdef SYSTEMINLINE}inline;{$endif}
 function SwapEndian(const AValue: Word): Word;{$ifdef SYSTEMINLINE}inline;{$endif}
