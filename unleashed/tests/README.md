@@ -50,6 +50,7 @@ Default verdict rules, in priority order:
 
 | Situation | Verdict |
 |---|---|
+| `%CPU` set and target cpu not in the list | SKIP, phase `skip` (nothing compiled) |
 | Compiler hung past the timeout | FAIL, phase `compile-timeout` |
 | `%FAIL` set and compiler exited non-zero | PASS, phase `expected-fail` |
 | `%FAIL` set and compiler exited zero | FAIL, phase `compile` |
@@ -105,6 +106,7 @@ A value containing whitespace must be quoted with `"..."`, otherwise the tokeniz
 | `%TIMEOUT=N` | Per-test timeout in seconds, overrides `--timeout`. |
 | `%CHECKBIN_HAS=L` | Comma-separated list of substrings; each MUST appear in the produced binary. After successful compile (and run, if any), the runner reads the exe as bytes and asserts every entry is found. |
 | `%CHECKBIN_LACKS=L` | Same shape, opposite assertion: every entry MUST NOT appear. Useful for verifying RTTI stripping, dead-code elimination, etc. |
+| `%CPU=L` | Comma-separated list of target cpus (as reported by `fpc -iTP`, e.g. `x86_64,aarch64`) the test applies to. When the compiler targets a cpu not in the list, the test is reported as SKIP instead of being compiled. Use for tests that exercise 64-bit-only behavior such as `Int64` `for parallel` loop variables. |
 
 When either `%CHECKBIN_*` flag is set, the runner adds `-Xs -XX -CX` to the compile to keep dead code and debug-section noise out of the byte search. The check happens whether or not the test runs (so it composes with `%NORUN`). On violation the verdict is FAIL with phase `checkbin` and a note naming the offending substring.
 

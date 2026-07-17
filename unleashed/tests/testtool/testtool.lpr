@@ -31,9 +31,10 @@ type
     Timeout: Integer;
     CheckBinHas: TStringArray;
     CheckBinLacks: TStringArray;
+    Cpu: TStringArray;
   end;
 
-  TVerdict = (vPass, vFail);
+  TVerdict = (vPass, vFail, vSkip);
 
   TResult = record
     SrcPath: String;     // absolute path to test file
@@ -189,6 +190,7 @@ begin
       'TIMEOUT':    Flags.Timeout := StrToIntDef(value, 0);
       'CHECKBIN_HAS':   Flags.CheckBinHas := value.Split([','], TStringSplitOptions.ExcludeEmpty);
       'CHECKBIN_LACKS': Flags.CheckBinLacks := value.Split([','], TStringSplitOptions.ExcludeEmpty);
+      'CPU':        Flags.Cpu := value.Split([','], TStringSplitOptions.ExcludeEmpty);
       _:            ; // unknown flag, ignore
     end;
   end;
@@ -419,7 +421,9 @@ end;
 
 function FormatVerdict(const R: TResult): String;
 begin
-  Result := (if R.Verdict = vPass then AnsiGreen + 'PASS' else AnsiRed + 'FAIL') + AnsiReset;
+  Result := (if R.Verdict = vPass then AnsiGreen + 'PASS'
+             else if R.Verdict = vSkip then AnsiYellow + 'SKIP'
+             else AnsiRed + 'FAIL') + AnsiReset;
 end;
 
 // scan ExePath for substrings; mutates R to FAIL with a note on first violation
@@ -469,6 +473,21 @@ begin
 
   var comment := ExtractFirstFlagComment(ReadFileHead(SrcPath, ReadChunkSize));
   ParseFlags(comment, R.Flags);
+
+  // %CPU gate: the test only applies to the listed target cpus
+  if Length(R.Flags.Cpu) > 0 then
+  begin
+    var cpuOk := false;
+    for var c in R.Flags.Cpu do
+      if SameText(c, GTargetCPU) then cpuOk := true;
+    if not cpuOk then
+    begin
+      R.Verdict := vSkip;
+      R.Phase := 'skip';
+      R.Notes := 'target cpu ' + GTargetCPU + ' not in %CPU list';
+      Exit;
+    end;
+  end;
 
   var needsCmdLineMode: Boolean;
   var patched := PreparePatchedSource(SrcPath, needsCmdLineMode);
@@ -707,7 +726,9 @@ begin
     var r := GResults[i];
     var head := Format('[%s] [%s] %s phase=%s exit=%d',
                        [r.Timestamp,
-                        (if r.Verdict = vPass then 'PASS' else 'FAIL'),
+                        (if r.Verdict = vPass then 'PASS'
+                         else if r.Verdict = vSkip then 'SKIP'
+                         else 'FAIL'),
                         r.RelPath, r.Phase, r.ExitCode]);
     if r.Flags.Fail then head += ' (%FAIL)';
     if r.Flags.NoRun then head += ' (%NORUN)';
@@ -717,6 +738,8 @@ begin
       head += ' (%CHECKBIN_HAS=' + String.Join(',', r.Flags.CheckBinHas) + ')';
     if Length(r.Flags.CheckBinLacks) > 0 then
       head += ' (%CHECKBIN_LACKS=' + String.Join(',', r.Flags.CheckBinLacks) + ')';
+    if Length(r.Flags.Cpu) > 0 then
+      head += ' (%CPU=' + String.Join(',', r.Flags.Cpu) + ')';
     testsLog.Add(head);
     if r.Verdict = vFail then
     begin
@@ -858,6 +881,8 @@ begin
   WriteLn('  %CHECKBIN_HAS=L  comma-separated list; each MUST be present in the exe');
   WriteLn('  %CHECKBIN_LACKS=L  same, but each MUST NOT be present (e.g. striprtti)');
   WriteLn('                   (when set, fpc gets `-Xs -XX -CX` for cleaner binary)');
+  WriteLn('  %CPU=L           comma-separated cpu list (e.g. x86_64,aarch64); the');
+  WriteLn('                   test is skipped when the target cpu is not listed');
   WriteLn;
   WriteLn('logs are written next to testtool.exe:');
   WriteLn('  tests.log  - one line per test');
@@ -1004,8 +1029,11 @@ begin
   SetLength(GResults, GCompleted);
   var passed := 0;
   var failed := 0;
+  var skipped := 0;
   for var i := 0 to High(GResults) do
-    if GResults[i].Verdict = vPass then Inc(passed) else Inc(failed);
+    if GResults[i].Verdict = vPass then Inc(passed)
+    else if GResults[i].Verdict = vSkip then Inc(skipped)
+    else Inc(failed);
 
   WriteLogs;
   FinalizeTempDirs;
@@ -1014,6 +1042,7 @@ begin
   WriteLn(AnsiBold, GCompleted, ' tests, ', AnsiReset,
           AnsiGreen, passed, ' passed', AnsiReset, ', ',
           (if failed = 0 then AnsiGray else AnsiRed), failed, ' failed', AnsiReset,
+          (if skipped > 0 then ', ' + AnsiYellow + IntToStr(skipped) + ' skipped' + AnsiReset else ''),
           ' (', totalMs, ' ms)');
   WriteLn('logs: ', IncludeTrailingPathDelimiter(GBaseDir), TestsLogName);
   if failed > 0 then
