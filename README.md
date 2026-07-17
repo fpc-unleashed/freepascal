@@ -190,7 +190,7 @@ end.
 
 **Activate:** available in Unleashed mode.
 
-Declare variables at the point of use inside `begin..end` blocks instead of in a separate `var` section at the top. Supports explicit types and type inference.
+Declare variables and constants at the point of use inside `begin..end` blocks instead of in a separate `var`/`const` section at the top. Supports explicit types and type inference.
 
 #### What it does
 
@@ -249,8 +249,23 @@ begin
 end.
 ```
 
+#### Inline constants
+```pascal
+begin
+  const K = 50;                          // true compile-time constant
+  const S = 'hello';
+  const T: Integer = 7;                  // typed constant (block-scoped storage)
+  const A: array[3] of integer = (1, 2, 3);
+  begin
+    const Inner = K * 2;                 // visible only in this block
+  end;
+end.
+```
+
+The plain `const K = expr` form requires a compile-time evaluable expression and produces a true constant (not assignable, no storage). The typed form `const K: T = v` follows the usual typed-constant rules. Both forms are block-scoped exactly like inline variables: the constant is visible only within the block that declares it.
+
 > [!NOTE]
-> Inline variables have the same scope as regular local variables - they are visible from the point of declaration until the end of the enclosing routine. They are not block-scoped.
+> Inline variables and constants are block-scoped (Delphi-style): a declaration inside a nested `begin..end` is visible only within that block, and a for-loop inline variable only within the loop body. Declarations in the outermost `begin..end` of a routine have procedure-wide scope, same as the `var`/`const` sections.
 
 > [!NOTE]
 > Untyped numeric inline variables default to a 32-bit signed integer (`integer`).

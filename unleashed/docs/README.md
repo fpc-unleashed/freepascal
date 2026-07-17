@@ -4,7 +4,7 @@ Detailed documentation for each feature in FPC Unleashed. Every feature has its 
 
 ## [Inline Variables](inline-vars.md)
 
-Declare variables at point of first use inside any statement block, with explicit types, type inference (`var x := expr`), or as for-loop counters. Scope is the enclosing `begin..end`, with shadowing rules and interaction with the existing `var` section spelled out in detail.
+Declare variables at point of first use inside any statement block, with explicit types, type inference (`var x := expr`), or as for-loop counters. Inline `const` works the same way: `const K = expr` yields a true compile-time constant, `const K: T = v` a typed constant with block-scoped storage. Both vars and consts are block-scoped to the enclosing `begin..end`, with shadowing rules and interaction with the existing `var` section spelled out in detail.
 
 Enabled via `{$modeswitch inlinevars}`.
 
