@@ -82,7 +82,7 @@ Enabled via `{$modeswitch flexiblearrays}`.
 
 ## [Int128 / UInt128](int128.md)
 
-Native 128-bit signed and unsigned integers that behave like any other ordinal - literals, arithmetic, `div` / `mod`, shifts, bitwise, comparisons, `inc` / `dec` / `succ` / `pred`, `abs` / `odd` / `sqr`, `for`, `case`, range / overflow checks, `Str` / `Val`, and `Write` / `Read`. 128-bit literals are gated by the switch; the types are always available. Operations lower to `fpc_*_int128` runtime helpers (the gcc `__divti3` model), so it works wherever a 64-bit ALU (x86_64) or the multi-word emulation (i386) does.
+Native 128-bit signed and unsigned integers that behave like any other ordinal - literals, arithmetic, `div` / `mod`, shifts, bitwise, comparisons, `inc` / `dec` / `succ` / `pred`, `abs` / `odd` / `sqr`, `for`, `case`, range / overflow checks, `Str` / `Val`, and `Write` / `Read`. 128-bit literals are gated by the switch; the types are always available. On the 64-bit register targets the common operations are inline register-pair code; `div` / `mod`, overflow-checked `mul` / `neg` and `Str` / `Val` stay RTL helpers (the gcc `__divti3` model), and the remaining CPUs run entirely on the helpers.
 
 Enabled via `{$modeswitch int128}`.
 
