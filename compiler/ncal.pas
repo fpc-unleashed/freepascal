@@ -115,6 +115,10 @@ interface
           }
           function paraneedsinlinetemp(para: tcallparanode; const pushconstaddr, complexpara: boolean): boolean; virtual;
           function maybecreateinlineparatemp(para: tcallparanode; out complexpara: boolean): boolean;
+          { flat index of an inlined routine's local in inlinelocals: localst
+            entries first, block-scoped locals follow in blocklocalsymtables
+            order; -1 for syms not belonging to the inlined routine }
+          function inlinelocalindex(sym: tsym): integer;
           procedure createinlineparas;
           procedure wrapcomplexinlinepara(para: tcallparanode); virtual;
           function  replaceparaload(var n: tnode; arg: pointer): foreachnoderesult;
@@ -5247,6 +5251,38 @@ implementation
                        INLINING SUPPORT
 **************************************************************************}
 
+    function tcallnode.inlinelocalindex(sym: tsym): integer;
+      var
+        pd : tprocdef;
+        st : TSymtable;
+        base, blk_i : integer;
+      begin
+        result:=-1;
+        pd:=tprocdef(procdefinition);
+        if sym.owner=pd.localst then
+          begin
+            result:=sym.owner.SymList.IndexOf(sym);
+            exit;
+          end;
+        if not assigned(pd.blocklocalsymtables) then
+          exit;
+        if assigned(pd.localst) then
+          base:=pd.localst.SymList.count
+        else
+          base:=0;
+        for blk_i:=0 to pd.blocklocalsymtables.count-1 do
+          begin
+            st:=TSymtable(pd.blocklocalsymtables[blk_i]);
+            if sym.owner=st then
+              begin
+                result:=base+st.SymList.IndexOf(sym);
+                exit;
+              end;
+            inc(base,st.SymList.count);
+          end;
+      end;
+
+
     function tcallnode.replaceparaload(var n: tnode; arg: pointer): foreachnoderesult;
       var
         paras: tcallparanode;
@@ -5277,10 +5313,10 @@ implementation
                 end;
               localvarsym :
                 begin
-                  { local? }
-                  if (tloadnode(n).symtableentry.owner <> tprocdef(procdefinition).localst) then
+                  { local? (including block-scoped locals of the inlined routine) }
+                  indexnr:=inlinelocalindex(tloadnode(n).symtableentry);
+                  if indexnr<0 then
                     exit;
-                  indexnr:=tloadnode(n).symtableentry.owner.SymList.IndexOf(tloadnode(n).symtableentry);
                   if (indexnr >= inlinelocals.count) or
                      not assigned(inlinelocals[indexnr]) then
                     internalerror(20040720);
@@ -5306,7 +5342,7 @@ implementation
       begin
         if (TSym(p).typ <> localvarsym) then
           exit;
-        indexnr:=TSym(p).Owner.SymList.IndexOf(p);
+        indexnr:=inlinelocalindex(TSym(p));
         if (indexnr >= inlinelocals.count) then
           inlinelocals.count:=indexnr+10;
         if (vo_is_funcret in tabstractvarsym(p).varoptions) then
@@ -5562,6 +5598,8 @@ implementation
         para: tcallparanode;
         n: tnode;
         complexpara: boolean;
+        blocksts: tfpobjectlist;
+        localcount, blk_i: integer;
       begin
         { parameters }
         para := tcallparanode(left);
@@ -5589,11 +5627,24 @@ implementation
             para := tcallparanode(para.right);
           end;
         { local variables }
-        if not assigned(tprocdef(procdefinition).localst) or
-           (tprocdef(procdefinition).localst.SymList.count = 0) then
+        localcount:=0;
+        if assigned(tprocdef(procdefinition).localst) then
+          inc(localcount,tprocdef(procdefinition).localst.SymList.count);
+        blocksts:=tprocdef(procdefinition).blocklocalsymtables;
+        if assigned(blocksts) then
+          for blk_i:=0 to blocksts.count-1 do
+            inc(localcount,TSymtable(blocksts[blk_i]).SymList.count);
+        if localcount=0 then
           exit;
-        inlinelocals.count:=tprocdef(procdefinition).localst.SymList.count;
-        tprocdef(procdefinition).localst.SymList.ForEachCall(@createlocaltemps,nil);
+        inlinelocals.count:=localcount;
+        if assigned(tprocdef(procdefinition).localst) then
+          tprocdef(procdefinition).localst.SymList.ForEachCall(@createlocaltemps,nil);
+        { block-scoped locals of the inlined routine get caller temps too,
+          otherwise their loads would keep the stack offsets assigned when
+          the routine itself was compiled }
+        if assigned(blocksts) then
+          for blk_i:=0 to blocksts.count-1 do
+            TSymtable(blocksts[blk_i]).SymList.ForEachCall(@createlocaltemps,nil);
       end;
 
 
