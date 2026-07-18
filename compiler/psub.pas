@@ -1836,7 +1836,25 @@ implementation
 
 
      procedure TCGProcinfo.CreateInlineInfo;
+       var
+         blk_i : longint;
+         st : TSymtable;
+         blocksym : tsym;
        begin
+        { re-home block-scoped locals into localst: the inline node tree
+          references them, but block symtables are not stored in the ppu,
+          so a consumer loading the tree could not resolve them back }
+        if assigned(procdef.blocklocalsymtables) then
+          for blk_i:=0 to procdef.blocklocalsymtables.count-1 do
+            begin
+              st:=TSymtable(procdef.blocklocalsymtables[blk_i]);
+              while st.SymList.count>0 do
+                begin
+                  blocksym:=tsym(st.SymList[0]);
+                  st.SymList.Extract(blocksym);
+                  procdef.localst.insertsym(blocksym,false);
+                end;
+            end;
         new(procdef.inlininginfo);
         procdef.inlininginfo^.code:=code.getcopy;
         procdef.inlininginfo^.flags:=flags;
