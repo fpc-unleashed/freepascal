@@ -366,11 +366,24 @@ function BuildCompileArgs(const SrcPath: String; const Flags: TFlags;
                          const PatchedSrc: String; NeedsCmdLineMode: Boolean): TStringArray;
 begin
   Result := nil;
+  var optParts: TStringArray := nil;
+  if Flags.Opt <> '' then
+    optParts := Flags.Opt.Split([' ', #9], TStringSplitOptions.ExcludeEmpty);
+  // %OPT may retarget the test to another cpu (e.g. -Pi386 for stabs
+  // coverage); the default -T/-P would feed the redirected compiler a
+  // target it does not know, so drop them and let the driver pick the
+  // native OS for that cpu
+  var retarget := false;
+  for var op in optParts do
+    if op.StartsWith('-P') and (Length(op) > 2) then retarget := true;
   // intermediate + exe output go to .tmp/
   Result := Result + ['-FE' + GTempDir];
   Result := Result + ['-FU' + GTempDir];
-  Result := Result + ['-T' + GTargetOS];
-  Result := Result + ['-P' + GTargetCPU];
+  if not retarget then
+  begin
+    Result := Result + ['-T' + GTargetOS];
+    Result := Result + ['-P' + GTargetCPU];
+  end;
   // -g- cancels any -g from fpc.cfg so test binaries never carry debug info;
   // -CX/-XX/-Xs do smart link + strip so the produced exe is minimal release
   // shape (smaller, faster I/O, less noise for %CHECKBIN_* searches)
@@ -389,12 +402,8 @@ begin
   // --mode set but source had no own {$mode} to replace; pass it via -M
   if NeedsCmdLineMode then
     Result := Result + ['-M' + GModeOverride];
-  if Flags.Opt <> '' then
-  begin
-    var optParts := Flags.Opt.Split([' ', #9], TStringSplitOptions.ExcludeEmpty);
-    for var op in optParts do
-      Result := Result + [op];
-  end;
+  for var op in optParts do
+    Result := Result + [op];
   Result := Result + [if PatchedSrc <> '' then PatchedSrc else SrcPath];
 end;
 
