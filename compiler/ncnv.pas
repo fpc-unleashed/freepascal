@@ -3325,6 +3325,7 @@ implementation
         gotsigned,
         gotunsigned,
         gotdivmod: boolean;
+        smallerbits: longint;
 
       { checks whether a node has an accepted resultdef, or originally
         had one but was implicitly converted to s64bit                 }
@@ -3375,7 +3376,20 @@ implementation
         end;
 
 
+      { true when n is a constant shift count in 0..smallerbits-1; larger
+        counts do not survive reducing the shift to the smaller width
+        (they get masked by constant folding and by the hardware) }
+      function issafeshiftcount(n: tnode): boolean;
+        begin
+          result:=(n.nodetype=ordconstn) and
+            (tordconstnode(n).value>=0) and
+            (tordconstnode(n).value<smallerbits);
+        end;
+
+
       function docheckremoveinttypeconvs(n: tnode): boolean;
+        var
+          prevsint: boolean;
         begin
           if wasoriginallysmallerint(n) then
             exit(true);
@@ -3396,12 +3410,24 @@ implementation
               end;
             shrn:
               begin
+                { shr pulls bits in from above the smaller type: the shifted
+                  value must be known zero-extended, so a left operand that
+                  may be negative (sign-extended) disqualifies }
+                prevsint:=gotsint;
                 result:=wasoriginallysmallerint(tbinarynode(n).left) and
-                  docheckremoveinttypeconvs(tbinarynode(n).right);
+                  (prevsint or not gotsint) and
+                  docheckremoveinttypeconvs(tbinarynode(n).right) and
+                  issafeshiftcount(tbinarynode(n).right);
+              end;
+            shln:
+              begin
+                result:=docheckremoveinttypeconvs(tbinarynode(n).left) and
+                  docheckremoveinttypeconvs(tbinarynode(n).right) and
+                  issafeshiftcount(tbinarynode(n).right);
               end;
             notn:
               result:=docheckremoveinttypeconvs(tunarynode(n).left);
-            addn,muln,divn,modn,andn,shln:
+            addn,muln,divn,modn,andn:
               begin
                 if n.nodetype in [divn,modn] then
                   gotdivmod:=true;
@@ -3432,6 +3458,14 @@ implementation
         gotminus1:=false;
         gotsigned:=false;
         gotunsigned:=false;
+        if u64bit in validints then
+          smallerbits:=64
+        else if u32bit in validints then
+          smallerbits:=32
+        else if u16bit in validints then
+          smallerbits:=16
+        else
+          smallerbits:=8;
         result:=
           docheckremoveinttypeconvs(n) and
           (not(gotdivmod) or (gotsigned xor gotunsigned));
