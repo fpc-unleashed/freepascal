@@ -1013,6 +1013,115 @@ implementation
         include(tloadnode(result).loadnodeflags,loadnf_isinternal_ignoreconst);
       end;
 
+    { Inline-var type inference reads the typechecked init expression, whose
+      integer arithmetic was already promoted to the native int size. On
+      64-bit targets that turns arithmetic on 32-bit operands into a 64-bit
+      result, so `var s := a + b` with a, b: LongWord would infer QWord on
+      x86_64 but LongWord on i386, silently changing wrap-around semantics
+      between targets. Undo the promotion for inference: when every operand
+      of a +,-,*,div,mod tree originally fit in 32 bits, return the 32-bit
+      type a 32-bit-native target would have produced. }
+    function unleashed_infer_natural_intdef(n: tnode; def: tdef): tdef;
+      type
+        tintkind = (ik_wide,ik_sig,ik_u32,ik_pos);
+
+      { classify a plain operand by the range its value spans: ik_sig =
+        signed 32 bit or smaller, ik_u32 = unsigned needing full 32 bits,
+        ik_pos = unsigned fitting in a signed 32 bit, ik_wide = the rest }
+      function leafkind(def: tdef): tintkind;
+        begin
+          result:=ik_wide;
+          if not is_integer(def) then
+            exit;
+          case torddef(def).ordtype of
+            s8bit,s16bit,s32bit:
+              result:=ik_sig;
+            u8bit,u16bit:
+              result:=ik_pos;
+            u32bit:
+              result:=ik_u32;
+            else
+              ;
+          end;
+        end;
+
+      function kindof(n: tnode): tintkind;
+        var
+          lk,rk : tintkind;
+        begin
+          result:=ik_wide;
+          if not assigned(n.resultdef) then
+            exit;
+          case n.nodetype of
+            addn,muln,divn,modn:
+              begin
+                lk:=kindof(tbinarynode(n).left);
+                rk:=kindof(tbinarynode(n).right);
+                if (lk=ik_wide) or (rk=ik_wide) then
+                  exit;
+                { full unsigned mixed with signed widens to 64 bit even on
+                  32-bit natives }
+                if ((lk=ik_u32) and (rk=ik_sig)) or ((lk=ik_sig) and (rk=ik_u32)) then
+                  exit;
+                if (lk=ik_u32) or (rk=ik_u32) then
+                  result:=ik_u32
+                else if (lk=ik_sig) or (rk=ik_sig) then
+                  result:=ik_sig
+                else
+                  result:=ik_u32;
+              end;
+            subn:
+              begin
+                { subtraction with a full unsigned operand widens to 64 bit
+                  on 32-bit natives too, only signed operands stay 32 bit }
+                lk:=kindof(tbinarynode(n).left);
+                rk:=kindof(tbinarynode(n).right);
+                if (lk in [ik_sig,ik_pos]) and (rk in [ik_sig,ik_pos]) then
+                  result:=ik_sig;
+              end;
+            unaryminusn:
+              if kindof(tunarynode(n).left)<>ik_wide then
+                result:=ik_sig;
+            ordconstn:
+              if is_integer(n.resultdef) and not(nf_explicit in n.flags) then
+                begin
+                  if (tordconstnode(n).value>=0) and (tordconstnode(n).value<=high(longint)) then
+                    result:=ik_pos
+                  else if (tordconstnode(n).value<0) and (tordconstnode(n).value>=low(longint)) then
+                    result:=ik_sig
+                  else if (tordconstnode(n).value>high(longint)) and (tordconstnode(n).value<=high(cardinal)) then
+                    result:=ik_u32;
+                end
+              else
+                result:=leafkind(n.resultdef);
+            typeconvn:
+              { look through the compiler-inserted widening to native int }
+              if not(nf_explicit in n.flags) and is_integer(n.resultdef) and (torddef(n.resultdef).ordtype in [s64bit,u64bit]) and assigned(ttypeconvnode(n).left.resultdef) and is_integer(ttypeconvnode(n).left.resultdef) then
+                result:=kindof(ttypeconvnode(n).left)
+              else
+                result:=leafkind(n.resultdef);
+            else
+              result:=leafkind(n.resultdef);
+          end;
+        end;
+
+      begin
+        result:=def;
+        if (torddef(sinttype).ordtype<>s64bit) or
+           not is_integer(def) or
+           not(torddef(def).ordtype in [s64bit,u64bit]) or
+           not(n.nodetype in [addn,subn,muln,divn,modn,unaryminusn]) then
+          exit;
+        case kindof(n) of
+          ik_sig:
+            result:=s32inttype;
+          ik_u32,ik_pos:
+            result:=u32inttype;
+          else
+            ;
+        end;
+      end;
+
     function for_statement : tnode;
 
         procedure check_range(hp:tnode; fordef: tdef);
@@ -1415,7 +1524,7 @@ implementation
                       (torddef(hfrom.resultdef).ordtype in [s8bit,u8bit,s16bit,u16bit]) then
                      loopvs.vardef := s32inttype
                    else
-                     loopvs.vardef := hfrom.resultdef;
+                     loopvs.vardef := unleashed_infer_natural_intdef(hfrom, hfrom.resultdef);
                    if loopvs.typ = staticvarsym then
                      cnodeutils.insertbssdata(tstaticvarsym(loopvs));
                  end
@@ -1748,7 +1857,7 @@ implementation
                          (torddef(hfrom.resultdef).ordtype in [s8bit,u8bit,s16bit,u16bit]) then
                         loopdef:=s32inttype
                       else
-                        loopdef:=hfrom.resultdef;
+                        loopdef:=unleashed_infer_natural_intdef(hfrom,hfrom.resultdef);
                     end
                   else
                     loopdef:=generrordef;
@@ -4074,6 +4183,9 @@ implementation
                   if not(nf_explicit in initexpr.flags) and is_integer(hdef) and
                      (torddef(hdef).ordtype in [s8bit,u8bit,s16bit,u16bit]) then
                     hdef := s32inttype;
+                  { undo native-int promotion of 32-bit arithmetic so the
+                    inferred type matches 32-bit targets }
+                  hdef := unleashed_infer_natural_intdef(initexpr, hdef);
                   for i := 0 to sc.count - 1 do
                     begin
                       tabstractnormalvarsym(sc[i]).vardef := hdef;
@@ -4369,6 +4481,7 @@ implementation
               if not(nf_explicit in initexpr.flags) and is_integer(hdef) and
                  (torddef(hdef).ordtype in [s8bit,u8bit,s16bit,u16bit]) then
                 hdef := s32inttype;
+              hdef := unleashed_infer_natural_intdef(initexpr, hdef);
             end
           else
             begin
