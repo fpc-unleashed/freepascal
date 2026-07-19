@@ -456,6 +456,7 @@ interface
           function  alignment : shortint;override;
           function  padalignment: shortint;
           function  GetTypeName:string;override;
+          function  getmangledparaname:TSymStr;override;
           { debug }
           function  needs_inittable : boolean;override;
           function  needs_separate_initrtti:boolean;override;
@@ -6019,6 +6020,29 @@ implementation
           GetTypeName:='<record type '+typesymbolprettyname+'>'
         else
           GetTypeName:='<record type>';
+      end;
+
+
+    { tuples have no type symbol, so mangle them structurally from the field
+      names and types; shape-equal tuples then mangle identically and the
+      name stays free of characters that break assembler symbol parsing }
+    function trecorddef.getmangledparaname:TSymStr;
+      var
+        i : longint;
+        sym : tsym;
+      begin
+        if df_tuple in defoptions then
+          begin
+            result:='tuple';
+            for i:=0 to symtable.symlist.count-1 do
+              begin
+                sym:=tsym(symtable.symlist[i]);
+                if sym.typ=fieldvarsym then
+                  result:=result+'$'+sym.name+'$'+tfieldvarsym(sym).vardef.mangledparaname;
+              end;
+          end
+        else
+          result:=inherited getmangledparaname;
       end;
 
 {$ifdef DEBUG_NODE_XML}
