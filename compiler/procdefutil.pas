@@ -708,9 +708,11 @@ implementation
       else
         begin
           { rebuild the original call against the snapshot fields. the parameter
-            chain is in reverse source order (first node = last argument) }
+            chain is in reverse source order (first node = last argument), so
+            `__a0` holds the last argument and prepending has to start at the
+            highest field index to put them back in their original slots }
           newparams:=nil;
-          for i:=0 to argfields.count-1 do
+          for i:=argfields.count-1 downto 0 do
             newparams:=ccallparanode.create(impl_field(tfieldvarsym(argfields[i])),newparams);
           { visibility was already checked when the async site resolved the
             call; the rebuilt call typechecks inside the impl class, where a
