@@ -134,6 +134,36 @@ async writeln('hello');          // ok - literal
 // async writeln(localVar);      // error: wrap in `async begin writeln(localVar) end`
 ```
 
+## `sync` - run a block on the main thread
+
+Inside a worker, GUI controls (and anything else the main thread owns) are off limits. A `sync` block hands its body to the main thread and blocks until it has run:
+
+```pas
+async begin
+  var data := FetchReport();       // slow work, on the worker
+  sync begin
+    Memo1.Append(data.Summary);    // on the main thread
+  end;
+  Archive(data);                   // worker resumes after the block ran
+end;
+```
+
+A single statement needs no block:
+
+```pas
+sync Memo1.Append(data.Summary);
+sync progress := progress + 1;
+```
+
+It lowers to `TThread.Synchronize(nil, <body>)`, so the `Classes` unit must be in the uses clause (a dedicated error says so otherwise). The body captures referenced locals by reference like `async begin..end` does; since the caller waits, the captures stay valid and the body's writes are visible to the caller afterwards. Inside a method the body sees `Self`. Used on the main thread itself, the body simply runs in place, so a routine with a `sync` block works from either side. An exception raised in the body is re-raised in the calling thread, where the usual worker exception flow picks it up.
+
+`sync` is a soft keyword decided by shape, so it coexists with user symbols of the same name in one scope: followed by a token that can start a statement (`begin`, an identifier, `if`, `for`, ...) it is the keyword; followed by `:=`, `;`, `(`, `.`, `[` or an operator it resolves to the user symbol as before. `sync bump(1)` marshals, `sync := 1` assigns to a variable named sync, `sync;` calls a procedure named sync.
+
+Two things to keep straight:
+
+- **Somebody has to run the queue.** The LCL message loop does it on its own; a console program calls `CheckSynchronize` on the main thread.
+- **Do not `await` on the main thread while the worker is in `sync`.** `await` blocks whichever thread runs it, so awaiting on the main thread parks the very thread `sync` is waiting for and the two wait on each other forever. Let the message loop pump, or poll: `while not h.Done do CheckSynchronize(10);` Awaiting the same future from another worker is fine - the main thread stays free to run the body.
+
 ## Exceptions
 
 An exception raised on the worker is captured and **re-raised on the caller at the first `await`**:
@@ -179,6 +209,8 @@ Outside the modeswitch, `async`, `await`, and `future` are ordinary identifiers 
 ## Notes
 
 - **Threads must be available.** On Unix you need a threading driver, so add `cthreads` as the first unit of the program; on Windows threading is available out of the box.
+- **Everything the routine reaches runs on the worker.** That includes callbacks it invokes, so a handler passed into the call form must not touch GUI controls. Wrap the GUI part in a `sync` block (see above), or marshal manually with `TThread.Synchronize(nil, @Handler)` / `TThread.Queue(nil, @Handler)` - the `nil` because the worker is a plain `BeginThread` thread with no `TThread` instance around.
+- **Do not `await` on the thread that has to run the synchronized code.** `sync` (and `Synchronize`) blocks its worker until the main thread runs the body, and `await` blocks whichever thread runs it. Put the `await` on the main thread and the two wait on each other forever; put it on another worker and nothing is wrong, because the main thread is still free to drain the queue. Leave the future unawaited and let the message loop pump, or poll with `while not h.Done do CheckSynchronize(10)`. `Queue` cannot deadlock this way, but its entries then run only after the `await` returns, and whatever they read has to be snapshotted rather than left in a field the worker keeps overwriting.
 - **Shared mutable state is your responsibility.** The call form snapshots arguments by value, but the block form captures by reference and a snapshotted `self` shares the object. Mutating a captured variable (or an object's fields) from the spawning thread after `async` while the worker reads it is a data race - synchronize it yourself.
 - **Fire-and-forget side effects may not finish.** When the program exits, outstanding fire-and-forget workers are not awaited; their remaining side effects may or may not have run. Keep and `await` the future when you need the work to complete.
 - **`future of T` is one type everywhere.** Each module interns its own synthesized interface, but two futures with the same element type compare as the same type, so futures cross unit boundaries freely.
