@@ -51,6 +51,8 @@ writeln(counter + 1);            // 42
 
 Inside a method the block has the method's full class context, like an anonymous function: `Self` and strict private members (including auto-property backing fields) resolve as usual.
 
+A statement keyword after `async` (`if`, `case`, `match`, `try`, `while`, `for`, `repeat`, `with`, `goto`, `raise`) starts the one-statement block form - `async while not done do Sleep(1);` behaves exactly like the same statement wrapped in `async begin ... end`, with the same by-reference capture and `Cancelled` in scope. An identifier after `async` is always the call form.
+
 A bare expression with neither a call nor a block (`async (a + b)`) is a syntax error - wrap it in a routine.
 
 ## `await` - join and read

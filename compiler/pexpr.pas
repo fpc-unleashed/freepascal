@@ -4589,8 +4589,10 @@ implementation
 
            { `async <call>` spawns the call on a worker thread (snapshotting its
              arguments); `async begin..end` runs the block, capturing referenced
-             locals by reference through the anonymous-function machinery. both
-             yield a future. same soft-keyword guard as `await`. }
+             locals by reference through the anonymous-function machinery. a
+             statement keyword after `async` starts the one-statement block
+             form (`async while ... do ...`), same capture rules as the block.
+             all yield a future. same soft-keyword guard as `await`. }
            if (current_scanner.token=_ID) and
               (m_asyncawait in current_settings.modeswitches) and
               (current_scanner.pattern='ASYNC') then
@@ -4599,9 +4601,10 @@ implementation
                if not assigned(srsym) then
                  begin
                    consume(_ID);
-                   if current_scanner.token=_BEGIN then
+                   if current_scanner.token in [_BEGIN,_IF,_CASE,_MATCH,_TRY,
+                        _WHILE,_FOR,_REPEAT,_WITH,_GOTO,_RAISE] then
                      begin
-                       pd:=read_async_block;
+                       pd:=read_async_block(true,current_scanner.token<>_BEGIN);
                        do_proc_call(pd.procsym,pd.owner,nil,
                          not (current_scanner.token in [_POINT,_CARET,_LECKKLAMMER]),
                          again,p1,[],nil);
