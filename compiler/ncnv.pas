@@ -3347,7 +3347,7 @@ implementation
               exit(true);
             end;
           { type conv to a bigger int, we do not like to use? }
-          if (torddef(n.resultdef).ordtype in ([s8bit,u8bit,s16bit,u16bit,s32bit,u32bit,s64bit,u64bit]-validints)) and
+          if (torddef(n.resultdef).ordtype in ([s8bit,u8bit,s16bit,u16bit,s32bit,u32bit,s64bit,u64bit,s128bit,u128bit]-validints)) and
              { nf_explicit is also set for explicitly typecasted }
              { ordconstn's                                       }
              ([nf_internal,nf_explicit]*n.flags=[]) and
@@ -3895,6 +3895,13 @@ implementation
               if (localswitches * [cs_check_range,cs_check_overflow] = []) and
                  (resultdef.typ in [pointerdef,orddef,enumdef]) then
                 begin
+                  { avoid unnecessary widening of intermediary calculations
+                    to 128 bit; a 64 bit result feeds the 64 bit block below }
+                  if (resultdef.size <= 8) and
+                    is_128bitint(left.resultdef) and
+                    (left.nodetype in [subn,addn,muln,divn,modn,xorn,andn,orn,notn,unaryminusn,shln,shrn]) and
+                    checkremovebiginttypeconvs(left,foundsint,[s8bit,u8bit,s16bit,u16bit,s32bit,u32bit,s64bit,u64bit],low(int64),high(qword)) then
+                    doremoveinttypeconvs(0,left,generrordef,not foundsint,s64inttype,u64inttype);
                   { avoid unnecessary widening of intermediary calculations
                     to 64 bit                                               }
                   if (resultdef.size <= 4) and
