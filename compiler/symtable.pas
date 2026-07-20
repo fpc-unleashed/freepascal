@@ -3918,15 +3918,15 @@ implementation
                         exit;
                       end;
                   end;
-                { composablerecords: a `with d do ...` body resolves bare
-                  names against the outer record's symtable; for fields
-                  reached only through a composition carrier (embed /
-                  inline anon) the bare name is absent there. fall back
-                  to lookup_in_composition - the actual carrier walk is
-                  done in is_member_read where the withrefnode is at
-                  hand. }
+                { composablerecords: a `with d do ...` body or a method
+                  body resolves bare names against the record's symtable;
+                  for members reached only through a composition carrier
+                  (embed / inline anon) the bare name is absent there.
+                  fall back to lookup_in_composition - the actual carrier
+                  walk is done later where the base node (withrefnode or
+                  self load) is at hand. }
                 if not assigned(srsym) and
-                   (srsymtable.symtabletype=withsymtable) and
+                   (srsymtable.symtabletype in [withsymtable,recordsymtable]) and
                    assigned(srsymtable.defowner) and
                    (srsymtable.defowner.typ in [recorddef,objectdef]) and
                    (m_composable_records in current_settings.modeswitches) then

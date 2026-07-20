@@ -3513,6 +3513,41 @@ implementation
           end;
       end;
 
+    { composablerecords: a bare name inside a method body resolved
+      through a composition carrier - srsym lives in a carrier's
+      record, not in hdef. wrap the self load in subscripts through
+      the carrier chain and narrow hdef to the carrier's record so
+      do_member_read subscripts the right def. builds the self load
+      itself when p1 is nil (bare method call case). }
+    procedure compose_member_wrap(srsym: tsym; var hdef: tdef; var p1: tnode);
+      var
+        selfbuilt: boolean;
+      begin
+        if not assigned(hdef) or
+           not (hdef.typ in [recorddef,objectdef]) or
+           not (m_composable_records in current_settings.modeswitches) or
+           not assigned(srsym.owner) or
+           not (srsym.owner.symtabletype in [ObjectSymtable,recordsymtable]) or
+           (tdef(srsym.owner.defowner)=hdef) or
+           (tabstractrecorddef(hdef).composition_count=0) then
+          exit;
+        selfbuilt:=false;
+        if p1=nil then
+          begin
+            p1:=load_self_node;
+            selfbuilt:=true;
+          end
+        else if p1.nodetype=typen then
+          exit;
+        if compose_lookup_walk(tabstractrecorddef(hdef),srsym.name,p1) then
+          hdef:=tdef(srsym.owner.defowner)
+        else if selfbuilt then
+          begin
+            p1.free;
+            p1:=nil;
+          end;
+      end;
+
 
     function is_member_read(sym: tsym; st: tsymtable; var p1: tnode;
                             out memberparentdef: tdef): boolean;
@@ -3639,6 +3674,9 @@ implementation
                         else
                           result:=load_self_node;
                       end;
+                  { field reached through a composition carrier: walk the
+                    self load through the carrier chain first }
+                  compose_member_wrap(srsym,hdef,result);
                   { now, if the field itself is part of an objectsymtab }
                   { (it can be even if it was found in a withsymtable,  }
                   {  e.g., "with classinstance do field := 5"), then    }
@@ -3744,6 +3782,9 @@ implementation
                   if (srsymtable.symtabletype in [ObjectSymtable,recordsymtable]) and
                     assigned(current_structdef) and (current_structdef<>hdef) and is_owned_by(current_structdef,hdef) then
                     result:=cloadvmtaddrnode.create(ctypenode.create(hdef));
+                  { method reached through a composition carrier: build
+                    the self load and walk it through the carrier chain }
+                  compose_member_wrap(srsym,hdef,result);
                   { not srsymtable.symtabletype since that can be }
                   { withsymtable as well                          }
                   if (srsym.owner.symtabletype in [ObjectSymtable,recordsymtable]) then
@@ -3793,6 +3834,9 @@ implementation
                       end
                     else
                       result:=load_self_node;
+                  { property reached through a composition carrier: walk
+                    the self load through the carrier chain first }
+                  compose_member_wrap(srsym,hdef,result);
                   { not srsymtable.symtabletype since that can be }
                   { withsymtable as well                          }
                   if (srsym.owner.symtabletype in [ObjectSymtable,recordsymtable]) then
