@@ -32,6 +32,9 @@ interface
     function statement_block(starttoken : ttoken) : tnode;
     function statement_expr(var p1 : tnode) : boolean;
 
+    { parses exactly one statement - the headerless `sync <stmt>` body }
+    function single_statement : tnode;
+
     { reads an assembler block }
     function assembler_block : tnode;
 
@@ -4906,6 +4909,30 @@ implementation
         result:=blk;
       end;
 
+    { peeks whether the token after a leading `sync` identifier can start a
+      statement, which makes `sync` the marshalling keyword; before `:=`,
+      `(`, `;`, `.` etc. it stays an ordinary identifier, so a user symbol
+      named sync keeps resolving. uses scanner token recording like the
+      named-tuple peek; when an outer recording is active (generic body),
+      falls back to "no user symbol named sync in scope" }
+    function sync_keyword_ahead:boolean;
+      var
+        peekbuf : tdynamicarray;
+        srsym : tsym;
+        srsymtable : TSymtable;
+      begin
+        if current_scanner.is_recording_tokens then
+          exit(not searchsym('SYNC',srsym,srsymtable));
+        peekbuf:=tdynamicarray.create(32);
+        current_scanner.startrecordtokens(peekbuf);
+        consume(_ID);
+        current_scanner.stoprecordtokens;
+        result:=current_scanner.token in [_ID,_BEGIN,_IF,_CASE,_FOR,_WHILE,
+          _REPEAT,_WITH,_TRY,_RAISE,_GOTO,_INHERITED];
+        current_scanner.startreplaytokens(peekbuf,false);
+      end;
+
+
     function statement : tnode;
       var
          p,
@@ -5245,6 +5272,24 @@ implementation
                  code:=try_tuple_destructure_assign;
                  if assigned(code) then
                    exit(code);
+               end;
+             { `sync <stmt>` / `sync begin..end`: run the body on the main
+               thread. soft keyword by shape: only a token that can start a
+               statement makes it the keyword }
+             if (m_asyncawait in current_settings.modeswitches) and
+                (current_scanner.token=_ID) and
+                (current_scanner.pattern='SYNC') and
+                sync_keyword_ahead then
+               begin
+                 consume(_ID);
+                 code:=parse_sync_block;
+                 if assigned(code) then
+                   begin
+                     { typecheck now: the funcref conversion must build its
+                       capturer before parse_body postprocesses capturers }
+                     do_typecheckpass(code);
+                     exit(code);
+                   end;
                end;
              { don't typecheck yet, because that will also simplify, which may
                result in not detecting certain kinds of syntax errors --
@@ -6083,6 +6128,12 @@ implementation
             dispose(pdeferinfo(ctx.items[i]));
           ctx.items.free;
         end;
+      end;
+
+
+    function single_statement : tnode;
+      begin
+        result:=statement();
       end;
 
 

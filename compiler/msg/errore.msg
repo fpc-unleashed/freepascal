@@ -498,7 +498,7 @@ scan_e_improperly_indented_multiline_string=02120_E_Incorrectly indented multi-l
 #
 # Parser
 #
-# 03441 is the last used one
+# 03442 is the last used one
 #
 % \section{Parser messages}
 % This section lists all parser messages. The parser takes care of the
@@ -1943,6 +1943,11 @@ parser_e_parallel_chunk_must_be_positive=03438_E_`chunk` size must be positive
 parser_h_parallel_for_needs_cthreads=03439_H_`for parallel` needs a threading driver on this target - put `cthreads` first in the program uses clause
 % On Unix-like targets thread creation is provided by the \var{cthreads} unit;
 % without it the first spawned worker fails at run time. Windows needs nothing.
+%
+parser_e_sync_requires_classes=03442_E_`sync` requires the Classes unit - add it to the uses clause
+% A \var{sync} block is lowered to a \var{TThread.Synchronize} call, so both
+% \var{TThread} and \var{TThreadProcedure} from the \var{Classes} unit must be
+% in scope.
 %
 parser_e_interp_fmt_unit=03411_E_String interpolation format requires function "$1" in unit "$2" - add it to uses clause
 % The format mask after \var{:} in a string interpolation depends on a runtime

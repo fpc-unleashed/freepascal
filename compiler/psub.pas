@@ -126,8 +126,10 @@ interface
 
     { parses `begin..end` as a parameterless anonymous procedure (for the
       `async begin..end` block form) and returns its procdef; positioned at the
-      `begin` token }
-    function read_async_block:tprocdef;
+      `begin` token. `sync` reuses it without the `Cancelled` parameter, so its
+      signature stays a match for `reference to procedure`; with singlestmt the
+      body is one headerless statement (`sync <stmt>`) instead of begin..end }
+    function read_async_block(withcancelled:boolean=true;singlestmt:boolean=false):tprocdef;
 
     { parses only the body of a non nested routine; needs a correctly setup pd }
     procedure read_proc_body(pd:tprocdef);
@@ -389,8 +391,24 @@ implementation
          end;
       end;
 
+    var
+      { set by read_async_block right before the body parse; consumed by the
+        next block() call }
+      single_statement_body : boolean = false;
+
     function block(islibrary : boolean) : tnode;
       begin
+         { the headerless `sync <stmt>` body: one statement, no declaration
+           part and no begin..end. one-shot so nested bodies parse normally }
+         if single_statement_body then
+           begin
+              single_statement_body:=false;
+              current_procinfo.parsing_main_block:=true;
+              block:=cblocknode.create(cstatementnode.create(single_statement,nil));
+              init_main_block_syms(block);
+              exit;
+           end;
+
          { parse const,types and vars }
          read_declarations(islibrary);
 
@@ -3057,7 +3075,7 @@ implementation
       end;
 
 
-    function read_async_block:tprocdef;
+    function read_async_block(withcancelled:boolean=true;singlestmt:boolean=false):tprocdef;
       var
         pd : tprocdef;
         cancelsym : tparavarsym;
@@ -3078,14 +3096,17 @@ implementation
           begin
             if assigned(pd) then
               begin
-                // the spawning future's cooperative-cancel flag, readable in
-                // the block as `Cancelled`; the worker thunk passes the impl
-                // field by reference. constref makes user writes an error,
-                // volatile keeps every check a memory read
-                cancelsym:=cparavarsym.create('Cancelled',10,vs_constref,pasbool8type,[]);
-                include(cancelsym.varoptions,vo_volatile);
-                include(cancelsym.symoptions,sp_internal);
-                pd.parast.insertsym(cancelsym);
+                if withcancelled then
+                  begin
+                    // the spawning future's cooperative-cancel flag, readable in
+                    // the block as `Cancelled`; the worker thunk passes the impl
+                    // field by reference. constref makes user writes an error,
+                    // volatile keeps every check a memory read
+                    cancelsym:=cparavarsym.create('Cancelled',10,vs_constref,pasbool8type,[]);
+                    include(cancelsym.varoptions,vo_volatile);
+                    include(cancelsym.symoptions,sp_internal);
+                    pd.parast.insertsym(cancelsym);
+                  end;
                 parse_proc_dec_finish(pd,[ppf_anonymous],old_current_structdef);
                 { the usefwpd path of read_proc skips the calling-convention
                   setup, so do it here (this also fills pd.paras) }
@@ -3094,7 +3115,10 @@ implementation
             current_procinfo:=old_current_procinfo;
             current_structdef:=old_current_structdef;
             if assigned(pd) then
-              result:=read_proc([rpf_anonymous],pd);
+              begin
+                single_statement_body:=singlestmt;
+                result:=read_proc([rpf_anonymous],pd);
+              end;
           end
         else
           begin

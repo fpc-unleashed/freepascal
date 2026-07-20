@@ -57,6 +57,9 @@ interface
     { reads a single factor }
     function factor(getaddr:boolean;flags:texprflags) : tnode;
 
+    { parses the body of a `sync` statement (`sync` already consumed) }
+    function parse_sync_block:tnode;
+
     procedure string_dec(var def: tdef; allowtypedef: boolean);
 
     function parse_paras(__colon,__namedpara : boolean;end_of_paras : ttoken) : tnode;
@@ -4208,6 +4211,49 @@ implementation
             exit;
           end;
         add_frag(build_interp_type_dispatch(p));
+      end;
+
+
+    { parses `sync begin..end` or the one-statement form `sync <stmt>` and
+      lowers it to TThread.Synchronize(nil, <body as reference to procedure>):
+      the main thread runs the body while the caller waits, so the by-reference
+      captures stay valid. on the main thread the RTL runs it in place. }
+    function parse_sync_block:tnode;
+      var
+        pd : tprocdef;
+        ttpsym,thrsym : ttypesym;
+        syncsym : tsym;
+        thrdef : tobjectdef;
+        p1 : tnode;
+        again : boolean;
+      begin
+        pd:=read_async_block(false,current_scanner.token<>_BEGIN);
+        if not assigned(pd) then
+          exit(cerrornode.create);
+        ttpsym:=search_named_unit_globaltype('CLASSES','TTHREADPROCEDURE',false);
+        thrsym:=search_named_unit_globaltype('CLASSES','TTHREAD',false);
+        if not assigned(ttpsym) or not assigned(thrsym) or
+           not is_class(thrsym.typedef) then
+          begin
+            Message(parser_e_sync_requires_classes);
+            exit(cerrornode.create);
+          end;
+        again:=false;
+        p1:=nil;
+        do_proc_call(pd.procsym,pd.owner,nil,true,again,p1,[],nil);
+        if p1.nodetype=errorn then
+          exit(p1);
+        { convert the anonymous procedure to `reference to procedure` so the
+          capturer holds the referenced locals by reference }
+        p1:=ctypeconvnode.create(p1,ttpsym.typedef);
+        thrdef:=tobjectdef(thrsym.typedef);
+        syncsym:=tsym(thrdef.symtable.find('SYNCHRONIZE'));
+        if not assigned(syncsym) or (syncsym.typ<>procsym) then
+          internalerror(2026072001);
+        result:=ccallnode.create(
+          ccallparanode.create(p1,ccallparanode.create(cnilnode.create,nil)),
+          tprocsym(syncsym),thrdef.symtable,
+          cloadvmtaddrnode.create(ctypenode.create(thrdef)),[],nil);
       end;
 
 
