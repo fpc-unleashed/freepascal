@@ -8561,6 +8561,9 @@ implementation
 
 
     function tobjectdef.GetTypeName:string;
+      var
+        sym : tsym;
+        eldef : tdef;
       begin
         { in this case we will go in endless recursion, because then  }
         { there is no tsym associated yet with the def. It can occur  }
@@ -8568,6 +8571,19 @@ implementation
         { instead of the actual type name                             }
         if not assigned(typesym) then
           result:='<Currently Parsed Class>'
+        else if (objecttype=odt_interfacecom) and assigned(objname) and
+                (copy(objname^,1,8)='$FUTURE$') then
+          begin
+            // T is carried by the __Await return type; a bare future is void
+            sym:=tsym(symtable.find('__AWAIT'));
+            eldef:=nil;
+            if assigned(sym) and (sym.typ=procsym) and (tprocsym(sym).procdeflist.count>0) then
+              eldef:=tprocdef(tprocsym(sym).procdeflist[0]).returndef;
+            if assigned(eldef) and not is_void(eldef) then
+              result:='future of '+eldef.typename
+            else
+              result:='future';
+          end
         else
           result:=typesymbolprettyname;
       end;

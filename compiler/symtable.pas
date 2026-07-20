@@ -3193,7 +3193,9 @@ implementation
       var
         s1,s2 : string;
       begin
-        if def.typ in [objectdef,recorddef] then
+        if is_future_intf(def) then
+          s1:=def.typename
+        else if def.typ in [objectdef,recorddef] then
           s1:=tabstractrecorddef(def).RttiName
         else
           s1:=def.typename;
