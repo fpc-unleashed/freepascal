@@ -2247,7 +2247,13 @@ implementation
         offset:=align(recst.datasize,usedalign);
         recst.datasize:=offset+unionsymtable.datasize;
 
-        if unionsymtable.recordalignment>recst.fieldalignment then
+        { with a positive packrecords value fieldalignment is the packing
+          cap for later fields, not a running max - widening it to the
+          union's natural alignment would over-align every union that
+          follows (a packed record with several u64 unions would place
+          them at 8-byte offsets instead of back to back) }
+        if (recst.usefieldalignment<=0) and
+           (unionsymtable.recordalignment>recst.fieldalignment) then
           recst.fieldalignment:=unionsymtable.recordalignment;
         if unionsymtable.explicitrecordalignment>recst.explicitrecordalignment then
           recst.explicitrecordalignment:=unionsymtable.explicitrecordalignment;
