@@ -26,9 +26,14 @@ begin
   var m := a + si;
   if SizeOf(m) <> 8 then halt(6);
 
-  // unsigned subtraction widens to 64 bit, same as 32-bit natives
+  // unsigned subtraction stays a 4-byte wrap-around
   var d := b - a;
-  if SizeOf(d) <> 8 then halt(7);
+  if SizeOf(d) <> 4 then halt(7);
+  if d <> 2 then halt(13);
+
+  // mixed sign subtraction widens to 64 bit, same as 32-bit natives
+  var ds := si - a;
+  if SizeOf(ds) <> 8 then halt(14);
 
   // explicit cast keeps the 64-bit type
   var q := QWord(a) + b;

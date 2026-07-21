@@ -1023,7 +1023,9 @@ implementation
       x86_64 but LongWord on i386, silently changing wrap-around semantics
       between targets. Undo the promotion for inference: when every operand
       of a +,-,*,div,mod tree originally fit in 32 bits, return the 32-bit
-      type a 32-bit-native target would have produced. }
+      type a 32-bit-native target would have produced. Unsigned subtraction
+      is widened to 64 bit even on 32-bit natives, so its demotion applies
+      on every target. }
     function unleashed_infer_natural_intdef(n: tnode; def: tdef): tdef;
       type
         tintkind = (ik_wide,ik_sig,ik_u32,ik_pos);
@@ -1075,11 +1077,17 @@ implementation
               end;
             subn:
               begin
-                { subtraction with a full unsigned operand widens to 64 bit
-                  on 32-bit natives too, only signed operands stay 32 bit }
+                { subtraction mixing full unsigned with signed widens to
+                  64 bit, pure unsigned stays a 32-bit wrap-around }
                 lk:=kindof(tbinarynode(n).left);
                 rk:=kindof(tbinarynode(n).right);
-                if (lk in [ik_sig,ik_pos]) and (rk in [ik_sig,ik_pos]) then
+                if (lk=ik_wide) or (rk=ik_wide) then
+                  exit;
+                if ((lk=ik_u32) and (rk=ik_sig)) or ((lk=ik_sig) and (rk=ik_u32)) then
+                  exit;
+                if (lk=ik_u32) or (rk=ik_u32) then
+                  result:=ik_u32
+                else
                   result:=ik_sig;
               end;
             unaryminusn:
@@ -1110,8 +1118,7 @@ implementation
 
       begin
         result:=def;
-        if (torddef(sinttype).ordtype<>s64bit) or
-           not is_integer(def) or
+        if not is_integer(def) or
            not(torddef(def).ordtype in [s64bit,u64bit]) or
            not(n.nodetype in [addn,subn,muln,divn,modn,unaryminusn]) then
           exit;
