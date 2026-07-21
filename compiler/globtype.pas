@@ -580,7 +580,8 @@ interface
          m_lock,                { thread-safe locking: `lock(v) do stmt` / `trylock ... wait N do ... else ...` }
          m_asyncawait,          { `async expr` runs on a worker thread yielding `future of T`; `await f` joins and reads the result }
          m_parallelfor,         { run `for parallel [(N)] var i := lo to hi do` body across worker threads }
-         m_int128               { 128 bit integer types Int128/UInt128 with literals beyond 64 bit }
+         m_int128,              { 128 bit integer types Int128/UInt128 with literals beyond 64 bit }
+         m_out_var              { inline out-variable declaration and `_` discard at call sites }
        );
        tmodeswitches = set of tmodeswitch;
 
@@ -810,7 +811,8 @@ interface
          'LOCK',
          'ASYNCAWAIT',
          'PARALLELFOR',
-         'INT128'
+         'INT128',
+         'OUTVAR'
          );
 
 

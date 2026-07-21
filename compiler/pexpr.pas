@@ -62,7 +62,7 @@ interface
 
     procedure string_dec(var def: tdef; allowtypedef: boolean);
 
-    function parse_paras(__colon,__namedpara : boolean;end_of_paras : ttoken) : tnode;
+    function parse_paras(__colon,__namedpara : boolean;end_of_paras : ttoken;__outvar : boolean=true) : tnode;
 
     { the ID token has to be consumed before calling this function }
     procedure do_member_read(structh:tabstractrecorddef;getaddr:boolean;sym:tsym;var p1:tnode;var again:boolean;callflags:tcallnodeflags;spezcontext:tspecializationcontext);
@@ -178,9 +178,71 @@ implementation
        end;
 
 
-    function parse_paras(__colon,__namedpara : boolean;end_of_paras : ttoken) : tnode;
+    { Parse an inline out-variable or discard at a call-argument position:
+        foo(var x)   -> declares block-scoped `x`, type inferred from the out parameter
+        foo(_)       -> discard, a hidden local stands in for the out parameter
+      The variable is created with a placeholder type (generrordef); bind_parasym
+      fixes it up to the matched out parameter's type after overload resolution.
+      The callparanode is flagged cpf_outvar_decl so candidate matching accepts it
+      only at an out parameter and binding knows to set its type. }
+    function parse_outvar_para(prev:tnode; discard:boolean) : tnode;
+      var
+         vs       : tabstractnormalvarsym;
+         sym_name : string;
+         ld       : tnode;
+         cp       : tcallparanode;
+      begin
+         if discard then
+           consume(_ID)
+         else
+           consume(_VAR);
+
+         if not (symtablestack.top.symtabletype in [localsymtable,staticsymtable,blocksymtable]) then
+           begin
+             Message(parser_e_syntax_error);
+             if (not discard) and (current_scanner.token=_ID) then
+               consume(_ID);
+             result:=ccallparanode.create(cerrornode.create,prev);
+             exit;
+           end;
+
+         if discard then
+           sym_name:='$outdiscard$'+tostr(symtablestack.top.SymList.count)
+         else
+           begin
+             if current_scanner.token<>_ID then
+               begin
+                 consume(_ID);
+                 result:=ccallparanode.create(cerrornode.create,prev);
+                 exit;
+               end;
+             sym_name:=current_scanner.orgpattern;
+           end;
+
+         if symtablestack.top.symtabletype=staticsymtable then
+           vs:=cstaticvarsym.create(sym_name,vs_value,generrordef,[])
+         else
+           vs:=clocalvarsym.create(sym_name,vs_value,generrordef,[]);
+         vs.register_sym;
+         symtablestack.top.insertsym(vs);
+
+         if not discard then
+           consume(_ID);
+
+         ld:=cloadnode.create(vs,vs.owner);
+         cp:=ccallparanode.create(ld,prev);
+         include(cp.callparaflags,cpf_outvar_decl);
+         result:=cp;
+      end;
+
+
+    { __outvar=false disables the out-var/discard argument syntax: intrinsics
+      like write/read/str have no out parameters to bind the type against }
+    function parse_paras(__colon,__namedpara : boolean;end_of_paras : ttoken;__outvar : boolean=true) : tnode;
       var
          p1,p2,argname : tnode;
+         srsym : tsym;
+         srsymtable : TSymtable;
          prev_in_args,
          old_named_args_allowed : boolean;
       begin
@@ -221,6 +283,15 @@ implementation
                    found_arg_name:=false;
                  end;
              end
+           else if __outvar and (m_out_var in current_settings.modeswitches) and
+                   (current_scanner.token=_VAR) then
+             p2:=parse_outvar_para(p2,false)
+           { a lone `_` is a discard only when it does not resolve to a
+             symbol in scope: code that declares `_` keeps meaning it }
+           else if __outvar and (m_out_var in current_settings.modeswitches) and
+                   (current_scanner.token=_ID) and (current_scanner.pattern='_') and
+                   not searchsym('_',srsym,srsymtable) then
+             p2:=parse_outvar_para(p2,true)
            else
              begin
                p1:=comp_expr([ef_accept_equal]);
@@ -929,7 +1000,7 @@ implementation
             begin
               if try_to_consume(_LKLAMMER) then
                begin
-                 paras:=parse_paras(false,false,_RKLAMMER);
+                 paras:=parse_paras(false,false,_RKLAMMER,false);
                  consume(_RKLAMMER);
                end
               else
@@ -978,7 +1049,7 @@ implementation
             begin
               if try_to_consume(_LKLAMMER) then
                begin
-                 paras:=parse_paras(true,false,_RKLAMMER);
+                 paras:=parse_paras(true,false,_RKLAMMER,false);
                  consume(_RKLAMMER);
                  if (m_tuples in current_settings.modeswitches) and
                     assigned(paras) then
@@ -993,7 +1064,7 @@ implementation
           in_str_x_string :
             begin
               consume(_LKLAMMER);
-              paras:=parse_paras(true,false,_RKLAMMER);
+              paras:=parse_paras(true,false,_RKLAMMER,false);
               consume(_RKLAMMER);
               p1 := geninlinenode(l,false,paras);
               statement_syssym := p1;

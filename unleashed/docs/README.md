@@ -20,6 +20,12 @@ A writeable `static` storage class with program-wide lifetime but block-local sc
 
 Enabled via `{$modeswitch staticsection}` and `{$modeswitch inlinestatic}` (both on by default in `unleashed`).
 
+## [Out-Variables](out-var.md)
+
+Declare a variable inline at an `out`-argument position (`Foo(var x)`), with its type inferred from the parameter and scoped to the enclosing block, or discard the output entirely with `_`. Accepted only at an `out` parameter (value / var / const are rejected); the type is resolved after overload selection, so overloads differing only in the out type are ambiguous; a name already in scope is a duplicate. A declared identifier `_` always wins over the discard meaning, and intrinsics (`Write`, `Str`, ...) take no discards at all, so existing code is unaffected. Captured and discarded managed-type outputs are ordinary locals, initialised and finalised normally. No throwaway variable pre-declared for each output.
+
+Enabled via `{$modeswitch outvar}`.
+
 ## [Anonymous Tuples](tuples.md)
 
 Lightweight anonymous record types written in parentheses, e.g. `(Integer, String)` or `(name: string; age: integer)`. Supports tuple literals, destructuring assignment, comparison, and works wherever a record works (function results, parameters, fields). Built on the existing record infrastructure, so managed types, copy semantics, and calling conventions are inherited for free.
