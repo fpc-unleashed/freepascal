@@ -99,13 +99,41 @@ implementation
             srsymtable : TSymtable;
             st  : TSymtable;
             p   : tnode;
+            carrier_chain : tfplist;
+            ci : longint;
+            composed : boolean;
           begin
             result:=true;
             def:=nil;
+            composed:=false;
             if current_scanner.token=_ID then
              begin
                if assigned(astruct) then
-                 sym:=search_struct_member(astruct,current_scanner.pattern)
+                 begin
+                   sym:=search_struct_member(astruct,current_scanner.pattern);
+                   { fields brought in by record composition (anonymous embeds,
+                     inline anonymous records, also inside union variants) live
+                     on a hidden carrier field; route the access list through
+                     the carrier chain }
+                   if not assigned(sym) and
+                      (m_composable_records in current_settings.modeswitches) and
+                      lookup_in_composition(astruct,current_scanner.pattern,sym,srsymtable,carrier_chain) then
+                     begin
+                       if sym.typ=fieldvarsym then
+                         for ci:=0 to carrier_chain.count-1 do
+                           begin
+                             if ci=0 then
+                               pl.addsym(sl_load,tsym(carrier_chain[ci]))
+                             else
+                               pl.addsym(sl_subscript,tsym(carrier_chain[ci]));
+                             composed:=true;
+                           end
+                       else
+                         { only field targets map onto a property access list }
+                         sym:=nil;
+                       carrier_chain.free;
+                     end;
+                 end
                else
                  searchsym(current_scanner.pattern,sym,srsymtable);
                if assigned(sym) then
@@ -117,7 +145,10 @@ implementation
                     fieldvarsym :
                       begin
                         addsymref(sym);
-                        pl.addsym(sl_load,sym);
+                        if composed then
+                          pl.addsym(sl_subscript,sym)
+                        else
+                          pl.addsym(sl_load,sym);
                         def:=tfieldvarsym(sym).vardef;
                       end;
                     procsym :
