@@ -245,6 +245,7 @@ unit aoptx86;
         procedure ConvertJumpToRET(const p: tai; const ret_p: tai);
 
         function CheckJumpMovTransferOpt(var p: tai; hp1: tai; LoopCount: Integer; out Count: Integer): Boolean;
+        function FlagsReadBySignedCondition(p_start, p_cmp: tai): Boolean;
         function TrySwapMovOp(var p, hp1: tai): Boolean;
         function TrySwapMovCmp(var p, hp1: tai): Boolean;
         function TryCmpCMovOpts(var p, hp1: tai) : Boolean;
@@ -10313,6 +10314,40 @@ unit aoptx86;
       [Ch_WESP, Ch_RWESP, Ch_MESP{$ifdef x86_64}, Ch_WRSP, Ch_RWRSP, Ch_MRSP{$endif x86_64}]);
 
 
+  { Returns True if the flags set by the comparison at p_cmp are read by a
+    condition that depends on the sign or overflow flags.  Narrowing the size
+    of the comparison is then only safe if it provably keeps the same signed
+    outcome, since SF/OF get computed from the smaller operand size.  p_start
+    must be the instruction the register tracking state is currently at, so
+    the flag allocation markers in between are taken into account. }
+  function TX86AsmOptimizer.FlagsReadBySignedCondition(p_start, p_cmp: tai): Boolean;
+    var
+      hp_next: tai;
+    begin
+      Result := False;
+      TransferUsedRegs(TmpUsedRegs);
+      UpdateUsedRegsBetween(TmpUsedRegs, p_start, p_cmp);
+      UpdateUsedRegs(TmpUsedRegs, tai(p_cmp.Next));
+      while RegInUsedRegs(NR_DEFAULTFLAGS, TmpUsedRegs) and
+        GetNextInstruction(p_cmp, hp_next) do
+        begin
+          if (hp_next.typ = ait_instruction) and
+            (taicpu(hp_next).condition in [C_G, C_GE, C_L, C_LE, C_NG, C_NGE, C_NL, C_NLE, C_NO, C_NS, C_O, C_S]) then
+            begin
+              Result := True;
+              Exit;
+            end;
+
+          { Stop searching when the flags get overwritten }
+          if RegModifiedByInstruction(NR_DEFAULTFLAGS, hp_next) then
+            Break;
+
+          p_cmp := hp_next;
+          UpdateUsedRegs(TmpUsedRegs, tai(p_cmp.Next));
+        end;
+    end;
+
+
   function TX86AsmOptimizer.TrySwapMovOp(var p, hp1: tai): Boolean;
     var
       hp2: tai;
@@ -12477,6 +12512,22 @@ unit aoptx86;
                         (taicpu(hp1).oper[0]^.val < 0) and
                         (taicpu(hp1).oper[0]^.val >= SignedLowerLimitBottom)
                       )
+                    ) or
+                    (
+                      { A signed condition reads SF/OF, which the narrowed
+                        comparison computes from the smaller operand size, so the
+                        register range and the constant must also fit the signed
+                        range of the minimum size to keep the same outcome
+                        (e.g. `cmp $192,%eax / jl` on a zero-extended byte is
+                        taken for 0..191, but `cmp $192,%al / jl` compares
+                        against -64 and is taken for 128..255 instead) }
+                      (
+                        (TestValMax > SignedLowerLimit) or
+                        (TestValMin < SignedLowerLimitBottom) or
+                        (taicpu(hp1).oper[0]^.val > SignedLowerLimit) or
+                        (taicpu(hp1).oper[0]^.val < SignedLowerLimitBottom)
+                      ) and
+                      FlagsReadBySignedCondition(p, hp1)
                     ) then
                     Break;
 
@@ -18217,7 +18268,20 @@ unit aoptx86;
                 )
               ) and
               (reg2opsize(taicpu(hp1).oper[1]^.reg) <= reg2opsize(taicpu(p).oper[1]^.reg)) and
-              SuperRegistersEqual(taicpu(p).oper[1]^.reg, taicpu(hp1).oper[1]^.reg) then
+              SuperRegistersEqual(taicpu(p).oper[1]^.reg, taicpu(hp1).oper[1]^.reg) and
+              (
+                { Reordering alone is fine, but narrowing the comparison makes
+                  SF/OF reflect the smaller size, where the zero-extended value
+                  and constants such as 192 change sign, so it must not feed a
+                  signed condition (e.g. `cmpl $192,%eax / jl` is taken for
+                  0..191, but `cmpb $192,%al / jl` compares against -64 and is
+                  taken for 128..255 instead) }
+                (
+                  ((taicpu(p).opsize in [S_BW, S_BL]) and (taicpu(hp1).opsize = S_B)) or
+                  ((taicpu(p).opsize = S_WL) and (taicpu(hp1).opsize = S_W))
+                ) or
+                not FlagsReadBySignedCondition(p, hp1)
+              ) then
               begin
                 PreMessage := debug_op2str(taicpu(hp1).opcode) + debug_opsize2str(taicpu(hp1).opsize) + ' ' + debug_operstr(taicpu(hp1).oper[0]^) + ',' + debug_regname(taicpu(hp1).oper[1]^.reg) + ' -> ' + debug_op2str(taicpu(hp1).opcode);
 
