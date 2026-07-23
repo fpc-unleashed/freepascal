@@ -1131,7 +1131,16 @@ implementation
     function create_simplified_ord_const(const value: tconstexprint; def: tdef; forinline, rangecheck: boolean): tnode;
       begin
         if not forinline then
-          result:=genintconstnode(value)
+          begin
+            // re-deriving the type from the value makes a folded qword
+            // result signed whenever it fits int64, unlike a direct
+            // qword cast of the same value; keep the unsigned def
+            if (m_unleashed in current_settings.modeswitches) and
+               assigned(def) and (def.typ=orddef) and (torddef(def).ordtype=u64bit) and (value>=0) then
+              result:=cordconstnode.create(value,def,rangecheck)
+            else
+              result:=genintconstnode(value)
+          end
         else
           result:=cordconstnode.create(value,def,rangecheck);
       end;
