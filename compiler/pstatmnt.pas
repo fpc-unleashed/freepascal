@@ -1025,10 +1025,14 @@ implementation
       of a +,-,*,div,mod tree originally fit in 32 bits, return the 32-bit
       type a 32-bit-native target would have produced. Unsigned subtraction
       is widened to 64 bit even on 32-bit natives, so its demotion applies
-      on every target. }
+      on every target. In the other direction, a qword operand combined
+      with a nonnegative integer constant is typechecked as int64 (folded
+      constants lose an unsigned def when the value fits int64), so such
+      trees go back to qword for inference. }
     function unleashed_infer_natural_intdef(n: tnode; def: tdef): tdef;
       type
         tintkind = (ik_wide,ik_sig,ik_u32,ik_pos);
+        tuqkind = (uq_none,uq_u64,uq_const);
 
       { classify a plain operand by the range its value spans: ik_sig =
         signed 32 bit or smaller, ik_u32 = unsigned needing full 32 bits,
@@ -1116,6 +1120,42 @@ implementation
           end;
         end;
 
+      { classify operands of a 64-bit tree: uq_u64 = unsigned 64-bit
+        operand, uq_const = nonnegative integer constant, uq_none = rest }
+      function uqkind(n: tnode): tuqkind;
+        var
+          lk,rk : tuqkind;
+        begin
+          result:=uq_none;
+          if not assigned(n.resultdef) or not is_integer(n.resultdef) then
+            exit;
+          case n.nodetype of
+            addn,subn,muln:
+              begin
+                lk:=uqkind(tbinarynode(n).left);
+                rk:=uqkind(tbinarynode(n).right);
+                if (lk=uq_none) or (rk=uq_none) then
+                  exit;
+                if (lk=uq_u64) or (rk=uq_u64) then
+                  result:=uq_u64
+                else
+                  result:=uq_const;
+              end;
+            ordconstn:
+              if tordconstnode(n).value>=0 then
+                result:=uq_const;
+            typeconvn:
+              { look through the compiler-inserted widening to int64 }
+              if not(nf_explicit in n.flags) and (torddef(n.resultdef).ordtype=s64bit) and assigned(ttypeconvnode(n).left.resultdef) and is_integer(ttypeconvnode(n).left.resultdef) then
+                result:=uqkind(ttypeconvnode(n).left)
+              else if torddef(n.resultdef).ordtype=u64bit then
+                result:=uq_u64;
+            else
+              if torddef(n.resultdef).ordtype=u64bit then
+                result:=uq_u64;
+          end;
+        end;
+
       begin
         result:=def;
         if not is_integer(def) or
@@ -1128,7 +1168,12 @@ implementation
           ik_u32,ik_pos:
             result:=u32inttype;
           else
-            ;
+            { the signed result of a qword operand mixed with nonnegative
+              constants relabels as qword; the add, sub and mul bit
+              patterns are sign-agnostic, so only the inferred type
+              changes, not the value }
+            if (torddef(def).ordtype=s64bit) and (n.nodetype in [addn,subn,muln]) and (uqkind(n)=uq_u64) then
+              result:=u64inttype;
         end;
       end;
 
