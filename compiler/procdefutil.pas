@@ -2527,6 +2527,7 @@ implementation
       i : longint;
       old_filepos : tfileposinfo;
       loadprocvar : boolean;
+      usageflags : tnodeflags;
       paras: tnode;
       cnf : tcallnodeflags;
       paraold,
@@ -2546,6 +2547,10 @@ implementation
                 old_filepos:=current_filepos;
                 current_filepos:=n.fileinfo;
                 loadprocvar:=nf_load_procvar in n.flags;
+                { keep the usage flags of the replaced load: optimizer passes
+                  (cse, constant propagation, dfa) rely on them to tell writes
+                  and modifies apart from plain reads }
+                usageflags:=n.flags*[nf_write,nf_modify,nf_address_taken];
                 n.free;
                 n:=csubscriptnode.create(mapping^.newsym,mapping^.selfnode.getcopy);
                 if loadprocvar then
@@ -2554,6 +2559,7 @@ implementation
                     (vo_is_self in tparavarsym(mapping^.oldsym).varoptions) and
                     not is_implicit_pointer_object_type(tparavarsym(mapping^.oldsym).vardef) then
                   n:=cderefnode.create(n);
+                n.flags:=n.flags+usageflags;
                 typecheckpass(n);
                 current_filepos:=old_filepos;
                 break;
