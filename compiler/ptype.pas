@@ -920,7 +920,10 @@ implementation
               exit(true);
             end;
           _ID:
-            if searchsym_type(current_scanner.pattern,srsym,srsymtable) then
+            { searchsym_type also returns consts and vars, so check the symbol
+              really names a type before committing to the tuple path }
+            if searchsym_type(current_scanner.pattern,srsym,srsymtable) and
+               (srsym.typ in [typesym,unitsym,namespacesym]) then
               begin
                 def:=positional_tuple_type;
                 exit(true);
