@@ -3938,7 +3938,10 @@ implementation
                     Handles e.g. lbl[3]: just like regular label: }
                   if current_scanner.token<>_LECKKLAMMER then
                     begin
-                      Message(parser_e_syntax_error);
+                      Message1(sym_e_label_index_expected,srsym.realname);
+                      { eat the colon, so the missing index does not also
+                        report a stray ":" }
+                      try_to_consume(_COLON);
                       result:=cerrornode.create;
                     end
                   else

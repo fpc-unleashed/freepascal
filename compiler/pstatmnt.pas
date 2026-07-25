@@ -5052,7 +5052,7 @@ implementation
                             begin
                               if current_scanner.token<>_LECKKLAMMER then
                                 begin
-                                  Message(sym_e_label_not_found);
+                                  Message1(sym_e_label_index_expected,srsym.realname);
                                   code:=cerrornode.create;
                                 end
                               else

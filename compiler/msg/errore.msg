@@ -2482,7 +2482,7 @@ type_e_inc_dec_property_type=04140_E_inc/dec property "$1" must be ordinal, enum
 #
 # Symtable
 #
-# 05101 is the last used one
+# 05102 is the last used one
 #
 % \section{Symbol handling}
 % This section lists all the messages that concern the handling of symbols.
@@ -2809,6 +2809,11 @@ sym_f_systemunitnotloaded=05100_F_System unit not loaded
 sym_e_wasm_ref_types_cannot_be_used_in_records=05101_E_WebAssembly reference types cannot be used inside records, objects, or classes
 % WebAssembly reference types don't have an in-memory representation and therefore
 % cannot be used inside records, objects or classes.
+sym_e_label_index_expected=05102_E_Label "$1" is an indexed label, an index is required: "$1[...]"
+% The label was declared with an index list, e.g. \var{label foo[1..10]} or
+% \var{label foo['a','b']}, so every use must name one element of it, both when
+% defining the target (\var{foo[3]:}) and when jumping to it
+% (\var{goto foo[3]}). The bare name only denotes the whole declaration.
 %
 % \end{description}
 #
