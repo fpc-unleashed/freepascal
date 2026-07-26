@@ -3854,6 +3854,9 @@ implementation
                           { both are read and written by the swap }
                           set_varstate(tcallparanode(left).left,vs_readwritten,[vsf_must_be_valid]);
                           set_varstate(tcallparanode(tcallparanode(left).right).left,vs_readwritten,[vsf_must_be_valid]);
+                          { values get changed -> must be unique }
+                          set_unique(tcallparanode(left).left);
+                          set_unique(tcallparanode(tcallparanode(left).right).left);
                         end;
                     end;
                 end;
@@ -5300,6 +5303,31 @@ implementation
          rawdef : tdef;
          elemsize : asizeint;
          ordinaltmp : boolean;
+
+       { true for an element access of a refcounted string; using such a node
+         copy as an assignment target would re-mark it with vnf_callunique,
+         and since the copy is already firstpassed the flag would never be
+         consumed and would trip the internal error in the code generator }
+       function is_refcounted_string_elem(p: tnode): boolean;
+         begin
+           result:=false;
+           while assigned(p) do
+             case p.nodetype of
+               vecn:
+                 begin
+                   result:=is_ansistring(tbinarynode(p).left.resultdef) or
+                     is_wide_or_unicode_string(tbinarynode(p).left.resultdef);
+                   exit;
+                 end;
+               typeconvn,
+               subscriptn,
+               derefn:
+                 p:=tunarynode(p).left;
+               else
+                 exit;
+             end;
+         end;
+
        begin
          expectloc:=LOC_VOID;
          result:=nil;
@@ -5332,8 +5360,12 @@ implementation
          ptrb:=nil;
 
          { for a side-effecting operand take its address once, otherwise refer
-           to it directly so a simple local folds into the optimal load/store }
-         if node_complexity(para1.left)>3 then
+           to it directly so a simple local folds into the optimal load/store.
+           refcounted string elements also go through the pointer: the address
+           computation keeps the unique call inserted by pass_1 and the write
+           dereferences a plain pointer }
+         if (node_complexity(para1.left)>3) or
+            is_refcounted_string_elem(para1.left) then
            begin
              ptra:=ctempcreatenode.create(voidpointertype,voidpointertype.size,tt_persistent,true);
              addstatement(newstatement,ptra);
@@ -5349,7 +5381,8 @@ implementation
              aread:=para1.left.getcopy;
              awrite:=para1.left.getcopy;
            end;
-         if node_complexity(para2.left)>3 then
+         if (node_complexity(para2.left)>3) or
+            is_refcounted_string_elem(para2.left) then
            begin
              ptrb:=ctempcreatenode.create(voidpointertype,voidpointertype.size,tt_persistent,true);
              addstatement(newstatement,ptrb);
