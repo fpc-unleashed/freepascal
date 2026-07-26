@@ -733,6 +733,9 @@ implementation
            CGMessage1(parser_e_wrong_parameter_size,'SwapValues');
            exit;
          end;
+        result:=try_swapvalues_property_expand(paras);
+        if assigned(result) then
+          exit;
         result:=cinlinenode.create(in_swapvalues,false,paras);
       end;
 

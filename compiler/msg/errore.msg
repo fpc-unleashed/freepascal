@@ -1992,7 +1992,7 @@ parser_w_aligned_useless=03376_W_Aligned is useless here.
 #
 # 03431 is the last used parser one
 #
-# 04136 is the last used one
+# 04141 is the last used one
 #
 % \section{Type checking errors}
 % This section lists all errors that can occur when type checking is
@@ -2477,6 +2477,11 @@ type_e_inc_dec_property_type=04140_E_inc/dec property "$1" must be ordinal, enum
 % \var{inc}/\var{dec} on a property accept the same types as on a regular
 % variable. For string properties use compound assignment (\var{prop += '...'})
 % instead.
+type_h_swapvalues_not_inplace=04141_H_SwapValues on "$1" is not an in-place swap: it uses a temporary and calls the getter and setter of each property operand
+% \var{SwapValues} exchanges its operands in place whenever both of them have
+% an address. A property read through a getter has none, so the swap goes
+% through a hidden temporary and every property operand costs one getter and
+% one setter call. The accessors run user code, so the exchange is not atomic.
 %
 % \end{description}
 #

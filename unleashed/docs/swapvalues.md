@@ -66,9 +66,64 @@ An argument whose address has side effects (e.g. `arr[NextIndex]`) has that addr
 
 `SwapValues(x, x)` is a harmless no-op: it reads and writes the same storage, leaving the value unchanged and, for a managed type, the reference count untouched. It is not an error.
 
+## Property operands
+
+A property read through a getter has no address, so it cannot take the in-place path. `SwapValues` still accepts it: when either operand is such a property, the swap expands through a hidden temporary that drives the accessors, the same way `Inc(obj.Prop)` expands to `obj.SetProp(obj.GetProp + 1)`:
+
+```pas
+SwapValues(obj.A, obj.B);
+// expands to:
+// tmp := obj.GetA;
+// obj.SetA(obj.GetB);
+// obj.SetB(tmp);
+```
+
+The two modes are picked automatically:
+
+- both operands addressable (variable, field, array element, dereference, or a property that reads and writes the same plain field): the in-place bitwise swap, unchanged;
+- any operand without an address: the temporary expansion. An addressable operand mixed in simply reads and writes its storage directly, so property-with-variable works with the same expansion.
+
+The property must have both a read and a write specifier; a read-only or write-only property is rejected with an error saying so. Array properties work, including a side-effecting index expression: the index, like the instance expression, is evaluated exactly once for the whole swap:
+
+```pas
+SwapValues(obj.Items[Next()], x);
+// expands to:
+// i := Next();                    // once
+// tmp := obj.GetItem(i);
+// obj.SetItem(i, x);
+// x := tmp;
+```
+
+### Cost and atomicity
+
+The expansion calls one getter and one setter per property operand (up to 2 getters and 2 setters for property-with-property), and for a managed type the temporary does reference counting the accessors demand. Since setters run user code, the exchange is not atomic: a setter can execute arbitrary code and observe the state mid-swap.
+
+Because those calls are invisible in the source, the expansion emits a hint per property operand:
+
+```
+Hint: SwapValues on "A" is not an in-place swap: it uses a temporary and calls the getter and setter of each property operand
+```
+
+Silence it with any of the standard forms:
+
+```pas
+{$WARN 4141 OFF}
+SwapValues(obj.A, x);
+{$WARN 4141 ON}
+
+{$push}{$HINTS OFF}
+SwapValues(obj.A, x);
+{$pop}
+
+{$push}{$WARN 4141 OFF}
+SwapValues(obj.A, x);
+{$pop}
+```
+
 ## Diagnostics
 
 - A non-assignable argument (literal, constant, function result) is rejected.
+- A property operand must have both read and write specifiers; `Property "X" has no write accessor` otherwise.
 - The two arguments must be the same type, otherwise `Type mismatch`.
 - Exactly two arguments are required, one or three gives `Wrong number of parameters`.
 

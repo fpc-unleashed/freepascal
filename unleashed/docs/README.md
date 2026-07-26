@@ -106,7 +106,7 @@ Unleashed-mode only; no separate modeswitch.
 
 ## [SwapValues Intrinsic](swapvalues.md)
 
-Builtin `SwapValues(a, b)` that swaps two same-typed assignable variables with a bitwise move, callable with no `uses` beyond the implicit `System` unit. For managed types (string, dynamic array, interface, Variant) it swaps the reference words with zero `incr_ref` / `decr_ref` churn; ordinals and pointer-sized operands lower to a register swap, larger types to a raw byte exchange. The point is to swap without dragging in SysUtils (`Swap<T>` / `Exchange<T>`) and its exception and handler setup. `SwapValues` is a fresh name with no RTL clash, and a user-declared `SwapValues` symbol shadows the builtin, so it never breaks existing code.
+Builtin `SwapValues(a, b)` that swaps two same-typed assignable variables with a bitwise move, callable with no `uses` beyond the implicit `System` unit. For managed types (string, dynamic array, interface, Variant) it swaps the reference words with zero `incr_ref` / `decr_ref` churn; ordinals and pointer-sized operands lower to a register swap, larger types to a raw byte exchange. The point is to swap without dragging in SysUtils (`Swap<T>` / `Exchange<T>`) and its exception and handler setup. `SwapValues` is a fresh name with no RTL clash, and a user-declared `SwapValues` symbol shadows the builtin, so it never breaks existing code. A property operand without an address swaps through a hidden temporary that calls the accessors (like `Inc` on a property), with a suppressible hint about the extra calls.
 
 Unleashed-mode only; no separate modeswitch.
 

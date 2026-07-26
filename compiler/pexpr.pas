@@ -81,6 +81,11 @@ interface
       parse or typecheck error. }
     function parse_type_intrinsic_body: tdef;
 
+    { expand `SwapValues(a,b)` through a temporary when an operand has no
+      address. returns nil (leaving `paras` untouched) when both operands are
+      addressable and the in-place swap applies }
+    function try_swapvalues_property_expand(paras:tnode):tnode;
+
 implementation
 
     uses
@@ -94,7 +99,7 @@ implementation
        { module }
        fmodule,ppu,
        { pass 1 }
-       pass_1,
+       pass_1,htypechk,
        nmat,nadd,nmem,nset,ncnv,ninl,ncon,nld,nflw,nbas,nutils,
        { parser }
        scanner,
@@ -1760,6 +1765,447 @@ implementation
         tcallnode(setter_node).left:=ccallparanode.create(combined,tcallnode(setter_node).left);
         include(setter_node.flags,nf_isproperty);
         result:=setter_node;
+      end;
+
+
+    type
+      { one SwapValues operand. anything below it that must not be evaluated
+        twice (the instance, the property parameters, the address of a plain
+        lvalue) is hoisted into a temp before the swap statements are built,
+        so `n` can be copied freely for the read and the write }
+      tswapoperand = record
+        prop      : tpropertysym;  // nil for a plain addressable operand
+        st        : TSymtable;     // symtable the accessors are reached through
+        callflags : tcallnodeflags;
+        n         : tnode;         // read template
+        subs      : tnode;         // innermost subscript of a field-backed read
+        def       : tdef;
+      end;
+
+
+    { the property in `st` whose read accessor is `getter`, nil if there is none }
+    function find_property_for_getter(st: TSymtable; getter: tsym): tpropertysym;
+      var
+        i : longint;
+        sym : tsym;
+        pal : tpropaccesslist;
+      begin
+        result:=nil;
+        if not assigned(st) or not assigned(st.symlist) or not assigned(getter) then
+          exit;
+        for i:=0 to st.symlist.count-1 do
+          begin
+            sym:=tsym(st.symlist[i]);
+            if sym.typ<>propertysym then
+              continue;
+            if tpropertysym(sym).getpropaccesslist(palt_read,pal) and
+               assigned(pal.firstsym) and (pal.firstsym^.sym=getter) then
+              begin
+                result:=tpropertysym(sym);
+                break;
+              end;
+          end;
+      end;
+
+
+    { true when the subscript chain of the field-backed property read node `n`
+      spells out exactly the fields of `pal`; pal lists the fields
+      innermost-first, the node chain is outermost-first }
+    function pal_matches_subscripts(pal: tpropaccesslist; n: tnode): boolean;
+      var
+        chain : tfplist;
+        plist : ppropaccesslistitem;
+        p : tnode;
+        i : longint;
+      begin
+        result:=false;
+        chain:=tfplist.create;
+        p:=n;
+        while p.nodetype=subscriptn do
+          begin
+            chain.add(tsubscriptnode(p).vs);
+            p:=tsubscriptnode(p).left;
+          end;
+        plist:=pal.firstsym;
+        i:=chain.count;
+        while assigned(plist) and (i>0) do
+          begin
+            if not(plist^.sltype in [sl_load,sl_subscript]) or
+               (plist^.sym<>tsym(chain[i-1])) then
+              break;
+            dec(i);
+            plist:=plist^.next;
+          end;
+        result:=(i=0) and not assigned(plist);
+        chain.free;
+      end;
+
+
+    { the property whose read accessor produced the field-backed read node `n`,
+      searched in the class hierarchy (or record) of the instance below the
+      subscript chain; `subs` returns the innermost subscript, whose left side
+      is the instance }
+    function find_property_for_fields(n: tnode; out st: TSymtable; out subs: tnode): tpropertysym;
+      var
+        p : tnode;
+        objdef : tobjectdef;
+        srst : TSymtable;
+        i : longint;
+        sym : tsym;
+        pal : tpropaccesslist;
+      begin
+        result:=nil;
+        st:=nil;
+        subs:=n;
+        while tsubscriptnode(subs).left.nodetype=subscriptn do
+          subs:=tsubscriptnode(subs).left;
+        p:=tsubscriptnode(subs).left;
+        if not assigned(p.resultdef) then
+          exit;
+        objdef:=nil;
+        srst:=nil;
+        if p.resultdef.typ=objectdef then
+          objdef:=tobjectdef(p.resultdef)
+        else if p.resultdef.typ=recorddef then
+          srst:=trecorddef(p.resultdef).symtable
+        else
+          exit;
+        repeat
+          if assigned(objdef) then
+            srst:=objdef.symtable;
+          for i:=0 to srst.symlist.count-1 do
+            begin
+              sym:=tsym(srst.symlist[i]);
+              if sym.typ<>propertysym then
+                continue;
+              if tpropertysym(sym).getpropaccesslist(palt_read,pal) and
+                 pal_matches_subscripts(pal,n) then
+                begin
+                  result:=tpropertysym(sym);
+                  st:=srst;
+                  exit;
+                end;
+            end;
+          if assigned(objdef) then
+            objdef:=objdef.childof
+          else
+            exit;
+        until not assigned(objdef);
+      end;
+
+
+    { true when the read and write access lists of `prop` name the same fields }
+    function same_swap_accessors(prop: tpropertysym): boolean;
+      var
+        pal_r,pal_w : tpropaccesslist;
+        pr,pw : ppropaccesslistitem;
+      begin
+        result:=false;
+        if not prop.getpropaccesslist(palt_read,pal_r) or
+           not prop.getpropaccesslist(palt_write,pal_w) then
+          exit;
+        pr:=pal_r.firstsym;
+        pw:=pal_w.firstsym;
+        while assigned(pr) and assigned(pw) do
+          begin
+            if not(pr^.sltype in [sl_load,sl_subscript]) or
+               not(pw^.sltype in [sl_load,sl_subscript]) or
+               (pr^.sym<>pw^.sym) then
+              exit;
+            pr:=pr^.next;
+            pw:=pw^.next;
+          end;
+        result:=not assigned(pr) and not assigned(pw);
+      end;
+
+
+    { classify one SwapValues operand; false on a hard error (reported) }
+    function analyze_swap_operand(n: tnode; out op: tswapoperand): boolean;
+      var
+        pal_w : tpropaccesslist;
+        haswriter : boolean;
+      begin
+        result:=true;
+        fillchar(op,sizeof(op),0);
+        op.n:=n;
+        op.def:=n.resultdef;
+        if (n.nodetype=calln) and (nf_isproperty in n.flags) then
+          begin
+            op.st:=tcallnode(n).symtableproc;
+            op.prop:=find_property_for_getter(op.st,tcallnode(n).symtableprocentry);
+            if not assigned(op.prop) and assigned(tcallnode(n).symtableprocentry) then
+              begin
+                op.st:=tcallnode(n).symtableprocentry.owner;
+                op.prop:=find_property_for_getter(op.st,tcallnode(n).symtableprocentry);
+              end;
+            { unrecognized shape: leave the operand to the in-place diagnosis }
+            if not assigned(op.prop) then
+              exit;
+            op.callflags:=tcallnode(n).callnodeflags*[cnf_member_call];
+            op.def:=op.prop.propdef;
+          end
+        else if (n.nodetype=subscriptn) and (nf_isproperty in n.flags) then
+          begin
+            op.prop:=find_property_for_fields(n,op.st,op.subs);
+            if not assigned(op.prop) then
+              begin
+                op.subs:=nil;
+                exit;
+              end;
+            op.def:=op.prop.propdef;
+          end
+        else
+          exit;
+        haswriter:=op.prop.getpropaccesslist(palt_write,pal_w) and
+          assigned(pal_w.firstsym) and
+          (pal_w.firstsym^.sym.typ in [procsym,fieldvarsym]);
+        if not haswriter then
+          begin
+            MessagePos1(n.fileinfo,type_e_property_no_writer,op.prop.realname);
+            result:=false;
+            exit;
+          end;
+        { a field-backed property reading and writing the same field is an
+          addressable lvalue in property clothing: strip the property marks
+          so it takes the in-place swap like a direct field access }
+        if assigned(op.subs) and same_swap_accessors(op.prop) then
+          begin
+            exclude(n.flags,nf_no_lvalue);
+            exclude(n.flags,nf_isproperty);
+            op.prop:=nil;
+            op.subs:=nil;
+          end;
+      end;
+
+
+    { evaluate `n` once into a value temp }
+    procedure hoist_swap_value(var n: tnode; var stmt: tstatementnode; temps: tfplist);
+      var
+        tmp : ttempcreatenode;
+      begin
+        tmp:=ctempcreatenode.create(n.resultdef,n.resultdef.size,tt_persistent,true);
+        addstatement(stmt,tmp);
+        addstatement(stmt,cassignmentnode.create(ctemprefnode.create(tmp),n));
+        temps.add(tmp);
+        n:=ctemprefnode.create(tmp);
+        { the surrounding tree is already typechecked and will not descend
+          into the replacement, so typecheck it here }
+        do_typecheckpass(n);
+      end;
+
+
+    { capture the address of `n` once and replace it with a typed dereference }
+    procedure hoist_swap_addr(var n: tnode; var stmt: tstatementnode; temps: tfplist);
+      var
+        ptr : ttempcreatenode;
+        deref : tnode;
+        def : tdef;
+      begin
+        def:=n.resultdef;
+        ptr:=ctempcreatenode.create(voidpointertype,voidpointertype.size,tt_persistent,true);
+        addstatement(stmt,ptr);
+        addstatement(stmt,cassignmentnode.create(ctemprefnode.create(ptr),
+          caddrnode.create_internal(n)));
+        temps.add(ptr);
+        deref:=cderefnode.create(ctemprefnode.create(ptr));
+        inserttypeconv_internal(deref,def);
+        n:=deref;
+        { the surrounding tree is already typechecked and will not descend
+          into the replacement, so typecheck it here }
+        do_typecheckpass(n);
+      end;
+
+
+    { evaluate an accessor instance expression once. pointer-like instances
+      (class, interface) are captured by value; an addressable record or
+      object instance by address, so the write goes to the original }
+    procedure hoist_swap_instance(var n: tnode; var stmt: tstatementnode; temps: tfplist);
+      begin
+        if node_complexity(n)<=1 then
+          exit;
+        if not is_implicit_pointer_object_type(n.resultdef) and
+           (n.resultdef.typ<>classrefdef) and
+           valid_for_addr(n,false) then
+          hoist_swap_addr(n,stmt,temps)
+        else
+          hoist_swap_value(n,stmt,temps);
+      end;
+
+
+    { emit the hoist code for one operand }
+    procedure prepare_swap_operand(var op: tswapoperand; var stmt: tstatementnode; temps: tfplist);
+      var
+        para : tcallparanode;
+      begin
+        if not assigned(op.prop) then
+          begin
+            { an addressable operand is read and written through its address so
+              that a side-effecting index expression in it runs once }
+            if (node_complexity(op.n)>3) and valid_for_addr(op.n,false) then
+              hoist_swap_addr(op.n,stmt,temps);
+            exit;
+          end;
+        if assigned(op.subs) then
+          hoist_swap_instance(tsubscriptnode(op.subs).left,stmt,temps)
+        else
+          begin
+            if assigned(tcallnode(op.n).methodpointer) then
+              hoist_swap_instance(tcallnode(op.n).methodpointer,stmt,temps);
+            para:=tcallparanode(tcallnode(op.n).left);
+            while assigned(para) do
+              begin
+                if not(assigned(para.parasym) and
+                       (vo_is_hidden_para in para.parasym.varoptions)) and
+                   (node_complexity(para.left)>1) then
+                  hoist_swap_value(para.left,stmt,temps);
+                para:=tcallparanode(para.right);
+              end;
+          end;
+        MessagePos1(op.n.fileinfo,type_h_swapvalues_not_inplace,op.prop.realname);
+      end;
+
+
+    function swap_operand_read(const op: tswapoperand): tnode;
+      begin
+        result:=op.n.getcopy;
+      end;
+
+
+    function swap_operand_write(const op: tswapoperand; value: tnode): tnode;
+      var
+        pal_w : tpropaccesslist;
+        sym : tsym;
+        instance,paras : tnode;
+        getter,setter : tcallnode;
+        para : tcallparanode;
+        vis : tfplist;
+        i : longint;
+        callflags : tcallnodeflags;
+      begin
+        if not assigned(op.prop) then
+          begin
+            result:=cassignmentnode.create(op.n.getcopy,value);
+            exit;
+          end;
+        op.prop.getpropaccesslist(palt_write,pal_w);
+        sym:=pal_w.firstsym^.sym;
+        if assigned(op.subs) then
+          instance:=tsubscriptnode(op.subs).left.getcopy
+        else
+          begin
+            getter:=tcallnode(op.n);
+            if assigned(getter.methodpointer) then
+              instance:=getter.methodpointer.getcopy
+            else
+              instance:=nil;
+          end;
+        if sym.typ=procsym then
+          begin
+            { the getter's visible parameters (array property indexes, the
+              `index N` constant) carry over to the setter; the hidden ones
+              belong to the getter alone }
+            paras:=nil;
+            if not assigned(op.subs) then
+              begin
+                vis:=tfplist.create;
+                para:=tcallparanode(tcallnode(op.n).left);
+                while assigned(para) do
+                  begin
+                    if not(assigned(para.parasym) and
+                           (vo_is_hidden_para in para.parasym.varoptions)) then
+                      vis.add(para);
+                    para:=tcallparanode(para.right);
+                  end;
+                for i:=vis.count-1 downto 0 do
+                  paras:=ccallparanode.create(tcallparanode(vis[i]).left.getcopy,paras);
+                vis.free;
+              end;
+            callflags:=op.callflags;
+            if maybe_load_methodpointer(op.st,instance) then
+              include(callflags,cnf_member_call);
+            setter:=ccallnode.create(paras,tprocsym(sym),op.st,instance,callflags,nil);
+            addsymref(sym);
+            setter.left:=ccallparanode.create(value,setter.left);
+            include(setter.flags,nf_isproperty);
+            result:=setter;
+          end
+        else
+          begin
+            if not handle_staticfield_access(sym,instance) then
+              propaccesslist_to_node(instance,op.st,pal_w);
+            include(instance.flags,nf_isproperty);
+            result:=cassignmentnode.create(instance,value);
+          end;
+      end;
+
+
+    function try_swapvalues_property_expand(paras: tnode): tnode;
+      var
+        p1,p2 : tcallparanode;
+        n1,n2 : tnode;
+        op1,op2 : tswapoperand;
+        newblock : tblocknode;
+        stmt : tstatementnode;
+        tmp : ttempcreatenode;
+        temps : tfplist;
+        i : longint;
+      begin
+        result:=nil;
+        { exactly two parameters; parse_paras hands them back last one first }
+        if paras.nodetype<>callparan then
+          exit;
+        p2:=tcallparanode(paras);
+        if not assigned(p2.right) or (p2.right.nodetype<>callparan) or
+           assigned(tcallparanode(p2.right).right) then
+          exit;
+        p1:=tcallparanode(p2.right);
+        n1:=p1.left;
+        n2:=p2.left;
+        if (n1.nodetype=errorn) or (n2.nodetype=errorn) or
+           not assigned(n1.resultdef) or not assigned(n2.resultdef) then
+          exit;
+        { a generic body is not typechecked; the specialization re-parses and
+          gets the expansion with concrete types }
+        if assigned(current_procinfo) and
+           (df_generic in current_procinfo.procdef.defoptions) then
+          exit;
+        if not analyze_swap_operand(n1,op1) or
+           not analyze_swap_operand(n2,op2) then
+          begin
+            paras.free;
+            result:=cerrornode.create;
+            exit;
+          end;
+        if not assigned(op1.prop) and not assigned(op2.prop) then
+          exit;
+        if not equal_defs(op1.def,op2.def) then
+          begin
+            CGMessagePos(n2.fileinfo,type_e_mismatch);
+            paras.free;
+            result:=cerrornode.create;
+            exit;
+          end;
+        p1.left:=nil;
+        p2.left:=nil;
+        paras.free;
+        temps:=tfplist.create;
+        newblock:=internalstatements(stmt);
+        prepare_swap_operand(op1,stmt,temps);
+        prepare_swap_operand(op2,stmt,temps);
+        tmp:=ctempcreatenode.create(op1.def,op1.def.size,tt_persistent,true);
+        addstatement(stmt,tmp);
+        addstatement(stmt,cassignmentnode.create(ctemprefnode.create(tmp),
+          swap_operand_read(op1)));
+        addstatement(stmt,swap_operand_write(op1,swap_operand_read(op2)));
+        addstatement(stmt,swap_operand_write(op2,ctemprefnode.create(tmp)));
+        addstatement(stmt,ctempdeletenode.create(tmp));
+        for i:=temps.count-1 downto 0 do
+          addstatement(stmt,ctempdeletenode.create(ttempcreatenode(temps[i])));
+        temps.free;
+        { the operand templates were only copied from }
+        op1.n.free;
+        op2.n.free;
+        result:=newblock;
       end;
 
 
