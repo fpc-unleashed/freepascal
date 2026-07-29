@@ -2818,6 +2818,9 @@ implementation
                              vs_value,u8inttype,[]);
                          tfieldvarsym(vs).custom_bitsize:=k;
                          vs.visibility:=vis_strictprivate;
+                         { compiler-generated padding, keep it out of
+                           "never used" notes }
+                         include(vs.symoptions,sp_internal);
                          vs.register_sym;
                          recst.insertsym(vs);
                          recst.addfield(tfieldvarsym(vs),vis_strictprivate);
