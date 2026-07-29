@@ -2627,8 +2627,9 @@ implementation
 
 
     { prepend `localvar := Default(typeof(localvar))` for every tlocalvarsym
-      in pd.localst. File types (and compounds containing them) are skipped:
-      Default() rejects them and the RTL entry code already initialises file
+      in pd.localst, plus the function result when it is a hidden parameter.
+      File types (and compounds containing them) are skipped: Default()
+      rejects them and the RTL entry code already initialises file
       variables to their proper non-zero closed state. }
     procedure inject_zeroinit_locals(pd:tprocdef;var code:tnode);
       var
@@ -2663,6 +2664,26 @@ implementation
             addstatement(laststmt,
               cassignmentnode.create(
                 cloadnode.create(lvs,lvs.owner),
+                zeronode));
+          end;
+        { a result returned via a hidden parameter lives in parast, not
+          localst; zero it explicitly, the caller may hand over a buffer
+          still holding the destination's previous value }
+        if assigned(pd.funcretsym) and
+           (pd.funcretsym.typ=paravarsym) and
+           not((pd.returndef.typ in [arraydef,recorddef,objectdef]) and
+               not is_valid_for_default(pd.returndef)) then
+          begin
+            if not had_any then
+              begin
+                blk:=internalstatements(laststmt);
+                had_any:=true;
+              end;
+            zeronode:=cinlinenode.create(in_default_x,false,
+              ctypenode.create(pd.returndef));
+            addstatement(laststmt,
+              cassignmentnode.create(
+                cloadnode.create(pd.funcretsym,pd.funcretsym.owner),
                 zeronode));
           end;
         if had_any and assigned(code) then

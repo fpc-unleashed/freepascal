@@ -1564,12 +1564,14 @@ implementation
                             ((hsym.owner=current_procinfo.procdef.localst) or
                              (hsym.owner=current_procinfo.procdef.parast)) and
                             { the `zeroinit` modifier injects a Default() write
-                              for every local at function entry, so reads here
-                              are already initialised }
+                              for every local and for the function result at
+                              function entry, so reads here are already
+                              initialised }
                             not(
                               (pio_zeroinit in current_procinfo.procdef.implprocoptions) and
-                              (hsym.owner=current_procinfo.procdef.localst) and
-                              (hsym.typ=localvarsym)
+                              (((hsym.owner=current_procinfo.procdef.localst) and
+                                (hsym.typ=localvarsym)) or
+                               (vo_is_funcret in hsym.varoptions))
                             ) then
                            begin
                              if vsf_use_hints in varstateflags then
