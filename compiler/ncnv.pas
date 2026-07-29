@@ -1712,6 +1712,7 @@ implementation
         fcc   : cardinal;
         pb    : pbyte;
         value : int64;
+        v128  : tconstexprint;
         i,len : longint;
       begin
          result:=nil;
@@ -1730,21 +1731,45 @@ implementation
                  is_integer(resultdef) and
                  (tstringconstnode(left).cst_type=cst_conststring) and
                  (tstringconstnode(left).len=resultdef.size) and
-                 (resultdef.size in [1,2,4,8]) then
+                 (resultdef.size in [1,2,4,8,16]) then
            begin
              // pack string bytes in target-native endianness so the in-memory
              // layout of the folded constant matches the source byte order on
              // any target (signature matching like PDWORD(@buf)^=DWORD('RIFF'))
              pb:=pbyte(tstringconstnode(left).asconstpchar);
              len:=tstringconstnode(left).len;
-             value:=0;
-             if target_info.endian=endian_little then
-               for i:=0 to len-1 do
-                 value:=value or (int64(pb[i]) shl (i*8))
+             if len=16 then
+               begin
+                 // 128-bit target: pack each 64-bit half of the payload
+                 v128.overflow:=false;
+                 v128.signed:=false;
+                 v128.vlo:=0;
+                 v128.vhi:=0;
+                 if target_info.endian=endian_little then
+                   for i:=0 to 7 do
+                     begin
+                       v128.vlo:=v128.vlo or (qword(pb[i]) shl (i*8));
+                       v128.vhi:=v128.vhi or (qword(pb[8+i]) shl (i*8));
+                     end
+                 else
+                   for i:=0 to 7 do
+                     begin
+                       v128.vhi:=v128.vhi or (qword(pb[i]) shl ((7-i)*8));
+                       v128.vlo:=v128.vlo or (qword(pb[8+i]) shl ((7-i)*8));
+                     end;
+                 result:=cordconstnode.create(v128,resultdef,false);
+               end
              else
-               for i:=0 to len-1 do
-                 value:=value or (int64(pb[i]) shl ((len-1-i)*8));
-             result:=cordconstnode.create(value,resultdef,false);
+               begin
+                 value:=0;
+                 if target_info.endian=endian_little then
+                   for i:=0 to len-1 do
+                     value:=value or (int64(pb[i]) shl (i*8))
+                 else
+                   for i:=0 to len-1 do
+                     value:=value or (int64(pb[i]) shl ((len-1-i)*8));
+                 result:=cordconstnode.create(value,resultdef,false);
+               end;
            end
          else if (m_stringordcast in current_settings.modeswitches) and
                  is_integer(resultdef) and
