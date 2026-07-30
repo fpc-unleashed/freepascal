@@ -1,157 +1,201 @@
 # Flexible Array Members
 
-Declare a record with a variable-length tail in C99 style: `data: array[] of T` as the last field. The record header has a fixed size, the tail extends as far as the allocation says it does, and `sizeof(rec)` reports only the fixed part.
+Declare a record with a variable-length tail: `data: array[] of T` as the last field (the C99 flexible-array-member layout). The record header has a fixed size, the tail extends as far as the allocation says it does, and `sizeof(rec)` reports only the fixed part.
 
-Feature gated by modeswitch `FLEXIBLEARRAYS`, enabled by default in `{$mode unleashed}`.
+Modeswitch: `flexiblearrays`, enabled by default in `{$mode unleashed}`. Elsewhere:
 
-```pas
+```pascal
 {$mode objfpc}
 {$modeswitch flexiblearrays}
 ```
 
 ## What it does
 
-A flexible array member (FAM) is the last field of a record, declared with empty brackets and no upper bound:
+A flexible array member (FAM) is the last field of a record, declared with empty brackets and no bound:
 
-```pas
+```pascal
 type
   PMessage = ^TMessage;
   TMessage = packed record
-    code:   integer;
-    length: integer;
-    data:   array[] of byte;   // flexible array member
+    code: integer;
+    len:  integer;
+    data: array[] of byte; // flexible array member
   end;
 ```
 
-The record has the same memory layout as one ending after `length`, plus whatever payload you allocate behind it. There is no separate buffer, no pointer chase, no managed lifetime. The compiler does not track the run-time length, so indexing skips both compile-time and runtime range checks even under `{$rangechecks on}`.
+The record has the same memory layout as one ending after `len`, plus whatever payload you allocate behind it. There is no separate buffer, no pointer chase, no managed lifetime. The compiler does not track the runtime length, so FAM indexing skips both compile-time and runtime range checks even under `{$rangechecks on}`.
 
 ## Allocation and use
 
-The record and its tail live in one block. You allocate the fixed part plus payload in a single `GetMem`, write the trailing data through the FAM field by index, and free the whole block in one `FreeMem`:
+The record and its tail live in one block: allocate fixed part plus payload with a single `GetMem()`, write the tail through the FAM field by index, free the whole thing with one `FreeMem()`:
 
-```pas
-var
-  msg: PMessage;
-  i:   integer;
+```pascal
+var msg: PMessage;
 begin
-  GetMem(msg, sizeof(TMessage) + 1024);
-  msg^.code   := 42;
-  msg^.length := 1024;
-  for i := 0 to 1023 do
+  GetMem(msg, sizeof(TMessage)+1024);
+  msg^.code := 42;
+  msg^.len := 1024;
+  for var i := 0 to 1023 do
     msg^.data[i] := byte(i);
   // ... use msg ...
   FreeMem(msg);
 end;
 ```
 
-`sizeof(TMessage)` returns 8 here (just `code` and `length`). The FAM contributes nothing to the static size, so the math at the call site is the obvious `sizeof(rec) + payload`, with no off-by-one for a phantom one-element tail.
+`sizeof(TMessage)` returns 8 here (just `code` and `len`). The FAM contributes nothing to the static size, so the allocation math is the obvious `sizeof(rec) + payload` - no off-by-one for a phantom one-element tail.
 
 ## Memory layout
 
 ```
             +----------+----------+----------+ ... +----------+
-GetMem ---> | code (4) | length(4)| data[0]  |     | data[N]  |
+GetMem ---> | code (4) | len (4)  | data[0]  |     | data[N]  |
             +----------+----------+----------+ ... +----------+
             ^                     ^
             msg                   msg^.data
-            |<-- sizeof(rec) -->|<-- payload bytes -->|
+            |<-- sizeof(rec) -->|<---- payload bytes ---->|
 ```
 
-The FAM starts at the offset that natural alignment gives the element type after the last fixed field. For `array[] of int64` after a 4-byte field on a 64-bit target, the compiler inserts the usual 4 bytes of padding before the FAM, exactly like for any other field.
+The FAM starts at the offset natural alignment gives the element type after the last fixed field. For `array[] of int64` after a 4-byte field on a 64-bit target, the compiler inserts the usual 4 padding bytes before the FAM, exactly as for any other field.
 
 ## Why a FAM and not the alternatives
 
-Three patterns are commonly used today; each loses something the FAM keeps:
+Three patterns are common today; each loses something the FAM keeps:
 
-| Pattern                                  | Problem                                                      |
-|------------------------------------------|--------------------------------------------------------------|
-| `data: array[0..0] of byte` (the C "struct hack") | `{$rangechecks on}` rejects every access past index 0; `sizeof` is one element too large; padding is implicit. |
-| `data: PByte` to a separate buffer       | Two allocations, two frees, an extra indirection on every access, breaks single-block layout used by Win32 structures. |
-| `case integer of 0: (data: array[0..high(integer)-X] of byte)` | `sizeof` rolls over, `high()` lies, and the compiler has no idea what the actual extent is. |
+| Pattern | Problem |
+|---|---|
+| `data: array[0..0] of byte` (the "struct hack", `ANYSIZE_ARRAY`) | `{$rangechecks on}` rejects every access past index 0; `sizeof()` is one element too large; the padding story is implicit |
+| `data: PByte` to a separate buffer | two allocations, two frees, an extra indirection per access, and the single-block layout Win32 structures demand is gone |
+| `case integer of 0: (data: array[0..high(integer)-X] of byte)` | `sizeof()` rolls over, `high()` lies, and the compiler has no idea of the actual extent |
 
-The FAM gives you the inline layout, honest `sizeof`, working range-check setting, and a single allocation in one feature.
+The FAM gives the inline layout, honest `sizeof()`, a working `{$R+}` for the rest of the program, and a single allocation - in one feature.
 
 ## Restrictions
 
-These are enforced at parse time. Each rule has a dedicated error message (parser_e_fam_*).
+Enforced at parse time, each with a dedicated diagnostic:
 
-1. **The FAM must be the last field of the record.** No fields can follow it.
-2. **The record must have at least one preceding field.** A record consisting only of a FAM has no defined layout.
-3. **Only one FAM per record, and only one identifier per FAM declaration.** `one, two: array[] of byte` is rejected for the same reason that two FAMs in separate declarations are.
-4. **A FAM is allowed only as a plain instance field of a plain `record`.** Not in a `class`, not in an `object`, not as `class var`, not as `threadvar`, not inside a `case` (variant part).
-5. **A record containing a FAM cannot be embedded in another structured type.** Use a pointer to the FAM-record as the field type instead.
-6. **A record containing a FAM cannot be the element type of an array.** Per-element size would be undefined.
-7. **A FAM-record cannot be a stand-alone variable, value parameter, or function result.** Allocate via `GetMem` and use a pointer (`PFamRec`).
+1. **The FAM must be the last field.** `Flexible array members are only allowed as the last field of a record`.
+2. **At least one fixed field must precede it.** `A record with a flexible array member must have at least one other field`.
+3. **One FAM per record, one identifier per FAM declaration.** `one, two: array[] of byte` is rejected like a second FAM would be.
+4. **Plain `record` instance fields only.** Not in a `class`, `object`, variant part, `class var`, or `threadvar`.
+5. **A FAM-record cannot be embedded in another structured type** - use a pointer field instead.
+6. **A FAM-record cannot be an array element type** - the per-element size would be undefined.
+7. **A FAM-record cannot be a stand-alone variable, value parameter, or function result.** `Variable of type "T" with flexible array member must be allocated dynamically (use a pointer)`.
 
-Reference parameters (`var`, `const`, `constref`, `out`) of FAM-record type stay legal; they pass an address, no copy is involved. Pointer-to-FAM-record (`PFamRec`) is unrestricted and may appear as a field of any type, an array element, a parameter of any kind, and a function result.
+Reference parameters (`var`, `const`, `constref`, `out`) of FAM-record type stay legal - they pass an address, no copy involved. Pointer-to-FAM-record (`PFamRec`) is unrestricted: field of any type, array element, any parameter kind, function result.
 
 ## Use cases
 
-The pattern shows up wherever a fixed header is followed by a variable-length tail in one block of memory:
-
-- **Win32 structures.** `BITMAPINFO`, `LOGPALETTE`, `TOKEN_GROUPS`, `TOKEN_PRIVILEGES`, `SOCKET_ADDRESS_LIST`, `SP_DRVINFO_DETAIL_DATA`, and many more declare a trailing array as `array[0..0]` or `ANYSIZE_ARRAY` today, with all the problems above.
-- **Network protocol frames.** TCP/UDP packets, WebSocket frames, MQTT messages, custom IPC payloads, anything where a header carries a length and the body follows in the same block.
-- **File formats.** BMP, WAV chunks, custom containers with a header and inline body.
-- **Inline strings or buffers in records.** Storing a payload at the tail of a node avoids a second allocation and improves cache locality.
+- **Win32 structures.** `BITMAPINFO`, `LOGPALETTE`, `TOKEN_GROUPS`, `TOKEN_PRIVILEGES`, `SOCKET_ADDRESS_LIST`, and friends declare trailing arrays as `array[0..0]` / `ANYSIZE_ARRAY` today, with all the problems above.
+- **Network frames.** Packets, WebSocket frames, MQTT messages, IPC payloads - a header carries a length, the body follows in the same block.
+- **File formats.** BMP, WAV chunks, custom containers with header plus inline body.
+- **Inline buffers in records.** A payload at the node's tail avoids a second allocation and improves cache locality.
 
 ## Comparison with `array of T`
 
-A FAM is not a dynamic array. They share no run-time machinery:
+A FAM is not a dynamic array; they share no runtime machinery:
 
-|                       | `array of T` (dynamic array) | `array[] of T` (FAM)         |
-|-----------------------|------------------------------|------------------------------|
-| Storage               | Heap block referenced by a managed pointer in the record. | Inline tail of the containing record, allocated as one block with the header. |
-| Lifetime              | Reference-counted, freed automatically with the containing record. | Manual; freed with the containing block. |
-| `SetLength`           | Resizes the underlying block. | Not applicable; size is fixed by the original `GetMem`. |
-| `Length(arr)`         | Returns the current element count. | Returns 0 (the static length). The runtime length is whatever you allocated; the compiler does not track it. |
-| Range checking        | Runtime check via `fpc_dynarray_rangecheck`. | None. |
-| Overhead per record   | One pointer + reference count. | Zero. |
+| | `array of T` (dynamic) | `array[] of T` (FAM) |
+|---|---|---|
+| Storage | separate heap block via a managed pointer | inline tail of the record, one block with the header |
+| Lifetime | reference-counted, automatic | manual, freed with the containing block |
+| `SetLength()` | resizes | not applicable - size fixed by the `GetMem()` |
+| `Length(x)` | element count | `0` (the static length); track the real count in a fixed field |
+| Range checking | runtime check | none |
+| Overhead per record | pointer + refcount block | zero |
 
-If you want a managed, resizable array that lives elsewhere in memory, use `array of T`. If you want a fixed-shape tail that sits inline behind the record header in one block, use a FAM.
+Want a managed, resizable array living elsewhere in memory - use `array of T`. Want a fixed-shape tail inline behind the header - use a FAM.
 
 ## Debugger view
 
-A FAM has no statically known length, so without help the debugger sees an empty array. The compiler emits a DWARF expression for the upper bound that reads the count at runtime from a sibling ordinal field of the same record. fpdebug and gdb evaluate that expression on every variable refresh and pretty-print the FAM with the right element count.
+A FAM has no statically known length, so without help a debugger shows an empty array. The compiler emits a DWARF upper-bound expression that reads the element count at runtime from a sibling ordinal field; fpdebug and gdb evaluate it on every refresh and pretty-print the FAM with the right count.
 
-By default, the compiler picks the **last ordinal field declared before the FAM** as the count source. For the typical "header + count + payload" layout this needs no annotation:
+By default the **last ordinal field declared before the FAM** is picked automatically - the typical "header + count + payload" layout needs no annotation:
 
-```pas
+```pascal
 type
   PTokenPrivileges = ^TTokenPrivileges;
   TTokenPrivileges = packed record
     PrivilegeCount: DWORD;
-    Privileges:     array[] of LUID_AND_ATTRIBUTES;
+    Privileges:     array[] of LUID_AND_ATTRIBUTES; // auto-binds PrivilegeCount
   end;
 ```
 
-In the Local Variables / Watches panel, `tp^.Privileges` shows up with `PrivilegeCount` elements expanded.
+If the count is not the last ordinal field before the FAM, bind it explicitly with the `count` clause:
 
-If the count is not the last ordinal field before the FAM, bind it explicitly with the optional `count` clause:
-
-```pas
+```pascal
 type
   TBatch = packed record
-    Count:    DWORD;
-    Reserved: DWORD;
-    Items:    array[] of TItem count Count;
+    count:    DWORD;
+    reserved: DWORD;
+    items:    array[] of TItem count count;
   end;
 ```
 
-The clause names a sibling field of the record. It must be a `fieldvarsym`, declared earlier in the record than the FAM, with an ordinal type whose size is 1, 2, 4, or 8 bytes. Three diagnostics fire on misuse:
+The named field must be a field of the same record, declared before the FAM, of an ordinal type sized 1 / 2 / 4 / 8 bytes. Misuse diagnostics:
 
 - `Count field "X" is not a field of this record`
 - `Count field "X" must be of an ordinal type`
 - `Count field "X" must be declared before the flexible array member`
 
-This is purely a debug-info detail. There is no runtime cost, no change to the record layout, and no effect on `sizeof` or indexing. Range checks remain disabled for FAM accesses regardless of whether a count is bound. DWARF emission only; CodeView and Stabs are unaffected. Both `-gw2` and `-gw3` honour it.
+This is purely a debug-info detail: no runtime cost, no layout change, no effect on `sizeof()` or indexing, and range checks stay off for FAM accesses either way. DWARF only (`-gw2` and `-gw3`); CodeView and Stabs are unaffected.
 
-## Compatibility with PPU streams
+## PPU streams
 
-The FAM flag (`ado_IsFlexibleArray`) is part of `arrayoptions`, which is already streamed in PPU files. A FAM-record declared in one unit and used from another behaves identically to one declared in the same unit, including the `sizeof` value and the disabled range check.
+The FAM flag (`ado_IsFlexibleArray`) is part of `arrayoptions`, which PPU files already stream. A FAM-record declared in one unit behaves identically when used from another - same `sizeof()`, same disabled range check.
 
 ## Limitations
 
-- A FAM-record cannot be passed by value, returned by value, or live on the stack. The compiler does not auto-promote to pointer; you have to write `PFamRec`.
-- `Length()` returns 0 for a FAM, not the run-time payload count. Track the count yourself in a fixed field of the record (the typical pattern). The same field is what the debugger uses to pretty-print the FAM, see **Debugger view** above.
-- The compiler does not zero-initialize the FAM tail. Use `FillChar` if you need that.
-- No `for elem in fam do ...` enumeration; without a known length the loop has no termination condition.
+- No auto-promotion to pointer - where a FAM-record by value is illegal, you write `PFamRec` yourself.
+- `Length()` on the FAM returns 0, not the payload count - track the count in a fixed field (which also feeds the debugger view).
+- The FAM tail is not zero-initialized - use `FillChar()` when needed.
+- No `for elem in fam do` enumeration - without a known length the loop has no termination condition.
+
+## Demo
+
+```pascal
+program fam_demo;
+
+{$mode unleashed}
+{$rangechecks on}
+
+type
+  PMessage = ^TMessage;
+  TMessage = packed record
+    code: integer;
+    len: integer;
+    data: array[] of byte; // flexible array member
+  end;
+
+function newMessage(code: integer; const payload: array of byte): PMessage;
+begin
+  GetMem(result, sizeof(TMessage)+length(payload));
+  result^.code := code;
+  result^.len := length(payload);
+  for var i := 0 to high(payload) do result^.data[i] := payload[i];
+end;
+
+procedure dump(msg: PMessage);
+begin
+  write($'code={msg^.code} len={msg^.len} bytes:');
+  // FAM indexing is range-check-free even under rangechecks on
+  for var i := 0 to msg^.len-1 do write(' $', HexStr(msg^.data[i], 2));
+  writeln;
+end;
+
+begin
+  writeln($'sizeof(TMessage) = {sizeof(TMessage)} (fixed part only)');
+  var msg := newMessage(7, [$DE, $AD, $BE, $EF]);
+  writeln($'length(msg^.data) = {length(msg^.data)} (static length, not payload)');
+  dump(msg);
+  FreeMem(msg);
+  {$ifdef WINDOWS}readln;{$endif}
+end.
+```
+
+Output:
+
+```
+sizeof(TMessage) = 8 (fixed part only)
+length(msg^.data) = 0 (static length, not payload)
+code=7 len=4 bytes: $DE $AD $BE $EF
+```

@@ -1,196 +1,194 @@
 # Type() Intrinsic
 
-`Type(expr)` is a compile-time intrinsic that yields the static type of an expression. It works wherever a type is required: declarations, typecasts, arguments to type-taking intrinsics, and derived types. The operand is never evaluated, so it can mention storage that does not exist at runtime (an empty dynamic array element, a null pointer dereference, a not-yet-allocated object field).
+`Type(expr)` is a compile-time intrinsic that yields the static type of an expression. It works wherever a type is required: declarations, typecasts, arguments to type-taking intrinsics, and derived types. The operand is never evaluated, so it can mention storage that does not exist at runtime (an empty dynamic array element, a nil pointer dereference, a not-yet-allocated object field).
 
-Available in `{$mode unleashed}`. There is no separate modeswitch; it ships with the rest of the unleashed feature set.
+Available in `{$mode unleashed}`; no separate modeswitch.
 
-```pas
-{$mode unleashed}
-```
-
-This is the Pascal counterpart of C++'s `decltype` and D's `typeof`. The name `Type()` is taken instead of `typeof()` because `typeof` already names a runtime RTTI / VMT operator in classic Pascal, and `type` is a keyword that cannot be reused as a function. The `(` disambiguates the intrinsic from the `type` keyword.
+The name is `Type()` rather than `typeof()` because `typeof` already names a runtime VMT operator in classic Pascal dialects and reusing it would collide. `type` is a keyword that cannot normally be a function - the `(` right after it is what disambiguates the intrinsic (see below), and it does so without breaking any legal program.
 
 ## What it does
 
-`Type(expr)` returns the type that the expression would have if evaluated, without evaluating it. It is purely a compile-time operation: no code is generated for the operand, no side effects fire, no memory is read, no range check runs.
+`Type(expr)` returns the type the expression would have if evaluated, without evaluating it. Purely compile-time: no code is generated for the operand, no side effects fire, no memory is read, no range check runs.
 
-```pas
+```pascal
 var
-  x: Integer;
-  y: Type(x);   // y is Integer
-begin
-  y := x;
-end;
+  x: integer;
+  y: Type(x); // y is integer
 ```
 
-The operand can be anything that has a type: a simple variable, a field access, an array element, a function call, an arithmetic expression, an inferred-type identifier, a record literal value. The intrinsic walks the expression with the regular type-check pass and stops the moment the result type is known.
+The operand can be anything that has a type: a variable, a field access, an array element, a function call, an arithmetic expression, an inferred-type identifier. The intrinsic walks the expression with the regular type-check pass and stops the moment the result type is known.
 
 ## Where it can appear
 
-`Type(expr)` is valid in every position that expects a type.
+Every position that expects a type.
 
 ### Variable, field, parameter, function-result declarations
 
-```pas
+```pascal
 var
-  proto: Integer;
-  y: Type(proto);                       // var
+  proto: integer;
+  y: Type(proto); // var
 
 type
   TBox = record
-    slot: Type(proto);                  // field
+    slot: Type(proto); // field
   end;
 
-function Identity(v: Type(proto)): Type(proto);   // parameter and result
+function identity(v: Type(proto)): Type(proto); // parameter and result
 begin
-  Result := v;
+  result := v;
 end;
 ```
 
 ### Typecasts
 
-```pas
-var
-  x: Integer;
-  b: Byte;
-  r: Integer;
-begin
-  b := 7;
-  r := Type(x)(b);   // cast b to whatever type x has
-end;
+```pascal
+var b: byte := 7;
+r := Type(x)(b); // cast b to whatever type x has
 ```
 
 ### Arguments to type-taking intrinsics
 
-`Default`, `SizeOf`, `BitSizeOf`, `High`, `Low`, and others that accept a type name accept `Type(expr)` in the same slot.
+`Default()`, `SizeOf()`, `BitSizeOf()`, `High()`, `Low()`, and the other intrinsics that accept a type name take `Type(expr)` in the same slot:
 
-```pas
-var
-  s: AnsiString;
-  d: Type(s);
-begin
-  d := Default(Type(s));
-  if SizeOf(Type(s)) <> SizeOf(Pointer) then Halt(1);
-end;
+```pascal
+d := Default(Type(s));
+if sizeof(Type(s)) <> sizeof(pointer) then Halt(1);
 ```
 
 ### Derived types
 
-`Type(expr)` can carry through to compound type constructors: arrays, pointers, sets, generic specializations.
+`Type(expr)` carries through compound type constructors - arrays, pointers, sets, generic specialization arguments:
 
-```pas
+```pascal
 var
-  proto: Integer;
-  c: TColor;
-
-var
-  arr:  array of Type(proto);             // array of Integer
-  parr: ^Type(proto);                     // ^Integer
-  cs:   set of Type(c);                   // set of TColor
-  list: TFPGList<Type(proto)>;            // generic argument
+  arr:  array of Type(proto);     // array of integer
+  parr: ^Type(proto);             // ^integer
+  cs:   set of Type(c);           // set of TColor
+  box:  TBox<Type(proto)>;        // generic argument
 ```
 
-### Strong alias of a `Type()` result
+### Weak and strong aliases
 
-```pas
+```pascal
 type
-  TInt    = Type(proto);          // alias: same type, freely interchangeable
-  TIntCopy = type Type(proto);    // strong alias: a separate, incompatible type
+  TInt     = Type(proto);         // weak alias - same type, interchangeable
+  TIntCopy = type Type(proto);    // strong alias - a separate, incompatible type
 ```
 
-The first form (`= Type(...)`) is an alias and assigns straight through. The second form (`= type Type(...)`) goes through the usual `type X = type Y` strong-alias path, producing a fresh distinct type.
+The first form assigns straight through; the second goes through the usual `type X = type Y` strong-alias path and produces a fresh distinct type.
 
 ## Operand is not evaluated
 
-This is the property that makes `Type()` useful for generic and metaprogramming patterns. The operand is parsed and type-checked, then the expression tree is discarded. Nothing reaches code generation.
+The operand is parsed and type-checked, then the expression tree is discarded - nothing reaches code generation. Practical consequences:
 
-```pas
-var
-  a: array of Integer;
+- `Type(a[0])` is safe on an empty `array of T` - no read, no range check.
+- `Type(someFunc())` does not call `someFunc`, so side effects never fire.
+- `{$R+}` range checks do not run on `Type()` operands.
+- The operand must still **type-check** - an undeclared identifier or illegal expression is still an error.
+
+```pascal
+var a: array of integer;
 begin
-  // a is empty - a[0] would range-check at runtime
-  // but Type(a[0]) only inspects the element type, no read happens
-  WriteLn(High(Type(a[0])));   // prints High(Integer)
+  // a is empty - a[0] would range-check at runtime,
+  // but Type(a[0]) only inspects the element type
+  writeln(high(Type(a[0]))); // high(integer)
 end;
 ```
-
-Practical consequences:
-
-- `Type(a[0])` is safe on an empty `array of T`, an uninitialized variant, a null `obj.field`. No memory is touched.
-- `Type(SomeFunc())` does not call `SomeFunc`, so a function with side effects or `noreturn` semantics is fine inside `Type()`.
-- Range checks (`{$R+}`) do not fire on `Type()` operands.
-- The compiler still requires the operand to **type-check**. An undeclared identifier, an illegal expression, or a missing field is still an error.
 
 ## Swap idiom
 
-The common temp-variable swap reads cleanly without naming the type by hand:
+The temp-variable swap reads cleanly without naming the type by hand (see also the [`SwapValues()`](swapvalues.md) builtin, which removes the temp entirely):
 
-```pas
-var A: array of Integer;
-    i, j: Integer;
-begin
-  var tmp: Type(A[0]);
-  tmp  := A[i];
-  A[i] := A[j];
-  A[j] := tmp;
-end;
+```pascal
+var tmp: Type(a[0]);
+tmp := a[i];
+a[i] := a[j];
+a[j] := tmp;
 ```
 
-If the type of `A` changes later, `tmp` follows without source edits.
+If the element type of `a` changes later, `tmp` follows without source edits.
 
 ## Use with inferred-type variables
 
-`Type()` composes with inline-var type inference. `Type(z)` names the type that was inferred for `z`, so a single inference site can drive multiple downstream declarations.
+`Type()` composes with inline-var inference - `Type(z)` names whatever type was inferred for `z`, so one inference site drives any number of downstream declarations:
 
-```pas
-type
-  TPoint = record x, y: Integer end;
-function MakePoint(ax, ay: Integer): TPoint;
-
-begin
-  var z := MakePoint(3, 4);          // z is TPoint (inferred)
-  var cache: array of Type(z);       // array of TPoint
-  var scalar: Type(z);               // TPoint
-end;
+```pascal
+var z := makePoint(3, 4);       // z: TPoint (inferred)
+var cache: array of Type(z);    // array of TPoint
+var scalar: Type(z);            // TPoint
 ```
 
 ## Constant expression operands
 
-The operand can be a constant expression. The resulting type is the **smallest type that fits the constant** that the compiler would assign to a typed-constant declaration. For small ordinal constants this is a tight subrange, not `Integer`:
+The operand may be a constant expression. The resulting type is the **smallest type that fits the constant** - for small ordinals that is a tight subrange, not `integer`:
 
-```pas
+```pascal
 var
-  y: Type(1 + 2);              // SizeOf(y) = 1 (byte-sized subrange)
-  bigexpr: Type(Int64(1) shl 40);   // SizeOf(bigexpr) = SizeOf(Int64)
+  y: Type(1+2);                  // sizeof(y) = 1 (byte-sized subrange)
+  big: Type(int64(1) shl 40);    // sizeof(big) = 8
 ```
 
-To anchor the type, cast the constant into the type you want, or use a typed variable as the operand:
-
-```pas
-const C: Integer = 5;
-var y1: Type(C);          // Integer
-var y2: Type(Integer(5)); // Integer
-```
+To anchor the type, cast the constant (`Type(integer(5))`) or use a typed variable as the operand.
 
 ## Coexistence with the `type` keyword
 
-`type` keeps its existing meanings:
+`type` keeps its existing meanings - `type X = ...;` opens a declaration section, `type X = type Y;` is a strong alias. Disambiguation is purely syntactic: `Type` followed by `(` is the intrinsic; `type` followed by anything else is the keyword. The parser never guesses.
 
-- `type X = ...;` opens a type-declaration section.
-- `type X = type Y;` is a strong alias.
-
-Disambiguation is purely syntactic: `Type` followed by `(` is the intrinsic, `type` followed by anything else (identifier, `record`, etc.) is the keyword. The parser never has to guess.
-
-In other modes (`objfpc`, `delphi`, `fpc`, etc.) `Type(` is rejected with the usual "Illegal expression" / "Type identifier expected" message. Stock Pascal code continues to compile as before.
+In other modes (`objfpc`, `delphi`, `fpc`) `Type(` in an expression or type position is rejected with the usual `Illegal expression` / type-expected errors - stock code compiles exactly as before.
 
 ## Diagnostics
 
-- An undeclared identifier inside `Type()` reports `Identifier not found "..."`.
-- An anonymous record literal (`record a: Integer; end`) is not a valid expression in Pascal and yields `Illegal expression`. Define the record as a named type first, then use `Type()` on a value of it.
+- Undeclared identifier inside `Type()`: `Identifier not found "..."`.
+- An anonymous type body (`record a: integer; end`) is not an expression - `Illegal expression`. Name the type first, then apply `Type()` to a value of it.
 - A missing closing `)` reports the usual `")" expected but ... found`.
 
-## Why not name it `decltype` or `typeof`
+## Demo
 
-- `typeof` is already in use in some dialects of Object Pascal for an RTTI / VMT operator (`typeof(SomeClass)` returns the class reference). Reusing the name would collide.
-- `decltype` is a C++ word and reads alien in Pascal source.
-- `Type()` reuses an existing reserved word in a way that does not break any legal program: in classic Pascal `type` always introduces a type-declaration block (no `(` follows), so the new form is unambiguous against every prior use.
+```pascal
+program type_intrinsic_demo;
+
+{$mode unleashed}
+
+var
+  calls: integer = 0;
+
+function expensive: double;
+begin
+  inc(calls);
+  result := 3.14;
+end;
+
+begin
+  var proto := 42;
+  var copy: Type(proto) := proto; // follows proto's inferred type
+  writeln($'copy = {copy}, sizeof = {sizeof(Type(proto))}');
+
+  // the operand is type-checked but never evaluated
+  var d: Type(expensive());
+  d := 2.71;
+  writeln($'d = {d:4:2}, expensive called {calls} time(s)');
+
+  // safe on an empty dynamic array - no read, no range check
+  var arr: array of integer;
+  writeln($'high of element type = {high(Type(arr[0]))}');
+
+  // swap without naming the type by hand
+  var a := [3, 1];
+  var tmp: Type(a[0]);
+  tmp := a[0];
+  a[0] := a[1];
+  a[1] := tmp;
+  writeln($'swapped: {a[0]}, {a[1]}');
+  {$ifdef WINDOWS}readln;{$endif}
+end.
+```
+
+Output:
+
+```
+copy = 42, sizeof = 4
+d = 2.71, expensive called 0 time(s)
+high of element type = 2147483647
+swapped: 1, 3
+```

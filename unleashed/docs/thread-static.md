@@ -1,38 +1,36 @@
-# Thread-Static Variables
+# `threadstatic` Variables
 
-`threadstatic` declares a per-thread variable with program lifetime and block-local source scope. Each thread sees its own copy; init runs once per thread on first reach via a per-thread guard. Two forms, same semantics: an inline statement (`threadstatic name := expr;` anywhere in a body) and a declaration section before the body (parallel to `var` / `static`). `tstatic` is a short alias for `threadstatic`, accepted in every form (see [Short alias `tstatic`](#short-alias-tstatic)).
+`threadstatic` declares a per-thread variable with program lifetime and block-local source scope. Each thread sees its own copy; the initializer runs once per thread, on first reach, behind a per-thread guard. Two forms with identical semantics: an inline statement (`threadstatic name := expr;` anywhere in a body) and a declaration section before the body (parallel to `var` / `static`). `tstatic` is a short alias accepted in every position the long form is.
 
-Gated by modeswitch `THREADSTATIC`, enabled by default in `{$mode unleashed}`. Outside unleashed:
+Modeswitch: `threadstatic`, enabled by default in `{$mode unleashed}`. Elsewhere:
 
-```pas
+```pascal
 {$mode objfpc}
 {$modeswitch threadstatic}
 ```
 
-Allowed only inside a function / procedure / method body. Both `threadstatic` and `tstatic` are soft keywords (not reserved in any mode), so user identifiers called `threadstatic` or `tstatic` are not shadowed, and `tstatic` is only a keyword when the modeswitch is active.
+Allowed only inside function / procedure / method bodies. Both `threadstatic` and `tstatic` are soft keywords (not reserved in any mode), so existing user identifiers with those names keep working, and `tstatic` is a keyword only while the modeswitch is active.
 
 ## Basic usage
 
-```pas
-function NextId: Integer;
+```pascal
+function nextId: integer;
 begin
-  threadstatic next := 1000;   // per-thread counter
-  Result := next;
-  Inc(next);
+  threadstatic next := 1000; // per-thread counter
+  result := next;
+  inc(next);
 end;
 ```
 
-In a single thread this behaves like a program-wide counter that survives between calls. In a multi-threaded program each thread gets its own `next` starting at 1000.
+In a single thread this behaves like a program-wide counter that survives between calls. In a multi-threaded program each thread gets its own `next` starting at 1000 - no bleed in either direction. The same routine with the declaration section:
 
-The same routine written with the declaration section:
-
-```pas
-function NextId: Integer;
+```pascal
+function nextId: integer;
 threadstatic
-  next: Integer = 1000;
+  next: integer = 1000;
 begin
-  Result := next;
-  Inc(next);
+  result := next;
+  inc(next);
 end;
 ```
 
@@ -57,90 +55,146 @@ threadstatic
   name := expr;                      // inferred type + init per thread (single name)
 ```
 
-The section uses `= expr` for the typed form (matching `var` / `const` / `static` sections) and `:= expr` for the inferred single-name form. The inline statement uses `:= expr` in both cases. Type inference follows inline-var rules: bare character literal -> default string type, sub-Int32 integers promote to LongInt, explicit casts suppress promotion.
+The section uses `= expr` for the typed form (matching `var` / `const` / `static` sections) and `:= expr` for the inferred single-name form; the inline statement always uses `:=`. Type inference follows inline-var rules: character literal promotes to the default string type, sub-32-bit integers promote to `LongInt`, an explicit cast (`threadstatic b := Byte(10);`) suppresses promotion.
 
-Because `threadstatic` is a soft keyword, place its section before any `const` / `var` / `threadvar` section in the same routine; a preceding one of those would consume the `threadstatic` identifier as a declaration name. A following `var` / `const` is fine. This is the same ordering rule as the `static` section.
+Because `threadstatic` is a soft keyword, place its section **before** any `const` / `var` / `threadvar` section in the same routine - a preceding one of those would consume the word as a declaration name. A following `var` / `const` is fine (same ordering rule as the `static` section).
 
-A section initializer is still a runtime per-thread assignment (no data-segment fast path, see below), so `expr` may be any expression, not only a compile-time constant. Both forms can be mixed in the same routine.
+A section initializer is still a runtime per-thread assignment (no data-segment fast path, see below), so `expr` may be any expression, not only a compile-time constant. Both forms can be mixed in one routine.
 
 ## Short alias `tstatic`
 
-`tstatic` is a drop-in alias for `threadstatic`. It resolves to the same soft keyword, is gated on the same modeswitch and produces identical code, so it is accepted in every position the long form is.
+`tstatic` resolves to the same soft keyword, is gated on the same modeswitch, and produces identical code:
 
-Inline statement form:
-
-```pas
-function NextId: Integer;
+```pascal
+function nextId: integer;
 begin
-  tstatic next := 1000;        // inferred, per-thread counter
-  tstatic seen: Boolean;       // explicit type, zero-init per thread
-  Result := next;
-  Inc(next);
+  tstatic next := 1000; // inline form
+  result := next;
+  inc(next);
 end;
-```
 
-Declaration section form:
-
-```pas
-function NextId: Integer;
+function stats: integer;
 tstatic
-  next: Integer = 1000;        // explicit value per thread
-  a, b: Integer;               // multi-name, zero-init per thread
+  n: integer = 5;              // section form
+  a, b: integer;               // multi-name, zero-init per thread
 begin
-  Result := next;
-  Inc(next);
+  ...
 end;
 ```
 
-The two spellings are interchangeable; pick one per routine for readability. A routine may use the section form once (under either spelling), plus any number of inline declarations in the body.
+The spellings are interchangeable; pick one per routine for readability. A routine may have one section (under either spelling) plus any number of inline declarations.
 
 ## Per-thread guard, init exactly once per thread
 
-The compiler emits a hidden Boolean guard variable that is itself a threadvar, so each thread has its own guard. The generated logic is:
+The compiler emits a hidden Boolean guard that is itself a threadvar, so every thread has its own. Generated logic:
 
-```pas
-if not __guard_per_thread then
-begin
-  __guard_per_thread := True;       // set BEFORE evaluating the expression
+```pascal
+if not __guard_per_thread then begin
+  __guard_per_thread := true; // set BEFORE evaluating the expression
   __var_per_thread := <expr>;
 end;
 ```
 
 - The init expression runs **once per thread**, on the first reach of the declaration in that thread.
-- If `<expr>` raises, the exception propagates, the variable keeps its zero bytes, the guard is already true so subsequent calls in that thread skip the init block - no retry for that thread. Other threads still get their own init attempt.
-- Other threads continue to evaluate their own init independently.
+- If `<expr>` raises, the exception propagates, that thread's variable keeps its zero bytes, and the guard is already true - no retry for that thread. Other threads still run their own init independently.
+
+## Lazy init that outside code may pre-empt
+
+`threadstatic` is the natural tool for per-thread lazy init (seed-on-first-use, per-thread cache, per-thread handle). But its guard fires on **first reach**, not at thread start - if an outside caller may initialize the same underlying state earlier, make the init *conditional on the state*, never an unconditional overwrite.
+
+A per-thread RNG is the canonical case: seeding from OS entropy on first draw is the right default, but an explicit `seed(x)` called before the first draw must survive. The state stays a unit-level `threadvar` (several routines share it); the threadstatic carries only the once-per-thread trigger:
+
+```pascal
+threadvar rngState: array[0..3] of qword; // shared by the generators
+
+procedure seed(x: qword);          // an outside caller may run this first
+begin
+  expand(rngState, x);             // never leaves rngState all-zero
+end;
+
+function lazySeed: boolean;
+begin
+  // all-zero == nobody seeded this thread yet; a prior seed(x) is kept
+  if allZero(rngState) then expand(rngState, osEntropy);
+  result := true;
+end;
+
+function nextRandom: qword;
+begin
+  threadstatic primed := lazySeed; // runs lazySeed at most once per thread
+  ...
+end;
+```
+
+An unconditional `threadstatic primed := expand(rngState, osEntropy)` would be wrong: on `seed(x); nextRandom` the guard trips inside `nextRandom`, *after* `seed`, and the entropy would overwrite `x`. The state check is what makes seed-before-first-use work; the threadstatic still keeps that check off the per-call hot path.
 
 ## Storage and registration
 
-The hidden variable carries `vo_is_thread_var`, so codegen routes loads and stores through the threadvar relocation mechanism and the BSS slot holds a TLS handle. The slot is registered in `FPC_THREADVARTABLES` at unit / program init, the same as a classic top-level `threadvar`.
+The hidden variable carries `vo_is_thread_var`, so codegen routes loads and stores through the threadvar relocation mechanism, and the slot is registered in `FPC_THREADVARTABLES` at unit / program init exactly like a classic top-level `threadvar`.
 
-On win32 / win64 each access does not call `FPC_THREADVAR_RELOCATE`: the fast path is inlined as a read of the running thread's threadvar block from the TEB TLS slot array plus the variable offset, with the helper reached only when the block is not yet allocated for the thread. With the address hoisted out of a loop (which `-O2` does), a threadstatic access then costs the same as a global; the call-per-access form was several times slower.
+On win32 / win64 the access fast path is inlined as a read of the running thread's threadvar block from the TEB TLS slot array plus the variable offset; the helper call is reached only when the block has not been allocated for the thread yet. With the address hoisted out of a loop (`-O2` does that), a threadstatic access costs the same as a global.
 
-Debug info splits the location on win32 / win64. `DW_AT_location` stays a plain static address, so a debugger that does not know the per-thread layout (gdb on Windows cannot reach the TEB base) keeps showing the template value without erroring. A vendor attribute, `DW_AT_FPC_threadvar`, carries the real per-thread expression: it reads the running thread's block through the TEB (gs base on win64, fs base on win32) and falls back to the static template when the relocate handler is still nil (single threaded). fpdebug reads that attribute and shows each thread its own value; other debuggers ignore it.
+The sym lives in its declaring routine's local symtable, so it follows normal Pascal scoping and is invisible to sibling routines. Registration still works because the parser also appends every threadstatic sym to a module-level list that `InsertThreadvars` walks when building `FPC_THREADVARTABLES`. The inline form emits its guarded init at the declaration point; the section form collects its init nodes and splices them to the front of the body, running on entry.
 
-This vendor split is only needed because Windows uses the relocate model. On native-TLS targets (Linux and the other Unix systems) threadvars do not use it at all: the compiler emits the standard `DW_OP_GNU_push_tls_address` location, which gdb resolves out of the box. fpdebug does not yet evaluate that operation, so it cannot show threadvars or threadstatic locals there - but that is a stock fpdebug gap that affects every ordinary `threadvar` just as much, not something this feature introduces.
+### Debugger support
 
-The sym lives in its declaring routine's local symtable, so `hi` declared in `procedure test` is **not visible** from other routines in the same unit - regular Pascal scoping. To make registration still work, the parser appends every threadstatic sym to `current_module.extra_threadvar_syms`, and `InsertThreadvars` walks that list alongside the standard global / local symtables when building `FPC_THREADVARTABLES`.
+On win32 / win64 the DWARF location is split: `DW_AT_location` stays a plain static address (a debugger that cannot reach the TEB keeps showing the template value without erroring), and a vendor attribute `DW_AT_FPC_threadvar` carries the real per-thread expression - reading the running thread's block through the TEB (gs base on win64, fs base on win32) with a fallback to the static template while the program is still single threaded. fpdebug (Lazarus) evaluates the vendor attribute and shows each thread its own value; other debuggers ignore it. On native-TLS targets (Linux and the other Unix systems) the compiler emits the standard `DW_OP_GNU_push_tls_address` location, which gdb resolves out of the box.
 
-The inline form returns the guarded init node straight into the statement stream at the point of declaration. The section form is parsed before the body, so it collects its guarded init nodes on the routine's procinfo and they are spliced to the front of the body, running on entry. Both end up as the same per-thread guarded assignment.
+## No const-init fast path (one exception)
 
-## No const-init fast path
+Regular `static` short-circuits a compile-time-constant initializer into the typed-constant data segment - no guard, no branch. Thread-static cannot do that for a non-zero value: FPC's TLS layout has no per-thread template, so `threadstatic x := 5;` needs the guarded runtime assignment to apply the 5 in every thread. Cost: one branch on first use per thread, free thereafter.
 
-Regular `static` short-circuits a compile-time-constant initializer into the typed-constant data segment - no guard, no BSS, no runtime branch. **Thread-static cannot do that for a non-zero value.** FPC's TLS layout has no per-thread template, so a literal `threadstatic x := 5;` needs the guarded runtime assignment to apply per thread. The cost is one branch on first use per thread - free thereafter.
+The one case that matches `static`: an initializer folding to all-zero bytes (`= 0`, `= nil`, `= false`, `= ''`, empty set). The per-thread block is zero-allocated by the RTL, so the value is already there - the compiler drops both the guard and the assignment, exactly as if no initializer were given.
 
-The one case that does match `static`: an initializer that folds to all-zero bytes (`= 0`, `= nil`, `= false`, `= ''`, empty set). The per-thread block is zero-allocated by the RTL, so the value is already there - the compiler drops the guard and the assignment entirely, exactly as if no initializer were given. A non-zero constant still needs the guard, because the only way to put a non-zero value into a freshly zeroed per-thread block is to run code once per thread.
+## Comparison
 
-## Differences from related features
-
-| Feature | Lifetime | Scope | Per | Cost |
+| Form | Lifetime | Scope | Per | Cost |
 |---|---|---|---|---|
-| `var x: T;` | call | block | call | stack alloc |
+| `var x: T;` (in body) | call | block | call | stack alloc |
 | `threadvar x: T;` (top-level) | program | unit | thread | BSS + TLS relocate |
-| `static name := V;` | program | block | program | data segment (const) / BSS + guard (runtime) |
+| `static name := V;` | program | block | program | data segment (const init) / BSS + guard (runtime init) |
 | `threadstatic name := V;` | program | block | thread | TLS + per-thread guard |
 
-## Limitations (current)
+## Limitations
 
-- In an anonymous function body the keyword is parsed but the resulting threadvar is not hooked into the closure's capturer machinery (same limitation that anon-static had).
-- No TLS template / `.tdata` init: every initializer is runtime, regardless of whether the expression is a compile-time constant.
-- Aggregate typed-constant initializers (`array` / `record` literals via `= (...)`) are not supported in either form; the value is read as an expression.
+- In an anonymous-function body the keyword is parsed but the resulting threadvar is not wired into the closure capturer (same gap as anonymous-function `static`).
+- No TLS template / `.tdata` init: every non-zero initializer is a runtime per-thread assignment, even when the expression is a compile-time constant.
+- Aggregate typed-constant initializers (`array` / `record` literals via `= (...)`) are not supported in either form.
+
+## Demo
+
+```pascal
+program thread_static_demo;
+
+{$mode unleashed}
+
+function nextId: integer;
+begin
+  threadstatic next := 1000; // each thread counts from 1000 independently
+  result := next;
+  inc(next);
+end;
+
+function takeThree(const tag: string): string;
+begin
+  result := tag;
+  for var i := 1 to 3 do result += $' {nextId}';
+end;
+
+begin
+  var a := async takeThree('worker A:');
+  var b := async takeThree('worker B:');
+  writeln(await a);
+  writeln(await b);
+  writeln('main   : ', nextId, ' ', nextId);
+  {$ifdef WINDOWS}readln;{$endif}
+end.
+```
+
+Output (deterministic - every thread owns its counter):
+
+```
+worker A: 1000 1001 1002
+worker B: 1000 1001 1002
+main   : 1000 1001
+```

@@ -1,317 +1,205 @@
 # Extra Improvements
 
-Smaller, targeted improvements that unlock Pascal patterns standard FPC modes reject. Some are gated on their own modeswitch (and enabled by default in `unleashed` mode); others are available only in `unleashed` mode without a dedicated switch.
+Smaller, targeted improvements that unlock Pascal patterns standard FPC modes reject. Some are gated on their own modeswitch (enabled by default in `unleashed`); others are `unleashed`-only with no dedicated switch. Each entry states which.
 
-> **Note for contributors:** if an improvement is available only in `unleashed` mode and has no dedicated modeswitch, say so in its description. That way readers can tell at a glance which features they can opt into from other modes via `{$modeswitch ...}` and which are `unleashed`-only.
+A few features that once lived here now have their own reference pages: [compound assignment and `inc()` / `dec()` on properties](compound-assignment.md), and the [`Type()` intrinsic](type-intrinsic.md). This page keeps the rest.
 
-## String-to-ordinal typecast in constant expressions
+## String-to-ordinal typecast
 
-Cast a string literal of matching size directly to an ordinal type. The compiler packs the bytes in the target's native endianness into a compile-time constant, so the in-memory byte layout of the resulting value always matches the source byte order. The fold produces an `ordconstn`, so it works anywhere a constant is expected: `const`, `var` initializers, typed constants, and inline variables.
+Modeswitch `stringordcast` (default in unleashed). Cast a string literal of matching size directly to an ordinal type. The compiler packs the bytes in the target's native endianness into a compile-time constant, so the in-memory byte layout of the result always matches the source byte order. The fold produces an `ordconstn`, usable anywhere a constant is: `const`, `var` initializers, typed constants, inline vars.
 
-```pas
-{$mode unleashed}
-
+```pascal
 const
-  MZ_SIG   = word('MZ');              // bytes: 'M' 'Z'
-  RIFF_SIG = dword('RIFF');           // bytes: 'R' 'I' 'F' 'F'
-  MAGIC_64 = qword('abcdefgh');       // bytes: 'a' 'b' ... 'h'
+  MZ_SIG    = word('MZ');                  // 2 bytes: 'M' 'Z'
+  RIFF_SIG  = dword('RIFF');               // 4 bytes
+  MAGIC_64  = qword('abcdefgh');           // 8 bytes
+  MAGIC_128 = uint128('0123456789abcdef'); // 16 bytes
 
-var
-  g: dword = dword('abcd');           // global var initializer
-
-procedure example;
-begin
-  var sig := dword('RIFF');           // inline var, inferred
-  var m:  word := word('MZ');         // inline var, typed
-
-  if pdword(@buf[0])^ = RIFF_SIG then
-    ...
-end;
+var sig := dword('RIFF'); // inline var, inferred
+if pdword(@buf[0])^ = RIFF_SIG then ...
 ```
 
-### Supported target types
+Supported target types by size:
 
-Any integer type whose size (1/2/4/8 bytes) matches the string length:
+| Size | Types |
+|---|---|
+| 1 byte | `Byte`, `ShortInt` |
+| 2 bytes | `Word`, `SmallInt` |
+| 4 bytes | `LongWord`, `DWord`, `Cardinal`, `LongInt` |
+| 8 bytes | `QWord`, `Int64` |
+| 16 bytes | `UInt128`, `Int128` |
 
-| Size    | Types                                     |
-|---------|-------------------------------------------|
-| 1 byte  | `Byte`, `ShortInt`                        |
-| 2 bytes | `Word`, `SmallInt`                        |
-| 4 bytes | `LongWord`, `DWord`, `Cardinal`, `LongInt`|
-| 8 bytes | `QWord`, `Int64`                          |
+The source can include `#N`-escaped chars (`dword(#$DE#$AD#$BE#$EF)`, `dword('AB'#$00#$01)`). The length must match the target size exactly, otherwise `Cannot cast string of length N to ordinal type "..."`.
 
-### Size must match
+**Native-endian, source-order in memory.** On a little-endian target `dword('abcd')` has numeric value `$64636261`, stored as `61 62 63 64`; on big-endian the numeric value is `$61626364`, also stored as `61 62 63 64`. So a signature check like `pdword(@buffer)^ = dword('RIFF')` works uniformly across platforms.
 
-A string literal of 3 characters cannot be cast to `DWord` - the compiler reports:
+## Type helpers on any type
 
-```
-Error: Cannot cast string of length 3 to ordinal type "LongWord" (size 4 bytes)
-```
+Modeswitch `typehelpers` (default in unleashed). `type helper for T` works on any named type, not just classes and records:
 
-### Packing is target-native, memory layout matches source
-
-The packing uses the target's native endianness. The practical consequence: the in-memory byte layout of the folded constant is identical to the source character sequence on both little-endian and big-endian targets, so signature checks like `PDWORD(@buffer)^ = DWORD('RIFF')` work uniformly across platforms.
-
-On a little-endian target (x86_64, ARM LE, RISC-V LE) `dword('abcd')` has numerical value `$64636261`, which stores as `61 62 63 64` in memory. On a big-endian target the numerical value is `$61626364`, which stores as `61 62 63 64` in memory. Same bytes either way.
-
-### Char literals work too
-
-The source can be any `cst_conststring` literal, including `#N`-escaped characters and mixed forms:
-
-```pas
-const
-  cHex   = dword(#$DE#$AD#$BE#$EF);   // memory: $DE $AD $BE $EF
-  cMixed = dword('AB'#$00#$01);       // memory: 'A' 'B' $00 $01
-  cOne   = byte(#65);                 // memory: $41
-```
-
-## Type helpers and multi-helpers
-
-Two existing FPC modeswitches re-surfaced for unleashed. Nothing is invented here - just less ceremony to use features Pascal already has. Both are off by default in `{$mode unleashed}` and must be opted into explicitly via `{$modeswitch ...}`.
-
-`typehelpers` enables `type helper for T` on any named type, not just classes and records:
-
-```pas
-{$mode unleashed}
-{$modeswitch typehelpers}
+```pascal
 type
   TIntHelper = type helper for integer
-    function Doubled: integer;
+    function timesTwo: integer;
   end;
 
   TIntArr = type array of integer;
   TIntArrHelper = type helper for TIntArr
-    function ToString: string;
+    function toString: string;
   end;
 
-function TIntHelper.Doubled: integer;
+var n: integer = 21;
 begin
-  Result := Self * 2;
-end;
-
-function TIntArrHelper.ToString: string;
-var i: integer;
-begin
-  Result := '[';
-  for i := 0 to High(Self) do begin
-    if i > 0 then Result := Result + ', ';
-    Result := Result + IntToStr(Self[i]);
-  end;
-  Result := Result + ']';
-end;
-
-var
-  n: integer;
-  a: TIntArr;
-begin
-  n := 21;
-  writeln(n.Doubled);          // 42
-
-  a := [1, 2, 3];
-  writeln(a.ToString);         // [1, 2, 3]
+  writeln(n.timesTwo); // 42
 end.
 ```
 
-`multihelpers` lets several helpers for the same type be visible at the same time (by default each scope sees only the last one). Useful when two units each ship a helper for `integer` and you want methods from both.
+(Note: `.method` directly on a numeric literal inside a `$'...'` interpolation placeholder confuses the tokenizer - `{21.timesTwo}` reads `21.` as a float. Assign to a variable first, or call outside the placeholder.)
 
-## Implicit generics syntax in any mode
+## Multi-helpers
 
-Stock FPC accepts Delphi-style generic syntax (no `generic` / `specialize` keywords, plain `<T>` in declarations and specializations) only in `{$mode delphi}`. The recognition rules for these keywords and for `<T>` were hard-coded against `m_delphi`, so even if you only wanted that one piece of Delphi syntax you had to switch the entire mode.
+Modeswitch `multihelpers` (default in unleashed). Several helpers for the same type are visible at once (by default only the last one in scope wins). Useful when two units each ship a helper for `integer` and you want methods from both.
 
-Unleashed splits that recognition out into its own modeswitch, `implicitgenerics`. It is on by default in `delphi` (no behavior change there) and `unleashed`, and can be turned on in any other mode - `objfpc`, `tp`, etc. - with `{$modeswitch implicitgenerics}`:
+## Implicit generics
 
-```pas
-{$mode objfpc}{$H+}
+Modeswitch `implicitgenerics` (default in unleashed and delphi). Enables Delphi-style generic syntax - no `generic` / `specialize` keywords, plain `<T>` in declarations and specializations:
+
+```pascal
+{$mode objfpc}
 {$modeswitch implicitgenerics}
 
 type
   TList<T> = class
-    procedure Add(const Item: T);
+    procedure add(const item: T);
   end;
-
-var
-  L: TList<integer>;
+var l: TList<integer>;
 ```
 
-Without the switch in non-Delphi modes you still write the explicit form (`generic TList<T>` / `specialize TList<integer>`); the switch only adds the implicit form on top, it does not remove anything.
+**The switch replaces the explicit form, it does not stack on top of it.** With `implicitgenerics` active, `generic` and `specialize` are ordinary identifiers again (exactly as in `{$mode delphi}`), so `generic TList<T> = class` no longer parses - use the plain `TList<T>` form. This is the whole point: one modeswitch buys the Delphi generic surface in any mode. If you need the explicit `generic` / `specialize` keywords, compile that unit in `objfpc` without the switch.
 
 ## Nested generic methods
 
-Stock FPC rejects any `generic` declared inside another `generic` with `Fatal: Declaration of generic inside another generic is not allowed`, so a generic class cannot carry a generic method of its own:
+Unleashed-only, no separate modeswitch. Stock FPC rejects a `generic` declared inside another with `Declaration of generic inside another generic is not allowed` - a limitation of its single token-replay buffer, not a language rule. Unleashed lifts it: a generic class or record can declare a method with its own type parameter list, independent of the enclosing type's.
 
-```pas
-generic TBox<T> = class
-  generic procedure Map<U>(item: U);   // stock FPC: rejected
-end;
-```
-
-The block was an implementation limit, not a language one. FPC records a generic's body as a replayable token stream into a single buffer; nesting one generic inside another needs a second recording in flight, which the single buffer could not hold (it raised an internal error), so the parser forbade the construct outright. Delphi has supported generic methods on generic classes for years.
-
-In `unleashed` mode the restriction is lifted. A generic class or record can declare a method with its own type parameter list, independent of the enclosing type's:
-
-```pas
-{$mode unleashed}
-
+```pascal
 type
   TBox<T> = class
-    FValue: T;
-    function Pair<U>(const a: T; const b: U): string;
+    v: T;
+    function pair<U>(const b: U): string;
   end;
 
-function TBox<T>.Pair<U>(const a: T; const b: U): string;
+function TBox<T>.pair<U>(const b: U): string;
 begin
-  FValue := a;
-  Result := Format('T=%d U=%d', [SizeOf(T), SizeOf(U)]);
+  result := Format('T=%d U=%d', [sizeof(T), sizeof(U)]);
 end;
 
-var
-  b: TBox<Integer>;                  // class specialized once, T = Integer
-begin
-  b := TBox<Integer>.Create;
-  writeln(b.Pair<Byte>(10, 5));      // method specialized here: U = Byte
-  writeln(b.Pair<Double>(20, 3.14)); // same method, different U: U = Double
-end.
+var box := TBox<integer>.Create;   // class specialized once: T = integer
+writeln(box.pair<byte>(0));        // method specialized here: U = byte
+writeln(box.pair<double>(0.0));    // same method, different U
 ```
 
-The class and the method specialize independently: `TBox<Integer>` fixes `T`, and each call site picks its own `U`. The nested template survives `.ppu` serialization, so a generic method declared in one unit specializes correctly when called from another. Nested generic types inside a generic, type-parameter constraints on the nested method (`Foo<U: class>`), and managed `U` types all work.
+The class and the method specialize independently, and the nested template survives PPU serialization, so a generic method declared in one unit specializes correctly when called from another. Nested generic types, constraints on the nested method (`pair<U: class>`), and managed `U` types all work.
 
-Available only in `unleashed` mode, no dedicated modeswitch.
+Build strings inside a generic body with `Format()`, not `$'...'` interpolation - the interpolation lowering currently miscompiles inside a generic method whose placeholders reference a type parameter.
 
-## Compound assignment on properties
+## Array size shorthand
 
-Stock FPC rejects `prop += x` (and all other compound forms `-=`, `*=`, `/=`, `and=`, `or=`, `xor=`, `mod=`, `div=`, `shl=`, `shr=`) on a class or record property with `Error: Variable identifier expected`. The reasoning in the parser comment is that the read accessor and the write accessor can target different storage, so the rewrite into `prop := prop + x` was disallowed even though it is exactly what the user has to type by hand.
+Unleashed-only, no separate modeswitch. A bare positive integer constant inside `array[...]` is the element count: `array[N] of T` is shorthand for `array[0..N-1] of T`.
 
-In `unleashed` mode the compound forms work directly:
-
-```pas
-{$mode unleashed}
-{$coperators on}
-
-type
-  TFoo = class
-  private
-    FName: string;
-    FCount: integer;
-    function GetName: string;
-    procedure SetName(const v: string);
-  public
-    property Name: string read GetName write SetName;
-    property Count: integer read FCount write FCount;
-  end;
-
-var
-  f: TFoo;
-begin
-  f.Name := 'foo';
-  f.Name += 'bar';     // -> f.Name := f.Name + 'bar'
-  f.Count += 5;        // direct field access on both sides
-  f.Count *= 2;
-end;
-```
-
-The expansion is the same node tree the user would build manually: one getter call on the read side, the binary operator, one setter call on the write side. Side effects in the accessors fire exactly as in the manual rewrite, no more and no fewer.
-
-Available only in `unleashed` mode, no dedicated modeswitch. The C-style operators (`+=`, `-=`, `*=`, `/=`) still require `{$coperators on}` or `-Sc` as in any FPC mode; the word-based operators (`and=`, `or=`, ..., `shl=`, `shr=`) work without it.
-
-### Limitations
-
-Each rejection comes with its own error message instead of the generic `Variable identifier expected`:
-
-- Indexed properties (`property X index N: ...`) and parametrized properties (`property Items[i: integer]: ...`) report `Compound assignment and inc/dec are not supported on indexed or parametrized property "X"`. Use the explicit rewrite.
-- A property without a write accessor reports `Property "X" has no write accessor`.
-
-## `inc` / `dec` on properties
-
-Same restriction in stock FPC: `inc(prop)` and `dec(prop, n)` need a `var` argument and a property cannot be passed by `var` (the getter/setter pair would be skipped). Stock reports `Error: Can't take the address of constant expressions`.
-
-In `unleashed` mode `inc` / `dec` rewrite to a setter call carrying `getter +/- delta`:
-
-```pas
-{$mode unleashed}
-
-type
-  TCounter = class
-  private
-    FN: integer;
-    function GetN: integer;
-    procedure SetN(v: integer);
-  public
-    property N: integer read GetN write SetN;
-  end;
-
-var c: TCounter;
-begin
-  inc(c.N);        // -> c.N := c.N + 1
-  inc(c.N, 5);     // -> c.N := c.N + 5
-  dec(c.N);        // -> c.N := c.N - 1
-  dec(c.N, 10);    // -> c.N := c.N - 10
-end;
-```
-
-The same accessors fire as for the explicit rewrite or the compound form `c.N += 1`. Pick whichever reads better for the surrounding code.
-
-### Limitations
-
-Same dedicated messages as for compound assignment, plus a type check:
-
-- The getter must be a method (`read GetN`). A field-backed read accessor (`read FN`) is not rewritten and continues to give the stock error - use the field directly or the compound form `prop += n`.
-- Indexed and parametrized properties report `Compound assignment and inc/dec are not supported on indexed or parametrized property "X"`.
-- Read-only properties report `Property "X" has no write accessor`.
-- Property type must be ordinal, enum, pointer, or currency. Anything else reports `inc/dec property "X" must be ordinal, enum, pointer, or currency, not "T"`. For string properties use compound assignment (`prop += '...'`) instead.
-
-## `array[N]` size shorthand
-
-Standard Pascal spells a fixed array of 10 integers `array[0..9] of integer` - one literal up, one literal down, a range operator, and the reader has to subtract to figure out the element count. In `unleashed` mode a bare positive integer constant inside the brackets is the element count itself:
-
-```pas
-{$mode unleashed}
-
+```pascal
 var
   a: array[10] of integer;       // 0..9, ten elements
   m: array[3, 4] of integer;     // 0..2 by 0..3, twelve elements
-  b: array[BUF] of byte;         // BUF = 8 - same as array[0..7] of byte
+  k: array[5, 'a'..'c'] of byte; // shortcut mixes with a char range
 ```
 
-Multi-dim works through the same comma loop the long form uses, so shortcut indices freely mix with explicit ranges and type-indexed dimensions:
+Multi-dim works through the same comma loop as the long form, so shortcut indices mix freely with explicit ranges and type-indexed dimensions. Memory layout is identical to the explicit form (one contiguous block, row-major), so `Move()`, `FillChar()`, `SizeOf()` see the same flat span. `array[0]` and `array[-N]` are rejected with `Upper bound of range is less than lower bound`.
 
-```pas
-var
-  k: array[5, 'a'..'c'] of integer;  // 0..4 by 'a'..'c'
-  e: array[TEnum, 4] of integer;     // TEnum by 0..3
+`string[N]` is **not** affected - it keeps its shortstring meaning (a different parser path). The shortcut fires only inside `array[...]`, and sits next to the existing forms (ranges, type-indexed, dynamic, open, FAM) rather than replacing them.
+
+## Numeric underscores
+
+Modeswitch `underscoreisseparator` (default in unleashed). A `_` between digits in a numeric literal is purely visual - the scanner drops it, the value is unchanged, and it is always optional. Works in every base:
+
+```pascal
+var a := 100_000_000;              // decimal
+var mask := $FFFFFFFF_FFFFFFFF;    // hex
+var flags := %11110000_10101010;   // binary
+var perm := &777_000;              // octal
 ```
 
-Memory layout is identical to the explicit form: a single contiguous block, row-major. `Move`, `FillChar`, `SizeOf`, `BlockRead/Write` see one flat span exactly as they do for `array[1..N, 1..M]`. Dynamic arrays (`array of array of T`) are a separate construct and remain heap-scattered.
+Without the switch the underscore is a syntax error mid-literal (`Syntax error, ")" expected but "identifier _000" found`).
 
-`N` must be a positive integer constant expression - `array[0]` and `array[-5]` are rejected with `Upper bound of range is less than lower bound`, the same diagnostic stock FPC emits for `array[5..0]`.
+Use it sparingly, only to make a genuinely long literal readable - a short number reads fine bare, so `1_000` is noise. When you do group, the grouping is fixed per base: decimal by 3 (thousands) once it reaches 9+ digits, hex by 8 (one 32-bit word) at 9+ digits, binary by 8 (one byte) at 9+ digits, octal by 3 at 10+ digits. Hex and binary group by the storage unit, not by 2 or 4, because a 4-digit hex group like `$FF00_0000` reads worse than the bare `$FF000000`.
 
-The shortcut sits next to the existing forms, not in place of them. Ranges (`array[1..10]`, `array[-5..5]`), type-indexed (`array[TEnum]`, `array[Boolean]`, `array['a'..'z']`), dynamic (`array of T`), open (`array of const` parameters), and FAM (`array[] of T` under `flexiblearrays`) are unchanged.
+## Modeswitch summary
 
-`string[N]` is **not** affected: it keeps its classic meaning of "shortstring with max length N" because the `string[...]` syntax goes through a different parser path entirely. The new shortcut only fires inside `array[...]`.
+| Modeswitch | Default in unleashed | Feature |
+|---|---|---|
+| `stringordcast` | on | string-literal cast to an ordinal |
+| `typehelpers` | on | `type helper for T` on any named type |
+| `multihelpers` | on | several helpers for one type visible at once |
+| `implicitgenerics` | on | Delphi-style `<T>` (replaces explicit `generic` / `specialize`) |
+| `underscoreisseparator` | on | `_` as a digit-group separator in numeric literals |
 
-Available only in `unleashed` mode, no dedicated modeswitch.
+Unleashed-only, no switch: nested generic methods, `array[N]` shorthand. To opt into a default-on switch from another mode use `{$modeswitch name}`; to opt out in unleashed use `{$modeswitch name-}`.
 
-## Modeswitch
+## Demo
 
-| Modeswitch          | Default in `unleashed` | Purpose                                                 |
-|---------------------|-----------------------|----------------------------------------------------------|
-| `stringordcast`     | on                    | String-literal typecast to ordinal                       |
-| `typehelpers`       | on                    | `type helper for T` on any named type                    |
-| `multihelpers`      | on                    | Multiple helpers for the same type visible in one scope  |
-| `implicitgenerics`  | on                    | Delphi-style implicit `generic` / `specialize` / `<T>`   |
+```pascal
+program extra_demo;
 
-To enable in another mode:
-
-```pas
-{$mode objfpc}{$H+}
-{$modeswitch stringordcast}
-{$modeswitch typehelpers}
-{$modeswitch multihelpers}
-{$modeswitch implicitgenerics}
-```
-
-To opt out of the default-on switches in `unleashed` mode:
-
-```pas
 {$mode unleashed}
-{$modeswitch stringordcast-}
+
+uses SysUtils;
+
+type
+  TIntHelper = type helper for integer
+    function timesTwo: integer;
+  end;
+
+  // nested generic method: class T and method U specialize independently
+  TBox<T> = class
+    v: T;
+    function pair<U>: string;
+  end;
+
+function TIntHelper.timesTwo: integer;
+begin
+  result := self*2;
+end;
+
+function TBox<T>.pair<U>: string;
+begin
+  result := Format('sizeof(T)=%d sizeof(U)=%d', [sizeof(T), sizeof(U)]);
+end;
+
+const
+  RIFF = dword('RIFF'); // string-to-ordinal fold, native endianness
+
+var
+  grid: array[3, 4] of integer; // array[N] shorthand: 0..2 by 0..3
+begin
+  var n := 21;
+  writeln($'n.timesTwo = {n.timesTwo}');
+  writeln($'dword(''RIFF'') = ${HexStr(RIFF, 8)}');
+
+  var box := TBox<integer>.Create;
+  writeln(box.pair<byte>);
+  writeln(box.pair<double>);
+  box.Free;
+
+  writeln($'array[3, 4] element count = {length(grid)}x{length(grid[0])}');
+  {$ifdef WINDOWS}readln;{$endif}
+end.
+```
+
+Output:
+
+```
+n.timesTwo = 42
+dword('RIFF') = $46464952
+sizeof(T)=4 sizeof(U)=1
+sizeof(T)=4 sizeof(U)=8
+array[3, 4] element count = 3x4
 ```

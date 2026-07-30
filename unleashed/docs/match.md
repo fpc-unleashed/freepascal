@@ -1,165 +1,231 @@
-# Match Statement
+# `match` Statement
 
-Pattern matching with first-match semantics. Replaces `case...of` for non-ordinal types (tuples, strings, expressions) and adds fallthrough mode, condition-based matching, tuple wildcard patterns, and expression form.
+Pattern matching with first-match semantics - a superset of `case` for value dispatch. It handles everything `case` does (ordinal labels, ranges) and adds string subjects, a catch-all branch, comma patterns, subject-less condition branches, tuple patterns with wildcards, a fallthrough mode, and an expression form.
 
-Feature gated by modeswitch `MATCH`, enabled by default in `{$mode unleashed}`.
+Modeswitch: `match`, enabled by default in `{$mode unleashed}`.
 
 ## Subject-based matching
 
-```pas
+```pascal
 match x of
-  1: WriteLn('one');
-  2: WriteLn('two');
-  3: WriteLn('three');
+  1: writeln('one');
+  2: writeln('two');
+  3: writeln('three');
 end;
 ```
 
-The subject expression is evaluated once, then compared against each branch value using `=`. First matching branch executes, rest is skipped.
+The subject expression is evaluated once, then compared against each branch pattern with `=`. The first matching branch executes; the rest are skipped.
 
-## Catch-all: `_` and `else`
+## Catch-all: `_`, `else`, `otherwise`
 
-```pas
+```pascal
 match x of
-  1: WriteLn('one');
-  _: WriteLn('other');
+  1: writeln('one');
+  _: writeln('other');
 end;
 
 match x of
-  1: WriteLn('one');
+  1: writeln('one');
 else
-  WriteLn('other');
+  writeln('other');
 end;
 ```
 
-`_` is an unconditional catch-all branch. `else` works identically (with `statements_til_end` semantics, same as in `case`). `otherwise` is accepted as a synonym for `else`.
+`_` is an unconditional catch-all branch; `else` works identically (with the same statements-till-`end` semantics as in `case`), and `otherwise` is a synonym for `else`. Only one catch-all is allowed - a `_:` branch followed by `else` reports `` `_:` already covers unmatched values, drop trailing `else`/`otherwise` ``.
+
+### Indenting the catch-all
+
+The catch-all is a branch like any other, so keep it at label level - one indent inside `match`, not level with the `match` keyword. That way a `begin..end` catch-all closes one indent inside the match's own `end` instead of the two `end`s colliding at the same column:
+
+```pascal
+match fn of
+  'sin': result := Sin(x);
+  'cos': result := Cos(x);
+  else begin
+    log(fn);
+    result := 0;
+  end;
+end;
+```
 
 ## String matching
 
-```pas
+```pascal
 match s of
-  'hello': WriteLn('greeting');
-  'bye':   WriteLn('farewell');
-  _:       WriteLn('unknown');
+  'hello': writeln('greeting');
+  'bye':   writeln('farewell');
+  _:       writeln('unknown');
 end;
 ```
 
-Unlike `case`, `match` supports strings as both subject and patterns.
+Strings work as both subject and patterns - the dispatch `case` classically could not do.
 
 ## Comma-separated patterns
 
-```pas
+```pascal
 match x of
-  1, 2, 3: WriteLn('small');
-  4, 5, 6: WriteLn('medium');
-  _:       WriteLn('big');
+  1, 2, 3: writeln('small');
+  4, 5, 6: writeln('medium');
+  _:       writeln('big');
 end;
 ```
 
-Multiple values separated by commas are OR'd together.
+Comma-separated patterns are OR'd. `_` may appear as the **last** element of a comma list; the branch then collapses to catch-all, and the explicit values before the `_` stay purely as documentation:
 
-`_` may also appear as the LAST element of a comma list; the whole branch then collapses to catch-all (semantically equivalent to a standalone `_:` branch). Explicit values before the `_` are accepted purely for documentation:
-
-```pas
+```pascal
 match s of
-  'x': WriteLn('hit x');
-  'w', 'a', _: WriteLn('w, a, or anything else');
+  'x':         writeln('hit x');
+  'w', 'a', _: writeln('w, a, or anything else');
 end;
 ```
 
-This avoids forcing the `_` branch onto its own line when an enumerated set of "interesting" values shares the same body as the fallback. `_` in any other position (at the start of the comma list or in the middle) is rejected, because the explicit values would be unreachable: `_` already covers everything.
+`_` anywhere else in the list is rejected (`` `_` must be the last pattern in a `match` branch ``) - values after a `_` would be unreachable.
 
 ## Range patterns
 
-```pas
+```pascal
 match x of
-  1..10:   WriteLn('low');
-  11..100: WriteLn('mid');
-  _:       WriteLn('other');
+  1..10:   writeln('low');
+  11..100: writeln('mid');
+  _:       writeln('other');
 end;
 ```
 
-`lo..hi` matches when the subject is `>= lo` and `<= hi`. When a bound sits at the subject type's natural minimum or maximum (e.g. `0..15` for a `byte` subject), the always-true half of the check is dropped and only the one-sided comparison remains.
+`lo..hi` matches when the subject is `>= lo` and `<= hi`; a bound sitting at the subject type's natural minimum or maximum drops the always-true half of the check. Ranges combine freely with comma patterns:
 
-Ranges combine with comma-separated patterns:
-
-```pas
+```pascal
 match x of
-  1..3, 7, 9..10: WriteLn('picked');
-  _:              WriteLn('skipped');
+  1..3, 7, 9..10: writeln('picked');
+  _:              writeln('skipped');
 end;
 ```
 
 ## Condition-based matching (no `of`)
 
-```pas
+```pascal
 match
-  x > 100: WriteLn('big');
-  x > 10:  WriteLn('medium');
-  x > 0:   WriteLn('small');
-  _:       WriteLn('non-positive');
+  x > 100: writeln('big');
+  x > 10:  writeln('medium');
+  x > 0:   writeln('small');
+  _:       writeln('non-positive');
 end;
 ```
 
-Without `of`, each branch is a boolean expression. First true branch executes.
+Without `of` there is no subject - each branch is a boolean expression, and the first true one executes. This is the structured replacement for an `if / else if` ladder.
 
 ## Fallthrough: `match all`
 
-```pas
+```pascal
 match all x of
-  5: WriteLn('five');
-  5: WriteLn('also five');
-  3: WriteLn('three');
-  _: WriteLn('always');
+  5: writeln('five');
+  5: writeln('also five');
+  3: writeln('three');
+  _: writeln('always');
 end;
 ```
 
-`match all` evaluates ALL matching branches (not just the first). Implemented as independent if-statements inside `repeat...until true`.
+`match all` executes **every** matching branch, not just the first (the catch-all matches always). Lowered to independent if-statements inside a `repeat..until true` shell.
 
 ### `leave`
 
-```pas
+```pascal
 match all x of
-  5: begin WriteLn('five'); leave; end;
-  5: WriteLn('not reached');
-  _: WriteLn('not reached');
+  5: begin writeln('five'); leave; end;
+  5: writeln('not reached');
+  _: writeln('not reached');
 end;
 ```
 
-`leave` exits the `match all` block early (equivalent to `break`).
+`leave` exits the `match all` block early.
 
 ## Tuple patterns with `_` wildcards
 
-```pas
+```pascal
 match p of
-  (0, 0): WriteLn('origin');
-  (0, _): WriteLn('on Y axis');
-  (_, 0): WriteLn('on X axis');
-  _:      WriteLn('other');
+  (0, 0): writeln('origin');
+  (0, _): writeln('on Y axis');
+  (_, 0): writeln('on X axis');
+  _:      writeln('other');
 end;
 ```
 
-Tuple patterns are available in subject-based mode when the subject is a tuple type. `_` inside a tuple pattern skips that field (matches anything). Each non-wildcard field is compared with `=`, results are AND'd together.
-
-`(_, _)` matches any tuple (all fields are wildcards).
+Available in subject-based mode when the subject is a tuple. `_` inside a tuple pattern skips that field; every non-wildcard field is compared with `=` and the results are AND'd. `(_, _)` matches any tuple of that shape.
 
 ## Match as expression
 
-```pas
+```pascal
 var s := match x of
   1: 'one';
   2: 'two';
   _: 'other';
 end;
-```
 
-In expression form, each branch must produce a value. The result type is promoted across branches (same rules as `if` expression). Match expressions require exhaustive coverage (`_` or `else`).
-
-Condition-based match works too:
-
-```pas
-var label := match
+var lbl := match
   x > 100: 'big';
   x > 10:  'medium';
   _:       'small';
 end;
+```
+
+Each branch yields a value; the result type unifies across branches with the same promotion rules as [if-expressions](statement-expressions.md). Both the subject-based and the condition-based form work, and both close with `end`.
+
+A match expression must be exhaustive: without a `_` / `else` / `otherwise` branch it reports `` `match` expression needs `_:`, `else` or `otherwise` to cover unmatched values ``.
+
+## Not supported
+
+- `where` guards on patterns - use the condition-based mode (no `of`) or nest an `if`.
+- Binding / capturing matched values into named variables.
+
+## Demo
+
+```pascal
+program match_demo;
+
+{$mode unleashed}
+
+function describe(p: (integer, integer)): string;
+begin
+  result := match p of
+    (0, 0): 'origin';
+    (0, _): 'on Y axis';
+    (_, 0): 'on X axis';
+    _: 'in the field';
+  end;
+end;
+
+begin
+  // condition-based match as an expression
+  for var i := 1 to 15 do begin
+    var line := match
+      (i mod 15) = 0: 'FizzBuzz';
+      (i mod 3) = 0: 'Fizz';
+      (i mod 5) = 0: 'Buzz';
+      _: $'{i}';
+    end;
+    write(line, ' ');
+  end;
+  writeln;
+
+  // string dispatch with comma patterns
+  for var cmd in ['start', 'help', 'quit'] do
+    match cmd of
+      'start', 'run': writeln('starting');
+      'stop', 'quit': writeln('stopping');
+      _: writeln($'unknown command "{cmd}"');
+    end;
+
+  // tuple patterns with wildcards
+  writeln(describe((0, 5)), ' / ', describe((3, 4)));
+  {$ifdef WINDOWS}readln;{$endif}
+end.
+```
+
+Output:
+
+```
+1 2 Fizz 4 Buzz Fizz 7 8 Fizz Buzz 11 Fizz 13 14 FizzBuzz
+starting
+unknown command "help"
+stopping
+on Y axis / in the field
 ```

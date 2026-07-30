@@ -1,219 +1,194 @@
-# Parallel For
+# `for parallel`
 
-`for parallel [(N)] var i := lo to|downto hi [step s] [chunk c] do STMT` runs the loop body across a pool of worker threads instead of one after another. The pool is built on `BeginThread`, every iteration is handed out exactly once, and the loop does not return until all of them have finished.
+```
+for parallel [(N)] var i := lo to|downto hi [step s] [chunk c] do STMT
+```
 
-Feature gated by modeswitch `PARALLELFOR`, enabled by default in `{$mode unleashed}`.
+Runs the loop body across a pool of worker threads instead of one iteration after another. The pool is built on `BeginThread()`, every iteration is handed out exactly once, and the loop is a barrier - control does not pass `do` until every iteration has finished, and everything the bodies wrote is visible afterwards.
+
+Modeswitch: `parallelfor`, enabled by default in `{$mode unleashed}`. On Unix the program also needs a threading driver (`cthreads` first in `uses`).
 
 ## Basic use
 
-```pas
-{$mode unleashed}
-uses SysUtils;
-
-var total: Integer;
+```pascal
+var total: integer;
 begin
   total := 0;
   for parallel var i := 1 to 1000000 do
-    InterlockedExchangeAdd(total, i);     // each i added once, on some worker
+    InterlockedExchangeAdd(total, i); // shared state -> atomic, always
 end;
 ```
 
-The body is the same statement you would write in a classic `for`. The difference is that several iterations run at the same time on different threads, so any state shared between iterations has to be touched with an atomic (`InterlockedIncrement`, `InterlockedExchangeAdd`, ...) or under a lock. Writing to a per-iteration local needs nothing - each worker has its own.
+The body is the same statement you would write in a classic `for`. The difference: several iterations run at once on different threads, so any state shared between iterations must be touched with an atomic (`InterlockedIncrement()`, `InterlockedExchangeAdd()`, ...) or under a [`lock`](lock.md). A per-iteration local needs nothing - each worker owns its own.
 
-## The loop variable is mandatory and inline
+## The counter is mandatory and inline
 
-The counter must be declared inline with `var`:
-
-```pas
-for parallel var i := 1 to N do ...    // ok - each worker owns its copy of i
+```pascal
+for parallel var i := 1 to N do ... // ok - each worker owns its copy of i
 ```
 
-A pre-existing variable is rejected, because a single shared counter cannot be handed to several threads at once:
-
-```pas
-var i: Integer;
-for parallel i := 1 to N do ...        // error 03432
-```
+A pre-existing variable is rejected (`` `for parallel` requires an inline loop variable - write `for parallel var i := ...` ``) - one shared counter cannot be handed to several threads at once.
 
 ## Pool size
 
-Without a count the pool uses `min(GetCPUCount, iteration_count)` threads. An explicit size goes in parentheses right after `parallel`:
+Default: `min(GetCPUCount, iteration_count)` threads. An explicit size goes in parentheses right after `parallel`:
 
-```pas
+```pascal
+for parallel var i := 1 to N do ...       // one worker per core (capped by N)
 for parallel(4) var i := 1 to N do ...    // at most 4 workers
-for parallel(1) var i := 1 to N do ...    // sequential: caller only, no spawn
+for parallel(1) var i := 1 to N do ...    // sequential: runs on the caller, no spawn
 ```
 
-The count is evaluated once, then clamped to `[1, min(iteration_count, 256)]` - the pool never exceeds 256 threads even when more are asked for, while the atomic dispatch still drains every iteration. `parallel(1)` is the degenerate case: no helper is spawned and the body simply runs on the calling thread, so it is a plain sequential loop.
-
-The calling thread is itself one of the workers - `parallel(N)` spawns `N-1` helpers and then joins the dispatch. The caller does not sit idle waiting.
+The count is evaluated once and clamped to `[1, min(iteration_count, 256)]`. The calling thread is itself one of the workers - `parallel(N)` spawns `N-1` helpers and joins the dispatch, never sitting idle. `parallel(1)` spawns nothing and is a plain sequential loop.
 
 ## Dispatch and ordering
 
-Iterations are handed out dynamically through a shared atomic counter: each worker repeatedly claims the next block of indices (see Chunking below) and computes `i := lo +/- index*step` for each one. Work is balanced automatically when iterations take uneven time, but the order in which bodies run, and which thread runs a given `i`, are **not** defined. Do not rely on iteration order or on a particular thread touching a particular `i`.
+Iterations are handed out dynamically through a shared atomic counter: each worker claims the next block of indices and computes `i := lo +/- index*step`. Work rebalances automatically when iterations take uneven time, but the order bodies run in, and which thread runs a given `i`, are **undefined** - never rely on either.
 
-`lo`, `hi`, `step`, and `chunk` are each evaluated once before the pool starts, exactly like a classic `for`.
+`lo`, `hi`, `step`, and `chunk` are each evaluated once before the pool starts, exactly like a classic `for`. The dispatch counter follows the loop variable's width: a 64-bit variable gets a 64-bit counter (ranges past 2^31 work), smaller types including enums and chars stay on the 32-bit path. Targets without 64-bit interlocked ops reject a 64-bit counter at compile time.
 
-The hidden dispatch state follows the loop variable's width: a 64-bit variable gets a 64-bit counter, so ranges past 2^31 work; smaller types (including enums and chars) stay on the plain 32-bit path. Targets without 64-bit interlocked operations reject a 64-bit loop variable at compile time (error 03436).
+## `downto`, `step`, `chunk`
 
-## `downto` and `step`
+All compose in the header, in this order:
 
-Both compose with the pool the same way they do in a sequential loop:
-
-```pas
-for parallel var i := 100 downto 1 do ...           // 100 values, top-down
-for parallel var i := 1 to 200 step 2 do ...        // 1,3,5,...,199 - 100 values
-for parallel var i := 50 downto 1 step 5 do ...      // 50,45,...,5 - 10 values
+```pascal
+for parallel var i := 100 downto 1 do ...                 // top-down
+for parallel var i := 1 to 200 step 2 do ...              // 1, 3, ..., 199
+for parallel(4) var i := 1 to N step 2 chunk 100 do ...   // full stack
 ```
 
-`step` is positive; use `downto` to descend. (`step` needs `{$modeswitch forstep}`, on by default in `unleashed`.)
-
-## Chunking
-
-Each counter grab claims a block of iterations that the worker then walks without further atomics. That keeps cheap bodies from paying a contended atomic per iteration - one grab covers the whole block. The block size comes from the `chunk` clause, sitting after `step` in the header:
-
-```pas
-for parallel var i := 1 to 10000000 chunk 4096 do    // 4096 indices per grab
-  arr[i] := 0;
-
-for parallel(4) var i := 1 to N step 2 chunk 100 do  // composes with the rest
-  Work(i);
-```
-
-Without a clause the size defaults to `count div (workers*4)`, floored at 1 - about four grabs per worker, so a slow chunk still gets rebalanced onto the faster workers while the counter is hit only a handful of times. Pick a large chunk yourself for tiny uniform bodies, a small one for expensive uneven bodies. A runtime chunk value below 1 is clamped to 1; a non-positive constant is a compile error (03438). Like `step`, `chunk` is only a keyword in this one spot - code using `chunk` as an identifier keeps compiling.
+`step` is positive (descend with `downto`; needs `forstep`, on by default). `chunk N` sets how many indices one counter grab claims - the worker then walks that block with no further atomics. This is the cure for cheap bodies paying a contended atomic per iteration. Default: `count div (workers*4)`, floored at 1 (about four grabs per worker - late rebalancing still works, counter contention stays negligible). Pick a large chunk for tiny uniform bodies, a small one for expensive uneven ones. A non-positive constant chunk is a compile error; a runtime value below 1 is clamped to 1. Like `step`, `chunk` is a keyword only in this one spot.
 
 ## The body reaches enclosing locals
 
-The body is hoisted into a hidden nested routine, so it can read and write the locals of the routine that contains the loop, across the worker threads:
+The body is hoisted into a hidden nested routine, so it reads and writes the enclosing routine's locals across the worker threads (concurrent writes still need atomics or a lock):
 
-```pas
-function CountOdd(n: Integer): Integer;
-var c: Integer;
+```pascal
+function countOdd(n: integer): integer;
+var c: integer;
 begin
   c := 0;
   for parallel var i := 1 to n do
-    if Odd(i) then InterlockedIncrement(c);     // c is CountOdd's local
-  CountOdd := c;
+    if odd(i) then InterlockedIncrement(c); // c is countOdd's local
+  result := c;
 end;
 ```
-
-The shared local lives on the caller's stack frame and the workers reach it through their frame pointer. Because the writes are concurrent, they still need to be atomic or locked.
-
-## Implicit barrier
-
-The loop is a barrier: control passes the `do` body only once every iteration has completed. Anything the bodies wrote is visible afterwards without further synchronization.
-
-## Exceptions
-
-If a body raises, the worker catches it. The first exception caught across all workers (claimed with an atomic flag) is re-raised on the calling thread once the pool has joined; later exceptions on other workers are dropped. So a fault inside a parallel loop surfaces as an ordinary exception at the loop, not as a crash on a helper thread:
-
-```pas
-try
-  for parallel var i := 1 to N do
-    if Bad(i) then raise EMyError.Create('...');
-except
-  on e: EMyError do HandleIt(e);    // re-raised here, after the barrier
-end;
-```
-
-## `continue` and `break`; `exit` / `goto` are not allowed
-
-`continue` skips to the next iteration and works as usual.
-
-`break` cancels the loop cooperatively: it raises a shared flag, every worker checks that flag before each iteration, and nothing new starts. Iterations already running on other threads finish normally - across threads there is no way to stop them mid-body - and the loop then joins and continues after `do` as usual. So `break` means "stop handing out work", not "freeze everything this instant":
-
-```pas
-for parallel var i := 1 to N do
-begin
-  if Skip(i) then continue;         // ok - next iteration
-  if Found(i) then break;           // ok - no further iterations start
-end;
-```
-
-With one worker (`parallel(1)`) break is exact, like a sequential loop. A break inside a nested classic loop still binds to that inner loop.
-
-`exit` stays rejected (error 03434): it promises to leave the routine immediately, which a pool that must first join its threads cannot honestly deliver - write `break` and test after the loop instead. `goto` out of the body is rejected too (error 03435). A `for ... in` collection cannot be made parallel either (error 03433); only a numeric range.
 
 ## `WorkerIndex` and `WorkerCount`
 
-Inside the body two implicit locals identify the executing worker: `WorkerIndex` (0 to `WorkerCount`-1, claimed once per worker at entry, stable for the whole loop) and `WorkerCount` (the pool size after clamping). They exist for per-worker private state - a scratch buffer or partial sum per worker, indexed without any locking:
+Two implicit read-only locals inside the body: `WorkerIndex` (0 to `WorkerCount`-1, claimed once per worker at entry, stable for the whole loop) and `WorkerCount` (the pool size after clamping). They exist for lock-free per-worker private state - a scratch buffer or partial sum per worker, indexed without any atomics:
 
-```pas
-var acc: array[0..3] of Int64;
+```pascal
+var acc: array[0..3] of int64;
 ...
 for parallel(4) var i := 1 to N do
-  acc[WorkerIndex] := acc[WorkerIndex] + Weight(i);   // slot is private - no atomics
-// after the barrier: total := acc[0]+acc[1]+acc[2]+acc[3]
+  acc[WorkerIndex] += weight(i); // private slot - no atomics
+// after the barrier: total := acc[0] + acc[1] + acc[2] + acc[3]
 ```
 
-Size such arrays with an explicit `parallel(N)` - with a default pool you do not know `WorkerCount` up front. Note `WorkerIndex` says which *worker* is running, not which iteration: one worker executes many different `i`. Both names are locals of the hidden worker routine, so they shadow any outer symbol of the same name only inside the body.
+Size such arrays with an explicit `parallel(N)` - a default pool's `WorkerCount` is not known up front. `WorkerIndex` identifies the *worker*, not the iteration: one worker executes many `i`. Assigning to either (or passing it to a `var` parameter) is rejected with `Can't assign values to const variable`.
 
-Both are read-only, like the loop variable: assigning to them (or passing them to a `var` parameter, e.g. `Inc(WorkerCount)`) is rejected with "Can't assign values to const variable".
+## `continue` / `break`; `exit` / `goto` do not
+
+`continue` skips to the next iteration, as usual. `break` cancels cooperatively: it raises a shared flag, no new iteration starts, but iterations already running on other threads finish (across threads there is no way to stop a body mid-flight). After the join, execution continues past `do`. With `parallel(1)` break is exact, like a sequential loop; a `break` in a nested classic loop still binds to that inner loop.
+
+`exit` is rejected (`` `exit` is not allowed inside a `for parallel` body ``) - it promises to leave the routine immediately, which a pool that must join its threads cannot deliver; write `break` and test a flag after the loop. `goto` out of the body is rejected too, as is `for parallel var x in collection` - only numeric ranges.
+
+## Exceptions
+
+A body that raises does not kill the process: the worker catches it, the **first** exception across all workers is re-raised on the calling thread after the barrier, later ones are dropped. A fault surfaces as an ordinary exception at the loop:
+
+```pascal
+try
+  for parallel var i := 1 to N do
+    if bad(i) then raise EMyError.Create('...');
+except
+  on e: EMyError do handleIt(e); // re-raised here, after the join
+end;
+```
 
 ## Nested parallel loops
 
-Each loop spawns its own pool, so by default a `for parallel` whose caller is already a parallel worker runs its body on that worker alone - the inner pool size is forced to 1. The outer loop is parallel, the inner sequential per outer worker. A default inner pool would otherwise give `outer x inner` threads and oversubscribe the cores, which is slower than just parallelizing the outer level.
+An inner `for parallel` running on a parallel worker defaults its pool to 1 - the outer loop is parallel, the inner sequential per worker. A default inner pool would oversubscribe cores (`outer x inner` threads) and run slower. An explicit `parallel(N)` on the inner loop opts into true nesting - use it only when the inner work is heavy enough to be worth the threads:
 
-```pas
+```pascal
 for parallel var i := 1 to 4 do
-  for parallel var j := 1 to 250 do      // sequential on i's worker
-    InterlockedIncrement(total);          // total ends at 1000
-```
-
-An explicit pool size on the inner loop is taken as an opt-in to nested parallelism and is kept. Size the inner loop yourself when its work is heavy enough to be worth the extra threads:
-
-```pas
-for parallel var i := 1 to 4 do
-  for parallel(4) var j := 1 to 250 do   // 4 inner workers per outer worker
-    Heavy(i, j);
+  for parallel(4) var j := 1 to 250 do // 4 inner workers per outer worker
+    heavy(i, j);
 ```
 
 ## `parallel` is a context-sensitive keyword
 
-`parallel` is recognized only between `for` and the loop header, and only when the next token is `var` or `(`. Anywhere else it stays an ordinary identifier, so existing code that uses `parallel` as a name keeps working:
+Recognized only between `for` and the header, and only when the next token is `var` or `(`. Everywhere else it stays an ordinary identifier, so existing code named `parallel` keeps compiling:
 
-```pas
-var parallel: Integer;
-for parallel := 1 to 5 do ...        // ordinary sequential loop over `parallel`
-
-function parallel: Integer;          // ok - just a function name
+```pascal
+var parallel: integer;
+for parallel := 1 to 5 do ... // ordinary sequential loop over `parallel`
 ```
 
 ## Threading driver
 
-The pool uses `BeginThread` / `WaitForThreadTerminate` from the `system` unit. On Windows that works as-is. On Unix the program must pull in a threading driver - put `cthreads` first in the program's `uses` - otherwise thread creation fails at run time, the same requirement any threaded FPC program has. The compiler reminds you once per module with hint 03439 when compiling a parallel loop for a unix-like target. A worker thread that could not be spawned at run time is simply skipped: its share of iterations drains through the workers that did start, worst case the caller alone.
+The pool uses `BeginThread()` / `WaitForThreadTerminate()` from the `system` unit. Windows works as-is. On Unix put `cthreads` first in the program's `uses` (the compiler reminds you once per module with a hint) - otherwise thread creation fails at run time, like any threaded FPC program. A worker that fails to spawn at run time is simply skipped: its share of iterations drains through the workers that did start, worst case the caller alone.
 
-## Errors
+## Errors and edge cases
 
-| Number | Identifier                            | Trigger                                          |
-|--------|---------------------------------------|--------------------------------------------------|
-| 03432  | `parser_e_parallel_for_requires_var`  | loop variable is not declared inline with `var`  |
-| 03433  | `parser_e_parallel_for_no_for_in`     | `for parallel var x in collection`               |
-| 03434  | `parser_e_parallel_for_no_exit`       | `exit` inside the body                           |
-| 03435  | `parser_e_parallel_for_no_goto`       | `goto` leaving the body                          |
-| 03436  | `parser_e_parallel_for_no_int64_dispatch`  | 64-bit loop variable on a target without 64-bit interlocked ops |
-| 03437  | `parser_e_parallel_chunk_not_ordinal`      | `chunk` size is not an ordinal value             |
-| 03438  | `parser_e_parallel_chunk_must_be_positive` | constant `chunk` size is zero or negative        |
-| 03439  | `parser_h_parallel_for_needs_cthreads`     | hint: parallel loop compiled for a unix-like target |
+| Trigger | Message |
+|---|---|
+| counter not declared inline with `var` | `` `for parallel` requires an inline loop variable - write `for parallel var i := ...` `` |
+| `for parallel var x in collection` | `` `for parallel` cannot be combined with a for-in loop `` |
+| `exit` inside the body | `` `exit` is not allowed inside a `for parallel` body `` |
+| `goto` leaving the body | goto-not-allowed error |
+| 64-bit counter on a target without 64-bit interlocked | no-int64-dispatch error |
+| non-ordinal / non-positive constant `chunk` | chunk error |
 
-## Edge cases
+| Case | Behavior |
+|---|---|
+| empty range (`1 to 0`) | body never runs, no threads spawned |
+| `parallel(0)` / negative count | clamped up to 1 (sequential) |
+| count > iteration count | clamped down - never more workers than iterations |
+| count > 256 | clamped to 256; the counter still covers every index |
+| full 64-bit range (`low..high(int64)`) | iteration count itself overflows - not supported |
+| plain write to a shared variable | data race - your bug, not the loop's; use an atomic |
 
-| Case                                   | Behavior                                                  |
-|----------------------------------------|-----------------------------------------------------------|
-| empty range (`1 to 0`)                 | body never runs, no threads spawned                       |
-| `parallel(0)` or a negative count      | clamped up to 1 (sequential)                              |
-| count larger than the iteration count  | clamped down - never more workers than iterations         |
-| count above 256                        | clamped to 256; the atomic counter still covers every index |
-| runtime `chunk` below 1                | clamped up to 1                                           |
-| full 64-bit range (`low(int64) to high(int64)`) | the iteration count itself overflows - not supported |
-| body writes a shared variable plainly  | data race - use an atomic or a lock, the loop only adds the barrier |
+## Demo
 
-## Want it off?
+```pascal
+program parallel_for_demo;
 
-```pas
 {$mode unleashed}
-{$modeswitch parallelfor-}
 
-for parallel var i := 1 to 10 do ...    // `parallel` is now just an identifier;
-                                        // the header no longer parses as parallel
+var
+  partial: array[4] of double;
+  total: integer;
+
+begin
+  // per-worker partial sums in private slots - no atomics, combined after the barrier
+  for parallel(4) var k := 1 to 2000000 do
+    partial[WorkerIndex] += 1.0/(double(k)*k);
+  var basel := 0.0;
+  for var w in partial do basel += w;
+  writeln($'pi ~ {sqrt(6*basel):8:6}');
+
+  // shared state needs an atomic (or a lock)
+  total := 0;
+  for parallel var i := 1 to 100000 do
+    if i mod 7 = 0 then InterlockedIncrement(total);
+  writeln($'multiples of 7 up to 100000: {total}');
+
+  // a nested parallel loop runs sequentially on its outer worker by default
+  total := 0;
+  for parallel var i := 1 to 4 do
+    for parallel var j := 1 to 250 do
+      InterlockedIncrement(total);
+  writeln($'nested total: {total}');
+  {$ifdef WINDOWS}readln;{$endif}
+end.
+```
+
+Output:
+
+```
+pi ~ 3.141592
+multiples of 7 up to 100000: 14285
+nested total: 1000
 ```

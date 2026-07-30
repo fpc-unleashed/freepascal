@@ -1,220 +1,176 @@
 # Static Variables
 
-Declare variables with program-wide lifetime but block-local scope. Two flavors:
+Declare variables with **program-wide lifetime** but **block-local scope** - the C `static int x;` inside a function. Use them wherever you would otherwise promote a local to a unit-level global just to make it survive calls: counters, one-time init, caches. Two flavors:
 
-- **Section static** (`STATICSECTION` modeswitch): a `static` declaration block that takes compile-time constant initializers, like `const`-with-types but writeable. Zero runtime cost.
-- **Inline static** (`INLINESTATIC` modeswitch): `static name := expr;` inline declaration anywhere in a body. Accepts runtime expressions, evaluated once on first reach.
+- **Section static** (modeswitch `staticsection`): a `static` declaration block at the top of a body, compile-time initializers, zero runtime cost.
+- **Inline static** (modeswitch `inlinestatic`): `static name := expr;` anywhere in a body, runtime initializers, evaluated once on first reach.
 
-Both are enabled by default in `{$mode unleashed}`. Outside unleashed:
+Both are enabled by default in `{$mode unleashed}`. Elsewhere:
 
-```pas
+```pascal
 {$mode objfpc}
 {$modeswitch staticsection}
 {$modeswitch inlinestatic}
 ```
 
-Both are allowed **only inside function/procedure/method bodies**. Using them at unit/program level produces:
+Both are allowed **only inside function / procedure / method bodies**; at unit / program level plain `var` already gives program lifetime, and `static` there reports `static is only allowed in function/procedure bodies`.
 
-```
-Error: static is only allowed in function/procedure bodies
-```
-
-At unit or program level, plain `var` already gives program lifetime and is the right tool.
-
-## Why static
-
-A `static` variable behaves like a typed constant that is writeable: program lifetime, hidden behind a local name. The C equivalent is `static int x;` inside a function. Use cases:
-
-- Per-call counters that survive between calls
-- Lazy one-time computation cached in the function
-- Default values that the function may mutate
-
-```pas
-procedure Bumper;
-static
-  cnt: Integer = 0;
-begin
-  Inc(cnt);
-  WriteLn(cnt);
-end;
-
-begin
-  Bumper;  // 1
-  Bumper;  // 2
-  Bumper;  // 3
-end.
-```
-
-The variable is **not** a thread-local. Multiple threads hitting the same function share the same `cnt`; the user handles thread safety.
+Static variables are **not** thread-local - all threads share one instance. Provide your own locking / atomics, or use [`threadstatic`](thread-static.md) for a per-thread copy.
 
 ## Section `static`
 
-A declaration block at the top of a function body, parallel to `var` and `const`:
+A declaration block parallel to `var` and `const`, materialized as initialized data in the binary - no init code runs on any call:
 
-```pas
-procedure Foo;
+```pascal
+procedure bumper;
 static
-  x: Integer;             // zero-init
-  y: Integer = 42;        // explicit value
-  s: string;              // zero-init -> empty string
-  greet := 'hello';       // inferred type (default string flavor)
-  ratio := 3.14;          // inferred type (Extended)
-  buf: array[0..15] of Byte;   // zero-init -> 16 bytes of zeros
+  cnt: integer = 0;             // explicit value
+  s: string;                    // zero-init -> empty string
+  greet := 'hello';             // inferred type
+  buf: array[0..15] of byte;    // zero-init -> 16 bytes of zeros
 begin
-  ...
+  inc(cnt);
+  writeln(cnt);
 end;
+
+// bumper called 3 times -> outputs 1, 2, 3
 ```
 
-### Syntax forms
+Syntax forms:
 
 ```
 static
   name [, name2, ...] : Type;             // zero-init
-  name [, name2, ...] : Type = Value;     // explicit value
+  name [, name2, ...] : Type = Value;     // explicit value (compile-time const)
   name := Value;                          // type inference (single name)
 ```
 
-### Initializer rules
-
-- The initializer (after `=` or `:=`) must be a **compile-time constant expression**: literal, named constant, simple constant fold. Calls and runtime expressions are rejected. If you need a runtime initializer, use inline static.
-- When no initializer is given, the variable is zero-initialized: `0` for ordinals, `False` for booleans, `nil` for pointers/classes/strings, empty for managed types, zeros for records and arrays recursively.
-- Aggregate-literal initializers for records and static arrays use the typed-constant syntax `(field: val; ...)` / `(v1, v2, ...)`.
-
-### Type inference (`:=` only)
-
-Same rules as inline `var`:
-
-- Single character `'x'` -> default string type (`string` / `UnicodeString` / `ShortString` depending on modeswitches).
-- String literal -> default string type.
-- Sub-Int32 integers (`Byte`, `ShortInt`, `Word`, `SmallInt`) -> `LongInt` (Int32). Explicit casts (`Byte(10)`) suppress promotion.
-
-### Zero runtime cost
-
-Section static is materialized as initialized data in the binary. First call reads the bytes from the data segment, no init code runs. Subsequent calls are identical to regular variable access.
+The initializer must be a **compile-time constant expression** (literal, named constant, simple fold) - a call or other runtime expression reports `Illegal expression`; use the inline form for those. Aggregate init for records and static arrays uses the typed-constant syntax `(field: val; ...)` / `(v1, v2)`. A missing initializer means zero-init (`0`, `False`, `nil`, empty for managed types, zeros recursively for records and arrays). Type inference (`:=`) follows the inline-var rules: char literal to the default string type, sub-32-bit integers to `LongInt`, explicit casts suppress promotion.
 
 ## Inline `static`
 
-A single-statement declaration anywhere inside a body:
+A single-statement declaration anywhere in a body, accepting runtime expressions evaluated **once on first reach**:
 
-```pas
-procedure Foo;
+```pascal
+function config: string;
 begin
-  WriteLn('start');
-  static cnt := 0;             // first reach: cnt := 0
-  Inc(cnt);
-  static greet := 'world';     // first reach: greet := 'world'
-  WriteLn(cnt, ' ', greet);
+  static cached := loadConfig; // loadConfig runs once across all calls
+  result := cached;
 end;
 ```
 
-### Syntax forms
+Syntax forms:
 
 ```
 static name : Type;
 static name : Type := expr;
-static name := expr;       // type inference
+static name := expr;              // type inference (same rules as inline var)
 ```
 
-### Runtime expressions allowed
+Scope runs from the declaration to the end of the enclosing block, so an inline static inside a conditional branch is only declared (and its init only attempted) if the branch is reached:
 
-```pas
-procedure ReadConfigOnce;
-begin
-  static cfg := LoadConfigFromDisk;   // LoadConfigFromDisk runs once
-  Use(cfg);
+```pascal
+if condition then begin
+  static x := 0; // declared / initialized only if this branch runs
+  inc(x);
 end;
 ```
 
-The expression is evaluated **once**, on the first reach of the declaration. Subsequent calls skip the initialization and read the cached value.
+## Init at most once (the guard)
 
-### Init runs at most once (the guard)
+When the initializer constant-folds, the inline form goes straight to the typed-constant data segment - no BSS slot, no guard, no branch, same cost as a section static. When the initializer is a runtime expression, the compiler emits a hidden Boolean guard plus one branch before the first use:
 
-The compiler emits a hidden Boolean guard variable next to the static. The generated logic is:
-
-```pas
-if not __guard then
-begin
-  __guard := True;       // set BEFORE evaluating the expression
+```pascal
+if not __guard then begin
+  __guard := true; // set BEFORE evaluating expr
   __var := <expr>;
 end;
 ```
 
-Setting `__guard` before evaluation means:
+`__guard` is set **before** the expression runs, so:
 
-- If `<expr>` raises, the exception propagates normally. The variable keeps its zero bytes. `__guard` is already true, so further calls skip the init block entirely. **No retry.**
-- If the function is reentrant and the init expression calls back into itself, the inner call sees `__guard = True` and bypasses the init - it reads the variable while still zero. This avoids infinite recursion but gives deterministic, possibly surprising, intermediate values for reentrant init scenarios.
+- If `<expr>` raises, the exception propagates and the variable keeps its zero bytes. `__guard` is already true, so further calls skip the init block entirely - **no retry on failure**.
+- If the init calls back into itself (reentrant init), the inner call sees `__guard = true` and reads the still-zero variable. Deterministic but rarely what you want - avoid recursive init expressions.
 
-### Recursive init example
+## Comparison
 
-```pas
-function ComputeInitial(n: Integer): Integer; forward;
-
-function Foo(n: Integer): Integer;
-begin
-  static cache := ComputeInitial(n);
-  Result := cache + n;
-end;
-
-function ComputeInitial(n: Integer): Integer;
-begin
-  if n > 0 then
-    Result := Foo(n - 1) * 2
-  else
-    Result := 1;
-end;
-```
-
-`Foo(3)`:
-
-1. `__cache_guard = False`, enter init block.
-2. `__cache_guard := True`.
-3. Evaluate `ComputeInitial(3)`.
-4. `ComputeInitial(3)` calls `Foo(2)`.
-5. In the nested `Foo(2)`: `__cache_guard = True`, skip init, `cache` is still 0. Return `0 + 2 = 2`.
-6. Back in `ComputeInitial(3)`: `Result := 2 * 2 = 4`.
-7. Back in outer `Foo(3)`: `cache := 4`. Return `4 + 3 = 7`.
-
-The recursive call sees the uninitialized `cache`. Avoid recursive init expressions if this matters; the deterministic behavior is documented but rarely what you want.
-
-### Anywhere in the body
-
-Inline static may appear at any statement position, like inline var. Scope runs from the declaration to the end of the enclosing block.
-
-```pas
-procedure Foo;
-begin
-  if Condition then
-  begin
-    static x := 0;   // only declared if this branch runs at least once
-    Inc(x);
-  end;
-end;
-```
-
-### Cost
-
-When the initializer is a compile-time constant (literal, named constant, or any expression that constant-folds to a `niln` / `ordconstn` / `pointerconstn` / `stringconstn` / `guidconstn` / `realconstn` / `setconstn` node), the inline form is materialized directly in the typed-constant data segment - no BSS slot, no guard flag, no runtime branch. The variable lives there from program start, the same as a section `static`.
-
-When the initializer is a runtime expression (a function call, a parameter reference, anything that does not constant-fold), the inline form falls back to the guarded init: one hidden flag (1 byte, BSS) plus one branch before the first use in every call. Cheap but not zero.
-
-## Differences from related features
-
-| Feature | Lifetime | Scope | Initializer | Cost |
+| Form | Lifetime | Scope | Initializer | Cost |
 |---|---|---|---|---|
 | `var x: T;` (in body) | call | block | none (zeroed) | stack alloc |
 | `var x := V;` (inline var) | call | block | runtime expr | stack alloc + eval per call |
 | `const x = V;` (in body) | program | block | compile-time | data segment, read-only |
-| section `static` | program | block | compile-time, optional | data segment, writeable |
-| inline `static` (const init) | program | block | compile-time | data segment, writeable, zero runtime cost |
-| inline `static` (runtime init) | program | block | runtime expr | BSS + flag + first-call branch |
-
-## Threading
-
-Static variables (both flavors) share a single instance across all threads. There is no implicit synchronization. If multiple threads can hit the same `static`, the user is responsible for locks, atomics, or thread-locals (`threadvar` at unit level).
+| section `static` | program | block | compile-time, optional | data segment, writable, zero cost |
+| inline `static` (const init) | program | block | compile-time | data segment, writable, zero cost |
+| inline `static` (runtime init) | program | block | runtime expr | BSS + guard flag + first-call branch |
 
 ## Limitations
 
-- Allowed only in function/procedure/method bodies. Not at unit interface, unit implementation, or program top level (there, plain `var` is equivalent).
-- Section `static` rejects runtime-only expressions. Use inline `static` for those.
-- No type alias / type / record declarations inside `static` blocks - only variable declarations.
-- The hidden guard for inline static is per-declaration, not per-call site. Two inline static declarations with the same name in different scopes get distinct guards.
+- Function / procedure / method bodies only.
+- Section `static` rejects runtime expressions - use the inline form.
+- No type / record / type-alias declarations inside `static` blocks - only variable declarations.
+- The inline-static guard is per-declaration, not per-call site - two inline statics with the same name in different scopes get distinct guards.
+
+## Demo
+
+```pascal
+program static_demo;
+
+{$mode unleashed}
+
+uses SysUtils;
+
+var
+  diskReads: integer = 0;
+
+function loadConfig: string;
+begin
+  inc(diskReads);
+  result := $'loaded-{diskReads}';
+end;
+
+// section static: a per-call counter at zero runtime cost
+procedure ping;
+static
+  calls: integer = 0;
+begin
+  inc(calls);
+  writeln($'ping #{calls}');
+end;
+
+// inline static with a runtime initializer: loadConfig runs once, ever
+function config: string;
+begin
+  static cached := loadConfig;
+  result := cached;
+end;
+
+// a table built once on first reach, then reused
+function fib(n: integer): int64;
+begin
+  static memo: array[0..40] of int64;
+  static ready: boolean;
+  if not ready then begin
+    memo[0] := 0; memo[1] := 1;
+    for var i := 2 to 40 do memo[i] := memo[i-1]+memo[i-2];
+    ready := true;
+  end;
+  result := memo[n];
+end;
+
+begin
+  ping; ping; ping;
+  writeln(config, ' / ', config, $' (disk reads: {diskReads})');
+  writeln($'fib(10)={fib(10)} fib(40)={fib(40)}');
+  {$ifdef WINDOWS}readln;{$endif}
+end.
+```
+
+Output:
+
+```
+ping #1
+ping #2
+ping #3
+loaded-1 / loaded-1 (disk reads: 1)
+fib(10)=55 fib(40)=102334155
+```

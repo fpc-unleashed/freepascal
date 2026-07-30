@@ -1,177 +1,222 @@
-# FPC Unleashed - Documentation
+# Unleashed Pascal - Documentation
 
-Detailed documentation for each feature in FPC Unleashed. Every feature has its own page with the full grammar, semantics, examples, and the modeswitch that gates it. All listed modeswitches are enabled by default in `{$mode unleashed}`; most can also be opted into from `objfpc` / `delphi` via `{$modeswitch ...}`.
+This is the index and introduction to the detailed feature reference. Every feature Unleashed Pascal adds on top of stock Free Pascal is listed below, grouped by theme, each with a short description and a link to its full page (grammar, semantics, every edge case, and a runnable demo).
 
-## [Inline Variables](inline-vars.md)
+## The mode and its switches
 
-Declare variables at point of first use inside any statement block, with explicit types, type inference (`var x := expr`), or as for-loop counters. Inline `const` works the same way: `const K = expr` yields a true compile-time constant, `const K: T = v` a typed constant with block-scoped storage. Both vars and consts are block-scoped to the enclosing `begin..end`, with shadowing rules and interaction with the existing `var` section spelled out in detail.
+One line enables everything:
 
-Enabled via `{$modeswitch inlinevars}`.
+```pascal
+{$mode unleashed}
+```
 
-## [Thread-Static Variables](thread-static.md)
+`{$mode unleashed}` is based on `objfpc`. Every modeswitch-gated feature can also be enabled individually from `objfpc` / `delphi` with `{$modeswitch X}`, and switched back off inside an unleashed unit with `{$modeswitch X-}`. The one hard rule is backward compatibility: new constructs are recognized only when their switch is active, so existing Pascal keeps compiling unchanged.
 
-`threadstatic` declares a per-thread variable with program lifetime and block-local source scope (the sym lives in the declaring routine's localst, so it is invisible to sibling routines, the same as `var`). Two forms with identical semantics: an inline statement (`threadstatic name := expr;` anywhere in a body) and a declaration section before the body (parallel to `var` / `static`, supporting multiple names and zero-init). Each thread sees its own copy via FPC's TLS infrastructure (`FPC_THREADVAR_RELOCATE`, `FPC_THREADVARTABLES`); init runs once per thread on first reach via a per-thread Boolean guard, so a raised init leaves that thread's variable zeroed and is not retried for that thread. The const-init data-segment fast path that regular `static` uses does not apply to a non-zero value - TLS has no per-thread template, so `threadstatic x := 5;` is a runtime per-thread assignment. A zero-valued constant (`= 0`, `= nil`, `= false`, `= ''`) is the exception: the per-thread block is zero-allocated, so the guard is dropped.
+### Modeswitches on by default in `{$mode unleashed}`
 
-Enabled via `{$modeswitch threadstatic}` (on by default in `unleashed`). `tstatic` is a short alias for `threadstatic`, accepted in both the inline and section forms.
+| Modeswitch | Feature |
+|---|---|
+| `inlinevars` | inline variable declarations with type inference |
+| `staticsection` / `inlinestatic` | `static` variables (section and inline forms) |
+| `threadstatic` | per-thread `threadstatic` / `tstatic` variables |
+| `statementexpressions` | `if` / `case` / `try` as expressions |
+| `tuples` | anonymous tuple types, literals, destructuring |
+| `match` | first-match pattern matching |
+| `multivarinit` | one initializer for several variables |
+| `outvar` | inline out-variable `f(var x)` and discard `f(_)` |
+| `forstep` | `step N` clause in `for` loops |
+| `autoproperties` | accessor-less properties with a synthesized backing field |
+| `parallelfor` | `for parallel` worker-pool loops |
+| `asyncawait` | `async` / `await` thread futures |
+| `lock` | `lock` / `trylock` thread-safe blocks |
+| `autofree` | `defer`, `autofree`, scoped `with` |
+| `flexiblearrays` | C99-style flexible array members |
+| `composablerecords` | `embed`, `union`, bitfields, layout intrinsics |
+| `interpolatedstrings` | `$'Hello {name}'` placeholders |
+| `multilinestrings` | backtick and triple-quote literals |
+| `stringordcast` | `dword('RIFF')` constant fold |
+| `arrayequality` | `=` / `<>` between arrays (needs `arrayoperators`, also on) |
+| `underscoreisseparator` | `1_000_000` numeric literals |
+| `int128` | 128-bit integer literals (the types are always available) |
+| `implicitgenerics` | Delphi-style `<T>` without `generic` / `specialize` |
+| `typehelpers` / `multihelpers` | helpers on any type, several at once |
 
-## [Static Variables](static-section.md)
+Also switched on by `{$mode unleashed}` on top of the `objfpc` base - supporting modern-Pascal switches rather than headline features: `ansistrings`, `advancedrecords`, `arrayoperators`, `anonymousfunctions`, `functionreferences`, `duplicatelocals`.
 
-A writeable `static` storage class with program-wide lifetime but block-local scope - the same idea as C's `static int x;` inside a function. Two flavors: a `static` declaration section (parallel to `var` / `const`, compile-time initializers, zero runtime cost) and a single-statement `static name := expr;` inline form (anywhere in a body, runtime initializers via a one-shot guard set true before the assignment, so a raised init leaves the variable zeroed and is not retried). Allowed only inside function / procedure / method bodies; at unit / program level plain `var` already gives the same lifetime and is the right tool.
+**Off by default**, opt-in only: `striprtti`.
 
-Enabled via `{$modeswitch staticsection}` and `{$modeswitch inlinestatic}` (both on by default in `unleashed`).
+Also turned on automatically with no directive needed: C-style operators (`+=`, `-=`, `*=`, `/=`), `goto` / `label`, and macros (`{$define name := value}`). Each can be switched off locally.
 
-## [Out-Variables](out-var.md)
+Several features are **unleashed-mode-only with no dedicated modeswitch**: the preserved for-loop counter, `is not` / `not in`, compound assignment and `inc()` / `dec()` on properties, array size shorthand, lazy labels, nested generic methods, `zeroinit`, `SwapValues()`, and `Type()`. A few work in **every mode** with no switch at all: the word-based compound operators (`div=`, `mod=`, ...), indexed labels, `$embedstr` / `$embedbytes`, and the custom-binary-metadata CLI flags.
 
-Declare a variable inline at an `out`-argument position (`Foo(var x)`), with its type inferred from the parameter and scoped to the enclosing block, or discard the output entirely with `_`. Accepted only at an `out` parameter (value / var / const are rejected); the type is resolved after overload selection, so overloads differing only in the out type are ambiguous; a name already in scope is a duplicate. A declared identifier `_` always wins over the discard meaning, and intrinsics (`Write`, `Str`, ...) take no discards at all, so existing code is unaffected. Captured and discarded managed-type outputs are ordinary locals, initialised and finalised normally. No throwaway variable pre-declared for each output.
+### Conditional Defines
 
-Enabled via `{$modeswitch outvar}`.
+The compiler always defines `UNLEASHED`, in every mode and on every target. It identifies the Unleashed compiler, not the active mode, so one source tree stays compatible with stock FPC:
 
-## [Anonymous Tuples](tuples.md)
+```pascal
+{$ifdef UNLEASHED}
+  {$mode unleashed}
+{$else}
+  {$mode objfpc}
+{$endif}
+```
 
-Lightweight anonymous record types written in parentheses, e.g. `(Integer, String)` or `(name: string; age: integer)`. Supports tuple literals, destructuring assignment, comparison, and works wherever a record works (function results, parameters, fields). Built on the existing record infrastructure, so managed types, copy semantics, and calling conventions are inherited for free.
+`{$mode unleashed}` has its own mode marker, `FPC_UNLEASHED`, following the `FPC_*` naming convention of `FPC_OBJFPC` and `FPC_DELPHI`; the CLI form `-Munleashed` sets it the same way. The mode markers are mutually exclusive: even though the mode is based on `objfpc`, switching to it does not define `FPC_OBJFPC`. Code that wants "objfpc or any superset of it" checks `{$if defined(FPC_OBJFPC) or defined(FPC_UNLEASHED)}`.
 
-Enabled via `{$modeswitch tuples}`.
+The build kind is exposed as a define too: `DEBUG` when the compiler options enable debug info (`-g` and friends on the command line or in `fpc.cfg`, or "Generate info for the debugger" checked in the IDE's Project Options), `RELEASE` otherwise. Source can react to a debug build without a separate `-dDEBUG`:
 
-## [Statement Expressions](statement-expressions.md)
+```pascal
+{$ifdef DEBUG}
+writeln('debug build with call traces');
+{$endif}
+```
 
-Use `if`, `case`, and `try` as expressions that yield a value, so you can drop temporary variables for conditional assignment. Multi-statement branches use `begin..end` and the last expression in the block is the result.
+An explicit `-dDEBUG` / `-dRELEASE` keeps working as before; the automatic define just makes it unnecessary in the common case.
 
-Enabled via `{$modeswitch statementexpressions}`.
+---
 
-## [Match Statement](match.md)
+## Concurrency
 
-Pattern matching with first-match semantics that replaces `case..of` for non-ordinal subjects (tuples, strings, arbitrary expressions). Adds catch-all (`_` / `else`), tuple wildcard patterns, condition-based branches, fallthrough mode, and an expression form that yields a value.
+### [`async` / `await` - Thread Futures](async-await.md)
 
-Enabled via `{$modeswitch match}`.
+`async <call>` or `async begin..end` runs work on a fresh worker thread and returns a `future of T` (or a bare `future`); `await f` joins that thread and reads the result. This is the `std::async` model - one thread per `async`, one join per `await`, no function coloring and no event loop. The call form snapshots the call's arguments by value at the spawn point; the block form captures referenced locals by reference, so the future may outlive its spawner. Awaiting is repeatable and cached, a worker exception re-raises on the caller at the first `await`, and the future carries a control surface (`Cancel()`, `Cancelled`, `Done`, `ThreadID`). A companion `sync begin..end` marshals a block onto the main thread for GUI work. Built on `system`-unit thread primitives; on Unix the program needs `cthreads` first in `uses`. Modeswitch `asyncawait`.
 
-## [Scoped Cleanup - defer, autofree, scoped with](autofree.md)
+### [`for parallel`](parallelfor.md)
 
-`defer STATEMENT` registers an action to fire at scope exit (LIFO, runs on normal exit / exception / break / continue / `exit`). `autofree EXPR` is sugar that turns a freshly-allocated class instance into a scoped resource with automatic `Free`. The `with` statement gains inline-var bindings (`with var x := autofree T.Create do ...`) so the holder is named, scoped, and cleaned up in one line. Cleanup uses a nil-guarded pattern so manual `x.Free` earlier in the scope does not double-free.
+`for parallel [(N)] var i := lo to|downto hi [step s] [chunk c] do STMT` runs the loop body across a `BeginThread()` worker pool. Every iteration runs once, the loop is a barrier (control passes `do` only after all iterations finish), iteration order is undefined, and shared writes need atomics or a lock. The counter must be inline `var` so each worker owns its copy. Optional pool size, `downto`, `step`, and `chunk` compose; `WorkerIndex` / `WorkerCount` give lock-free per-worker slots; `break` cancels cooperatively; the first worker exception re-raises after the barrier. Modeswitch `parallelfor`.
 
-Enabled via `{$modeswitch autofree}`.
+### [`lock` / `trylock`](lock.md)
 
-## [Lock](lock.md)
+`lock ... do <stmt>` and `trylock ... do <stmt> else <stmt>` serialize access across threads on top of a hidden `TRTLCriticalSection`, with automatic init / done and guaranteed release. `lock` blocks until acquired and cannot fail; `trylock` may miss (one attempt, or a bounded `wait N` milliseconds) and runs the mandatory `else` without the lock. Targets are a hidden per-callsite lock (bare form), a hidden per-variable lock shared program-wide (`lock(v)`), or an explicit user-managed `TRTLCriticalSection`. Multi-target sites take locks in a canonical order so `lock(a, b)` vs `lock(b, a)` cannot deadlock. The wait machinery uses only `system`-unit primitives. Modeswitch `lock`.
 
-`lock ... do <stmt>;` wraps a statement or block with `EnterCriticalSection / try .. finally / LeaveCriticalSection` so it is serialized across threads - it blocks until acquired and cannot fail. `trylock ... do <stmt> else <stmt>;` may miss (one immediate attempt by default, a bounded wait with `wait N` - Int64 milliseconds) and then runs the mandatory `else` branch without the lock. Targets: bare form per-callsite (hidden CS unique to that source position, "only one thread executes this code"); `lock(globalVar)` per-variable (hidden CS shared across every site naming that variable, "only one thread touches this data"); `lock(MyCS)` explicit, where `MyCS: TRTLCriticalSection` and the user manages Init/Done. Multi-target form `lock(a, b, c)` sorts the lock order by name across all sites so AB-vs-BA deadlock is impossible; multi-target `trylock` is all-or-nothing with rollback. The wait machinery uses only `system`-unit primitives (no SysUtils, no clock reads). Hidden CS storage lives in the unit's localsymtable and is wired into the unit's `initialization` / `finalization` sections automatically. Critical section is recursive on every supported target so nesting on the same variable does not self-deadlock.
+### [`threadstatic` Variables](thread-static.md)
 
-Enabled via `{$modeswitch lock}`.
+`threadstatic` (alias `tstatic`) declares a per-thread variable with program lifetime and block-local scope - a per-thread cache or counter without a unit-level `threadvar`. Each thread gets its own copy via FPC's TLS infrastructure; the initializer runs once per thread on first reach, behind a per-thread guard. Two forms with identical semantics: an inline statement and a declaration section before the body. A zero-valued constant initializer drops the guard; every other value needs the guarded runtime assignment (TLS has no per-thread template). Modeswitch `threadstatic`.
 
-## [Async / Await - thread futures](async-await.md)
+---
 
-`async <call>` / `async begin..end` runs work on a fresh worker thread and returns a `future of T` (or a bare `future`); `await f` blocks until the worker finishes and reads its result. This is the `std::async` model (one thread per `async`, one join per `await`), not C# async - there is no function coloring and no event loop. The call form snapshots the call's arguments by value at the spawn point; the block form captures referenced locals by reference through the function-reference machinery, so the future may outlive the routine that spawned it. Awaiting is repeatable (the result is cached, the event re-armed). A worker exception is re-raised on the caller at the first `await`; a fire-and-forget future swallows it. The future also carries a control surface: `Cancel` raises a cooperative flag (readable inside `async begin..end` as `Cancelled`), `Done` polls completion without blocking, `ThreadID` hands the worker to the RTL thread API. Built entirely on `system`-unit thread primitives (`BeginThread`, `RTLEvent*`, `AcquireExceptionObject`) with no RTL changes; on Unix the program needs a threading driver (`cthreads`).
+## Write less, say more
 
-Enabled via `{$modeswitch asyncawait}`.
+### [Inline Variables](inline-vars.md)
 
-## [Parallel For](parallelfor.md)
+Declare variables at the point of first use, with type inference (`var x := expr`), block scoping in nested `begin..end`, and use in `for` headers and `with var` clauses. Inline `const` works the same way. This is the default way to declare locals in Unleashed Pascal. Block-scoped inline vars emit proper DWARF lexical blocks, so the debugger shows only what is in scope at the current line. The hard rule: inline `var` requires `:=`, classic `var` / typed `const` require `=`. Modeswitch `inlinevars`.
 
-`for parallel [(N)] var i := lo to|downto hi [step s] [chunk c] do STMT` runs the loop body across a `BeginThread` worker pool. Iterations are claimed in chunks from a shared atomic counter (each runs exactly once, order undefined; `chunk c` sets the grab size, default about four grabs per worker), the calling thread joins in as a worker, and the loop is a barrier - it returns only after every iteration has finished. Optional pool size `(N)` clamps to `[1, min(count, 256)]`; the default is `min(GetCPUCount, count)`; `parallel(1)` is plain sequential. The body is hoisted into a hidden nested routine so it can reach the enclosing routine's locals (concurrently, so shared writes need atomics or a lock), and sees `WorkerIndex` / `WorkerCount` for per-worker private state. The dispatch follows the loop variable's width, so int64 ranges past 2^31 work, as do enum and char counters. `downto` and `step` compose; the loop variable must be inline (`var`); `continue` works, `break` cancels cooperatively (no new iterations start, running ones finish), `exit` / `goto`-out and `for ... in` are rejected. The first exception raised on any worker is re-raised on the caller after the barrier; a failed thread spawn just means fewer workers. A parallel loop nested inside another runs its inner body sequentially by default (an explicit `(N)` opts back in) so the thread count stays bounded.
+### [Out-Variables](out-var.md)
 
-Enabled via `{$modeswitch parallelfor}`.
+`f(var x)` at an `out`-argument position declares a fresh variable typed from the parameter and scoped to the enclosing block; `f(_)` discards the output. No more pre-declaring a throwaway local for every `Try*` routine. Accepted only at an `out` parameter, resolved after overload selection, and a declared identifier `_` always wins over the discard meaning, so existing code is unaffected. Modeswitch `outvar`.
 
-## [Multi-Variable Initialization](multi-var-init.md)
+### [Statement Expressions](statement-expressions.md)
 
-Initialize several variables of the same type in one declaration, e.g. `a, b, c: integer = 42;`. Works in `var`, typed constants, and inline `var`. Each variable gets an independent copy of the value - assigning to one does not affect the others.
+`if`, `case`, and `try` as expressions that yield a value, computed where it is consumed. Only the taken branch is evaluated, numeric branches widen to a common type, and `try X except 'fallback'` turns an exception into a value. Each branch is a single expression - value-less statements (`raise`, `exit`) are rejected. Modeswitch `statementexpressions`.
 
-Enabled via `{$modeswitch multivarinit}`.
+### [`match` Statement](match.md)
 
-## [For-Step](forstep.md)
+First-match pattern matching - a superset of `case`. It adds string subjects, a catch-all (`_` / `else` / `otherwise`), comma patterns, ranges, subject-less condition branches, tuple patterns with `_` wildcards, a fallthrough mode (`match all` + `leave`), and an expression form. The modern default for value dispatch; reach for `case` only for a plain ordinal switch. Modeswitch `match`.
 
-`step N` clause in `for` loops to advance the counter by an arbitrary positive amount on each iteration. Works with `to` and `downto`, with inline `var`, and with all control-flow constructs (`break`, `continue`, `exit`, `raise`). The step expression is evaluated once before the loop starts; constant `step 1` folds back to a regular for-loop. `step` is a context-sensitive keyword - only recognized between the `to` / `downto` expression and `do`, so existing code with a `step` variable / function / field keeps compiling.
+### [Anonymous Tuples](tuples.md)
 
-Enabled via `{$modeswitch forstep}`.
+Lightweight anonymous record types written in parentheses - `(integer, string)` or `(x, y: integer)` - with literals, destructuring, comparison, `for-in` unpacking, arrays of tuples, and `exit(a, b)` sugar. They replace out-parameter pairs and one-shot record types declared only to return two values. Built on the existing record infrastructure, so managed types, copy semantics, and calling conventions come for free. Modeswitch `tuples`.
 
-## [Flexible Array Members](flexible-arrays.md)
+### [String Interpolation](string-interpolation.md)
 
-C99-style records with a variable-length tail: `data: array[] of T` as the last field. The fixed header has the size `sizeof` reports; the tail extends as far as the allocation says it does, and indexing skips range checks because the FAM has no upper bound. Allocation is a single `GetMem(rec, sizeof(rec)+payload)`, no separate buffer or pointer chase. Useful for Win32 structures with trailing arrays (`TOKEN_GROUPS`, `BITMAPINFO`, ...), network frames, file headers, and inline payloads.
+`$'...'` literals with `{expr}` and `{expr:mask}` placeholders, type-checked and concatenated at compile time - no `+` chains, no `IntToStr()`, no hand-rolled `Format()`. Bare placeholders auto-format by type; masks dispatch to `Format()` / `FormatDateTime()` / `FormatFloat()` / `IntToHex()` by shape and type (those need `uses SysUtils`), and a plain-width mask needs nothing. The default locale is invariant; an `L` prefix opts into the system locale. Modeswitch `interpolatedstrings`.
 
-Enabled via `{$modeswitch flexiblearrays}`.
+### [`for ... step`](forstep.md)
 
-## [Int128 / UInt128](int128.md)
+`step N` in a `for` header advances the counter by an arbitrary positive amount, composing with `to` / `downto`, inline `var`, and `for parallel`. The step is evaluated once before the loop; a constant `step 1` folds back to a regular for-loop. `step` is context-sensitive, so existing code using it as an identifier keeps compiling. Modeswitch `forstep`.
 
-Native 128-bit signed and unsigned integers that behave like any other ordinal - literals, arithmetic, `div` / `mod`, shifts, bitwise, comparisons, `inc` / `dec` / `succ` / `pred`, `abs` / `odd` / `sqr`, `for`, `case`, range / overflow checks, `Str` / `Val`, and `Write` / `Read`. 128-bit literals are gated by the switch; the types are always available. On the 64-bit register targets the common operations are inline register-pair code; `div` / `mod`, overflow-checked `mul` / `neg` and `Str` / `Val` stay RTL helpers (the gcc `__divti3` model), and the remaining CPUs run entirely on the helpers.
+### [Multi-Variable Initialization](multi-var-init.md)
 
-Enabled via `{$modeswitch int128}`.
+Initialize several variables of the same type with one value: `var a, b, c: integer = 42;`. Works in `var` sections, typed constants, and inline `var`, and each name gets an independent copy. For inline vars the initializer is evaluated once and copied to each name. Modeswitch `multivarinit`.
 
-## [Compound Assignment Operators](compound-assignment.md)
+### [128-bit Integers](int128.md)
 
-Word-based modify-and-assign operators that the standard set is missing: `div=`, `mod=`, `and=`, `or=`, `xor=`, `shl=`, `shr=`.
+Native `Int128` and `UInt128` that behave like any other ordinal - arithmetic, `div` / `mod`, shifts, bitwise, comparisons, `inc()` / `dec()` / `succ()` / `pred()`, `for`, `case`, range / overflow checks, `Str()` / `Val()`, and `Write` / `Read` all work. Reach for these instead of a bignum library whenever the values fit 128 bits. The types are always available on every target; only integer literals wider than 64 bits need the switch. On the 64-bit register targets the common operations are inline register-pair code. Modeswitch `int128`.
 
-Always available in every mode; no modeswitch and independent of `{$coperators on}`.
+### [`SwapValues()` Intrinsic](swapvalues.md)
 
-## [zeroinit Procedure Modifier](zeroinit.md)
+`SwapValues(a, b)` swaps two same-typed assignable variables with a bitwise move, callable with no `uses` beyond the implicit `System` unit. For managed types it swaps the reference words with zero refcount churn; property operands swap through a hidden temporary that drives the accessors. A user-declared `SwapValues()` shadows the builtin, so it never breaks existing code. Unleashed-mode only, no modeswitch.
 
-`procedure foo; zeroinit;` injects an implicit `Default(typeof(local))` assignment for every local variable at function entry, scaling automatically as locals are added or removed. Scales over stand-alone routines, methods, constructors, and destructors. The function `Result` is included, and anonymous compound types (inline `array[..] of T` / `record ... end` without a named alias) are covered like any other local. File-type locals keep their RTL init (their proper closed state is not all-zeros). Mutually exclusive with `external`, `interrupt`, and `assembler`. Reads of locals inside the routine no longer raise the uninitialised-variable warning.
+### [`Type()` Intrinsic](type-intrinsic.md)
 
-Unleashed-mode only; no separate modeswitch.
+`Type(expr)` yields the static type of an expression without evaluating it - Pascal's counterpart to `decltype`. Valid in every type-bearing position (declarations, casts, `SizeOf()` / `Default()` arguments, derived types like `array of Type(x)`). The operand is type-checked but never reaches code generation, so `Type(a[0])` is safe on an empty array and `Type(f())` does not call `f`. Unleashed-mode only, no modeswitch.
 
-## [SwapValues Intrinsic](swapvalues.md)
+---
 
-Builtin `SwapValues(a, b)` that swaps two same-typed assignable variables with a bitwise move, callable with no `uses` beyond the implicit `System` unit. For managed types (string, dynamic array, interface, Variant) it swaps the reference words with zero `incr_ref` / `decr_ref` churn; ordinals and pointer-sized operands lower to a register swap, larger types to a raw byte exchange. The point is to swap without dragging in SysUtils (`Swap<T>` / `Exchange<T>`) and its exception and handler setup. `SwapValues` is a fresh name with no RTL clash, and a user-declared `SwapValues` symbol shadows the builtin, so it never breaks existing code. A property operand without an address swaps through a hidden temporary that calls the accessors (like `Inc` on a property), with a suppressible hint about the extra calls.
+## Records and memory layout
 
-Unleashed-mode only; no separate modeswitch.
+### [Composable Records](composable-records.md)
 
-## [Type() Intrinsic](type-intrinsic.md)
+C-struct-grade layout control with Pascal type safety. `embed T;` flattens another record's fields, methods, properties, and operators into the outer one; an anonymous `record ... end;` body flattens inline; `union ... end;` overlaps memory without a discriminator and can appear anywhere in the body. Add per-record and per-field `align` / `size` / `bitsize` modifiers, `bitpacked record of Byte` C-style bitfields with `pad N;`, record-scoped anonymous enums with storage anchors (`kind: (kA, kB) of Byte;`), and compile-time `OffsetOf()` / `BitOffsetOf()` / `AlignOf()` / `BitAlignOf()` / `BitSizeOf()` intrinsics. The tool for porting WinAPI / POSIX headers 1:1. Modeswitch `composablerecords`.
 
-Compile-time `Type(expr)` that yields the static type of an expression without evaluating it. Works in every type-bearing position: `var y: Type(x);`, fields, parameters, function results, typecasts (`Type(x)(v)`), arguments to `SizeOf` / `High` / `Low` / `Default`, and derived types (`array of Type(x)`, `^Type(x)`, `set of Type(x)`, generic specialisation arguments). The operand is parsed and type-checked but never reaches code generation, so `Type(a[0])` is safe on an empty dynamic array, `Type(SomeFunc())` does not call `SomeFunc`, and range checks never fire on the operand. Composes with inline-var type inference, so a single `var z := ...` site can drive multiple downstream declarations spelled `Type(z)`. Disambiguated from the `type` keyword purely by the trailing `(`, so `type X = type Y` strong aliases and ordinary type sections keep working unchanged.
+### [Flexible Array Members](flexible-arrays.md)
 
-Unleashed-mode only; no separate modeswitch.
+A C99-style variable-length tail: `data: array[] of T` as the last record field. The header has the size `sizeof()` reports; the tail extends as far as the allocation says, and indexing skips range checks because there is no upper bound. One `GetMem(rec, sizeof(rec)+payload)` covers header and tail together - the honest replacement for the `array[0..0]` / `ANYSIZE_ARRAY` hack. An optional `count` clause (or automatic detection of the preceding count field) drives debugger pretty-printing. Modeswitch `flexiblearrays`.
 
-## [Indexed Labels & Lazy Labels](indexed-labels.md)
+### [Static Variables](static-section.md)
 
-Declare arrays of labels with numeric ranges (`label state[0..4]`) or string keys (`label action['start', 'stop']`) and jump to them by index. Useful for dispatch tables and state machines.
+A writable `static` storage class with program-wide lifetime and block-local scope - C's `static int x;` inside a function. A section form takes compile-time initializers and lands in the data segment at zero runtime cost; an inline form takes runtime initializers behind a once-only guard (set before evaluation, so a raised initializer leaves the variable zeroed and is not retried). Modeswitches `staticsection` and `inlinestatic`.
 
-Available whenever `{$goto on}` is active; no dedicated modeswitch.
+### [Scoped Cleanup - `defer`, `autofree`, scoped `with`](autofree.md)
 
-## [Composable Records](composable-records.md)
+`defer STATEMENT;` registers an action to fire at scope exit in LIFO order (on normal exit, `exit`, `break`, `continue`, and exception; argument expressions evaluated at exit). `autofree EXPR` turns a fresh class instance into a scoped resource with a nil-guarded `Free()`. The `with` statement gains inline-var bindings (`with var x := autofree T.Create do ...`) so the holder is named, scoped, and cleaned up in one line. The default replacement for `try..finally` boilerplate. Modeswitch `autofree`.
 
-Record composition without duplicating fields, plus C-style memory overlap and per-field layout control. Three composition forms - `embed TBase;` flattens fields of an existing record into the outer scope (declaration-time duplicate detection rejects name collisions), `record fields end;` (and `packed`/`bitpacked` variants) does the same for an inline anonymous record, the classic `name: T;` keeps the regular named subfield. Modern `union ... end;` replaces `case TYPE of` for plain memory overlap, can appear anywhere in the body, multiple unions per record allowed; optional `union size N` (assert + pad in bytes) / `union bitsize N` (assert in bits, byte storage) / `union align N` (cache-line placement) / `union of TYPE` (size+align+default type anchor) modifiers. `bitpacked record of TYPE` plus innermost-wins propagation enables C-style `name: N;` bitfield syntax inside (translates to `name: T bitsize N`) and `pad N;` / `pad 0;` anonymous padding / alignment markers. Per-field modifiers `align N` / `bitalign N` / `size N` / `bitsize N` give byte- and bit-level layout control for faithful WinAPI / POSIX struct ports. `OffsetOf()` / `BitOffsetOf()` / `AlignOf()` / `BitAlignOf()` / `BitSizeOf()` intrinsics for compile-time layout introspection, honouring per-field overrides where applicable. `GetMemAligned` / `AllocMemAligned` / `ReAllocMemAligned` / `FreeMemAligned` in the `system` unit deliver aligned heap allocation for cache-line patterns.
+### [`zeroinit` Procedure Modifier](zeroinit.md)
 
-Enabled via `{$modeswitch composablerecords}`.
+`procedure foo; zeroinit;` zero-initializes every local (including `result`) at entry, in declaration order, before any user statement. New locals are covered automatically, and reads of locals no longer raise the uninitialized-variable warning. Deterministic stack frames for defensive code, codegen targets, and FFI shims. File-type locals keep their RTL init; mutually exclusive with `external` / `interrupt` / `assembler`. Unleashed-mode only, no modeswitch.
 
-## [Auto-Properties](auto-properties.md)
+### [Introduced Functions, Procedures and Intrinsics](introduced-functions.md)
 
-A property with a type but no `read` / `write` clause synthesizes a `strict private` backing field named `F` + the property name and binds the property straight to it (`read FName write FName`) - no getter / setter method, identical code to a hand-written field-backed property. A trailing `readonly` / `writeonly` directive after the property's semicolon (`property Id: Integer; readonly;`, like a procedure directive) narrows it to a single direction; both are soft keywords. A `= constexpr` after the type seeds the backing field at construction (`property Port: Integer = 8080;`), before the constructor body so a constructor can override it. Class properties get a `class var` backing field, records get an ordinary field, and published auto-properties are RTTI-complete. The backing field is a real member reachable by name from the declaring type's methods. Collisions, indexed bare properties, and `readonly; writeonly;` together are compile errors.
+A reference table of identifiers Unleashed adds that user code can call without an extra `uses`: the composable-records layout intrinsics (`OffsetOf()`, `BitOffsetOf()`, `AlignOf()`, `BitAlignOf()`, extended `BitSizeOf()`), and the aligned heap allocator in the `system` unit (`GetMemAligned()`, `AllocMemAligned()`, `ReAllocMemAligned()`, `FreeMemAligned()`) - the runtime half of `record align 64` cache-line layouts.
 
-Enabled via `{$modeswitch autoproperties}`.
+---
 
-## [Tweaks](tweaks.md)
+## Classes and generics
 
-Small semantic adjustments that make standard Pascal constructs behave the way most people expect them to. No dedicated modeswitch - these are unleashed-mode-only. Currently covers the preserved for-loop counter (`for i := 1 to N do ... break;` keeps the right value of `i` after the loop), with more entries to follow.
+### [Auto-Properties](auto-properties.md)
 
-## [Extra Improvements](extra-improvements.md)
+A property with a type but no `read` / `write` synthesizes a `strict private` backing field and binds straight to it - identical code to a hand-written field-backed property, zero overhead. A `= constexpr` seeds the field at construction (before the constructor body); `readonly` / `writeonly` narrow the direction; `class property` gets a `class var` field; records work too; and published auto-properties are RTTI-complete. Modeswitch `autoproperties`.
 
-Catch-all page for smaller, targeted improvements that unlock Pascal patterns standard FPC modes reject - e.g. string-to-ordinal typecast in constant expressions (`dword('RIFF')`), Delphi-style implicit `generic` / `specialize` syntax made available in any mode via `{$modeswitch implicitgenerics}`, or the `array[N] of T` shorthand for `array[0..N-1] of T`. Some entries are gated on their own modeswitch (and enabled by default in `unleashed`), others are `unleashed`-only with no separate switch; each entry on the page states which.
+### [Extra Improvements](extra-improvements.md)
 
-## [Multiline Strings](multiline-strings.md)
+Smaller unlocks that stock modes reject, gathered on one page: **string-to-ordinal cast** (`dword('RIFF')` folds to a native-endian constant, modeswitch `stringordcast`), **type helpers on any named type** and **multi-helpers** (`typehelpers` / `multihelpers`), **implicit generics** (Delphi-style `<T>` without `generic` / `specialize` - the switch replaces the explicit keywords rather than stacking on them, modeswitch `implicitgenerics`), **nested generic methods** (a generic method with its own type parameter inside a generic class, unleashed-only), and the **`array[N]` size shorthand** (`array[10] of T` = `array[0..9] of T`, unleashed-only). Compound assignment and `inc()` / `dec()` on properties have moved to their own page below.
 
-Two delimiter forms for string literals spanning multiple source lines without manual `+` or `LineEnding`: backtick `` `...` `` (extended literal, embedded newlines tolerated) and a separate triple-quote form with indentation handling. They differ in tokenization and composition rules - the page covers both in depth, including escaping and interaction with concatenation. Stock FPC actually accepts these but never documented them; this page fills that gap.
+---
 
-Enabled via `{$modeswitch multilinestrings}`.
+## Your binary, your rules
 
-## [String Interpolation](string-interpolation.md)
+### [Strip RTTI](strip-rtti.md)
 
-Embed expressions inside a string literal using `$'Hello {name}, age {age:%2d}'`. Two placeholder forms: bare `{expr}` (auto-format by type) and `{expr:mask}` where the mask is the raw text after the first `:` (Format / FormatDateTime / FormatFloat / IntToHex picked by type and mask shape). Default locale is invariant (`L` prefix opts into the system locale). The page covers the full type x mask dispatch table, escaping rules, required units, and notes for users coming from C# / Python / JavaScript.
+`{$modeswitch striprtti}` (opt-in, per unit) empties the type-name strings in RTTI / VMT structures, so an ASCII dump of the binary no longer reveals internal type names. Three whitelisting mechanisms cover code you do and do not control: the `expose` keyword per declaration, `{$rttiexpose TForm*}` per unit, and `--rttiexpose=TForm*` globally on the command line. Anything that walks RTTI by string (`Application.CreateForm`, `MethodAddress()`, `GetPropInfo()`, `WriteStr()` on enums) needs its types whitelisted. Off by default in unleashed mode.
 
-Enabled via `{$modeswitch interpolatedstrings}`.
+### [Custom Binary Metadata](binary-metadata.md)
 
-## [Strip RTTI](strip-rtti.md)
+Three CLI flags that override metadata the compiler embeds into the binary: `--fpcsignature=` (the `.fpc.version` ident string on every target; an empty value drops the section entirely), `--linkerversion=` and `--osversion=` (PE optional header fields on Windows, the latter accepting names like `Win11` or numeric `Major.Minor`). Descriptive metadata only - generated code is unchanged. CLI-only, no directive form.
 
-Replaces type-name strings emitted into RTTI / VMT structures with empty strings, so an ASCII dump of the binary no longer reveals the program's internal type structure. Comes with three whitelisting mechanisms: the `expose` keyword (per-declaration), the `{$rttiexpose}` directive (per-unit glob list), and the `--rttiexpose=` CLI flag (global glob list). The whitelisting decision is precomputed once per type at parse time and stored as a flag on the `tdef`, so RTTI emit stays cheap.
+### [Embed a file at compile time - `$embedstr` / `$embedbytes`](embed.md)
 
-Enabled via `{$modeswitch striprtti}`. Off by default in `unleashed` mode.
+`{$embedstr NAME 'path'}` emits `const NAME: String = '...';` and `{$embedbytes NAME 'path'}` emits `const NAME: array[0..N-1] of byte = (...);`, reading the file as raw bytes at compile time - the asset ships inside the binary, no runtime file I/O. Each has a 1-arg form emitting a bare value expression for inline use. Path resolution matches `{$I}`. Available in every mode, no modeswitch.
 
-## [Custom Binary Metadata](binary-metadata.md)
+---
 
-Three CLI flags that override metadata fields the compiler embeds into the produced binary: `--fpcsignature=` (the `.fpc.version` ident string, every target), `--linkerversion=` (PE optional header linker version, Windows only), `--osversion=` (PE optional header minimum OS version, Windows only, accepts symbolic names like `Win11` or numeric `Major.Minor`). Useful for distribution branding, build mimicry, and loader gating.
+## Strings and literals
 
-CLI-only; no directive form.
+### [Multiline Strings](multiline-strings.md)
 
-## [Embed file at compile time - `$embedstr` / `$embedbytes`](embed.md)
+Two delimiter forms for literals spanning source lines without manual `+` or `LineEnding`: backtick `` `...` `` (byte-exact, no trimming by default) and triple-quote `'''...'''` (indentation auto-stripped to the closing delimiter's column). Companion directives tune the line ending baked in and the backtick trimming. Modeswitch `multilinestrings`.
 
-`{$embedstr NAME 'path'}` emits `const NAME: String = '...';` and `{$embedbytes NAME 'path'}` emits `const NAME: array[0..N-1] of byte = (...);` at the directive site, reading the file as raw bytes. Each also has a 1-arg form (`{$embedstr 'path'}` / `{$embedbytes 'path'}`) that emits a bare value expression - a String or a `[$xx,...]` array literal - usable as an inline function argument or comparison operand. Path resolution matches `{$I}`. Use `$embedstr` for text / move-out-of buffers, `$embedbytes` when an API wants `array of byte`.
+---
 
-Directive only; available in every mode.
+## Tweaks and quality of life
 
-## [Introduced Functions, Procedures and Intrinsics](introduced-functions.md)
+### [Compound Assignment](compound-assignment.md)
 
-Reference table of identifiers FPC Unleashed adds on top of stock FPC and that user code can call without an extra `uses`: compile-time intrinsics (`OffsetOf`, `BitOffsetOf`, `AlignOf`, `BitAlignOf`, extended `BitSizeOf`), and the aligned heap allocator in the `system` unit (`GetMemAligned`, `AllocMemAligned`, `ReAllocMemAligned`, `FreeMemAligned`). Each row lists the signature, category (intrinsic / RTL `system` / other RTL unit), gating modeswitch, and the feature page that covers the surrounding context.
+Modify-and-assign for every operator, in three layers: the word-based operators `div=`, `mod=`, `and=`, `or=`, `xor=`, `shl=`, `shr=` (every mode, no switch); the C-style `+=`, `-=`, `*=`, `/=` (on automatically in unleashed, `{$coperators on}` elsewhere); and properties as targets, where `prop += x` and `inc(prop, n)` expand to getter-plus-setter calls that stock FPC rejects (unleashed-only).
+
+### [Indexed Labels and Lazy Labels](indexed-labels.md)
+
+Declare a family of labels keyed by ordinal ranges (`label state[0..4]`) or strings (`label action['start', 'stop']`) and jump to them by index - a runtime index compiles to a case dispatch, ideal for state machines and jump tables. In unleashed mode labels also no longer need declaring before use (`goto done;` works without a prior `label`). Available whenever `{$goto on}` is active; lazy labels are unleashed-only.
+
+### [Tweaks](tweaks.md)
+
+Small semantic adjustments that make standard constructs behave the way most people expect, all unleashed-mode-only: the **preserved for-loop counter** (after `for i := 1 to N do ... break;` the counter keeps its value, undefined in stock Pascal), the **`is not` / `not in`** operators (shorthand for the parenthesized negation), and the module switches (`goto`, C-operators, macros) that unleashed turns on automatically.

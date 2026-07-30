@@ -1,116 +1,153 @@
 # Multi-Variable Initialization
 
-Initialize multiple variables of the same type with a single value in one declaration. Works in `var`, `const` (typed constants), and inline `var` statements.
+Initialize several variables of the same type with a single value in one declaration: `a, b, c: integer = 42;`. Works in `var` sections (global and local), typed `const` sections, and inline `var` statements. Each name gets its own independent copy of the value.
 
-Feature gated by modeswitch `MULTIVARINIT`, enabled by default in `{$mode unleashed}`.
+Modeswitch: `multivarinit`, enabled by default in `{$mode unleashed}`. Opt in from another mode with:
 
-```pas
+```pascal
 {$mode objfpc}
 {$modeswitch multivarinit}
 ```
 
-## Global variables
+## `var` sections
 
-```pas
+```pascal
 var
   a, b, c: integer = 42;
-  x, y:    double  = 3.14;
+  x, y: double = 3.14;
   ok, done: boolean = false;
 ```
 
-Each variable gets its own copy of the value in the `.data` section. They are fully independent after initialization - assigning to `a` does not affect `b` or `c`.
+Global variables each get their own copy of the value in the data segment. Local variables share a single internal default-value symbol; the compiler assigns it to each variable at routine entry, exactly as it does for single-variable defaults:
 
-## Local variables
-
-```pas
-procedure Foo;
+```pascal
+procedure foo;
 var
   la, lb, lc: integer = 10;
 begin
-  // la=10, lb=10, lc=10
+  // la = 10, lb = 10, lc = 10
 end;
 ```
 
-All variables share a single internal default-value symbol. The compiler generates an assignment from that symbol to each variable at procedure entry, just as it does for single-variable defaults.
-
 ## Typed constants
 
-```pas
+```pascal
 const
-  MinX, MinY, MinZ: integer = 0;
-  MaxX, MaxY, MaxZ: integer = 100;
+  MIN_X, MIN_Y, MIN_Z: integer = 0;
+  MAX_X, MAX_Y, MAX_Z: integer = 100;
 ```
 
-Each constant gets its own storage in the constant data section (or read-only section when `{$J-}` is active). Record and array typed constants work too:
+Each constant gets its own storage in the constant data section (read-only under `{$J-}`). Aggregate typed constants work too - the initializer is re-parsed per name via token replay:
 
-```pas
+```pascal
 type
   TPoint = record x, y: integer; end;
 
 const
-  Origin, Default: TPoint = (x: 0; y: 0);
+  ORIGIN, FALLBACK: TPoint = (x: 0; y: 0);
 ```
 
-## Inline variables with explicit type
+## Inline `var`
 
-Requires `{$modeswitch inlinevars}` (on by default in unleashed mode).
+With `inlinevars` active (default in unleashed mode) the multi-name form works at the point of use, with an explicit type or with inference:
 
-```pas
-procedure Bar;
-begin
-  var p, q: integer := 99;
-  writeln(p, ' ', q); // 99 99
-end;
+```pascal
+var p, q: integer := 99;    // explicit type
+var i, j := 10;             // both LongInt (inferred)
+var s1, s2 := 'hello';      // both AnsiString
 ```
 
-The expression is evaluated once into a compiler-generated temporary, then assigned to each variable. This means a function call in the initializer executes only once:
+Inference follows the regular inline-var rules: sub-32-bit integers promote to `LongInt`, character literals to the mode's default string type.
 
-```pas
-var a, b: integer := ComputeValue; // ComputeValue called once
+### Initializer runs once
+
+For inline declarations the expression is evaluated once into a hidden temporary and then assigned to each name. A function call in the initializer executes exactly one time:
+
+```pascal
+var a, b, c := computeValue; // computeValue called once, result copied 3x
 ```
-
-## Inline variables with type inference
-
-```pas
-procedure Baz;
-begin
-  var i, j   := 10;    // both LongInt
-  var s1, s2 := 'hello'; // both String
-end;
-```
-
-The type is inferred from the expression and applied to all variables. Standard promotions apply: sub-32-bit integers promote to `LongInt`, character literals promote to `String`.
 
 ## Semantics
 
 ### Value copy, not aliasing
 
-Every variable receives an independent copy of the initial value. After initialization, the variables are completely unrelated:
+Every variable receives an independent copy. After initialization they are unrelated:
 
-```pas
+```pascal
 var a, b: integer = 1;
 a := 42;
 // b is still 1
 ```
 
-### Expression evaluation
+### Evaluation per context
 
-| Context                    | Evaluation                                        |
-|----------------------------|---------------------------------------------------|
-| `var` section (global/local) | Parsed once at compile time as a typed constant  |
-| `const` section            | Parsed once at compile time per variable (token replay) |
-| Inline `var` with `:=`    | Evaluated once at runtime, assigned to each variable |
+| Context | Evaluation |
+|---|---|
+| `var` section (global / local) | parsed once at compile time as a typed constant |
+| `const` section | parsed once at compile time per name (token replay) |
+| inline `var` with `:=` | evaluated once at runtime, assigned to each name |
 
-### Compatibility with single-variable syntax
+`var` / `const` sections keep the classic requirement of a compile-time constant expression; runtime expressions are allowed only in the inline form.
 
-When only one variable is listed, behavior is identical to standard Free Pascal. The modeswitch adds no overhead and changes no existing semantics.
+### Compatibility
+
+With a single name the behavior is identical to stock FPC - the modeswitch adds no overhead and changes no existing semantics. Code that never lists more than one name per initializer compiles bit-for-bit the same.
 
 ## Limitations
 
-- Thread variables (`threadvar`) cannot have initializers (same as standard FPC).
-- The initializer must be a valid typed constant expression for `var` and `const` sections. Runtime expressions are only allowed in inline `var` declarations.
-- `absolute` and `external` directives remain single-variable only.
+- `threadvar` cannot have initializers (same as stock FPC).
+- The `absolute` and `external` directives stay single-variable only.
 
 ## IDE support
 
-Lazarus CodeTools recognize the multi-variable syntax in `const` sections. Code completion resolves the type for all variables in the list, so `pp.{Ctrl+Space}` shows record fields when `pp` is part of a multi-variable typed constant declaration.
+Lazarus CodeTools recognize the multi-name syntax in `const` sections; code completion resolves the type for every name in the list, so member completion works on any of them.
+
+## Demo
+
+```pascal
+program multi_var_init_demo;
+
+{$mode unleashed}
+
+var
+  calls: integer = 0;
+
+function nextSeed: integer;
+begin
+  inc(calls);
+  result := calls*100;
+end;
+
+const
+  MIN_X, MIN_Y: integer = 0;
+  MAX_X, MAX_Y: integer = 100;
+
+var
+  hp, mp, xp: integer = 50;
+
+begin
+  writeln($'bounds: x {MIN_X}..{MAX_X}, y {MIN_Y}..{MAX_Y}');
+  writeln($'hp={hp} mp={mp} xp={xp}');
+
+  hp := 75;
+  writeln($'after hp := 75: hp={hp} mp={mp} (independent copies)');
+
+  // inline: initializer evaluated once, assigned to each name
+  var s1, s2, s3 := nextSeed;
+  writeln($'s1={s1} s2={s2} s3={s3}, nextSeed called {calls} time(s)');
+
+  var w, h: integer := 640;
+  writeln($'w={w} h={h}');
+  {$ifdef WINDOWS}readln;{$endif}
+end.
+```
+
+Output:
+
+```
+bounds: x 0..100, y 0..100
+hp=50 mp=50 xp=50
+after hp := 75: hp=75 mp=50 (independent copies)
+s1=100 s2=100 s3=100, nextSeed called 1 time(s)
+w=640 h=640
+```

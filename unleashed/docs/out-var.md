@@ -1,28 +1,28 @@
 # Out-Variables
 
-Declare a variable inline at an `out`-argument position, or discard the result, instead of pre-declaring a throwaway variable for every output. Inline `var x` binds the output; `_` discards it.
+Declare a variable inline at an `out`-argument position, or discard the output, instead of pre-declaring a throwaway local for every output. `var x` at the argument binds the output to a fresh variable; `_` throws it away.
 
-```pas
+```pascal
 function TryParse(s: string; out value: integer): boolean; ...
 
-if TryParse('42', var n) then       // `n` is declared here, type inferred
-  Writeln(n);                       // and stays in scope afterwards
+if TryParse('42', var n) then       // n declared here, type inferred
+  writeln(n);                       // and stays in scope afterwards
 
-GetCursorPos(_);                    // result not wanted: discard it
+GetCursorPos(_); // value not wanted: discard it
 ```
 
-Feature gated by modeswitch `OUTVAR`, enabled by default in `{$mode unleashed}`.
+Modeswitch: `outvar`, enabled by default in `{$mode unleashed}`.
 
 ## `var x` - inline out-variable
 
-At an `out` argument, `var name` declares a fresh variable whose type is taken from the matched `out` parameter. The variable lands in the enclosing block (the same scope an ordinary inline `var` would get) and is live from the call onward:
+At an `out` argument, `var name` declares a fresh variable whose type is taken from the matched `out` parameter. The variable lands in the nearest enclosing block (the same scope an ordinary inline `var` would get) and is live from the call onward:
 
-```pas
+```pascal
 procedure SplitName(full: string; out first, last: string); ...
 
 SplitName('Ada Lovelace', var fn, var ln);
-Writeln(fn);                        // Ada
-Writeln(ln);                        // Lovelace
+writeln(fn);                        // Ada
+writeln(ln);                        // Lovelace
 ```
 
 No type annotation is written or allowed - the type is always inferred from the parameter. The variable behaves like any local from then on: assignable, addressable, captured by closures, finalized at scope end.
@@ -33,7 +33,7 @@ No type annotation is written or allowed - the type is always inferred from the 
 
 A bare `_` at an `out` argument throws the value away. The call still runs; the compiler passes a hidden local that nobody can name:
 
-```pas
+```pascal
 // only the boolean result matters, not the position
 if Pos2('x', s, _) then ...
 
@@ -41,106 +41,146 @@ if Pos2('x', s, _) then ...
 GetState(_);
 ```
 
-`_` is the same "don't care" marker unleashed already uses for tuple destructuring (`var (x, _, z) := t`) and match wildcards.
+`_` is the same "don't care" marker unleashed already uses in tuple destructuring (`var (x, _, z) := t`) and match wildcards.
 
 ### A declared `_` always wins
 
 `_` counts as a discard only when no identifier `_` is in scope. If one exists - a local, a field, a global from a used unit - `_` means that variable, everywhere, in every parameter position:
 
-```pas
+```pascal
 var _: integer;
 ...
-GetValue(_);                        // writes into the variable `_`
-Writeln(_);                         // prints it
+Fill(_);                            // writes into the variable _
+writeln(_);                         // prints it
 ```
 
-This keeps the feature backward compatible: code that declares `_` compiles and behaves identically with the modeswitch on or off.
+This keeps the feature backward compatible: code that declares `_` compiles and behaves identically with the modeswitch on or off. Note the flip side: with an `integer` variable `_` in scope, `_` at a `string` out parameter is now a type error, not a discard.
 
 ### No discard at intrinsics
 
-`Write`, `WriteLn`, `Read`, `ReadLn`, `Str` and friends are compiler intrinsics without `out` parameters, so `_` is never a discard there. With no `_` declared it is simply an unknown identifier:
+`Write`, `Read`, `Str()`, `Val()` and the other compiler intrinsics have no true `out` parameters, so `_` is never a discard there. With no `_` declared it is simply an unknown identifier:
 
-```pas
-WriteLn(_);                         // Error: Identifier not found "_"
+```pascal
+writeln(_);                         // Error: Identifier not found "_"
+Val(s, _, code);                    // Error: Identifier not found "_"
 ```
 
 ## Where it is allowed
 
-`var x` / `_` are accepted only at an **`out`** parameter. At a `var`, `const`, or value parameter they are rejected:
+`var x` / `_` are accepted only at an **`out`** parameter. At `var`, `const`, and value parameters the placeholder does not match, so the call fails overload matching (for a `var` parameter: `Call by var for arg no. N has to match exactly: Got "<erroneous type>" expected "T"`):
 
-```pas
-procedure ByValue(x: integer);
-procedure ByVar(var x: integer);
+```pascal
+procedure byVar(var x: integer);
 
-ByValue(var y);                     // error: not an out parameter
-ByVar(var y);                       // error: not an out parameter
+byVar(var y); // rejected - not an out parameter
 ```
 
-A `var` parameter is read on entry, so capturing it as a fresh (uninitialised) variable would hide a bug; value / const parameters are inputs, not outputs. The restriction is deliberate.
+The restriction is deliberate: a `var` parameter is read on entry, so capturing it as a fresh uninitialized variable would hide a bug; value / `const` parameters are inputs, not outputs.
 
 ## Type inference happens after overload resolution
 
-`var x` / `_` carry no type until a candidate is chosen, so they match an `out` parameter of *any* type. If several overloads differ only in that `out` parameter's type, the call is ambiguous:
+`var x` / `_` carry no type until a candidate is chosen, so they match an `out` parameter of *any* type. If overloads differ only in that `out` parameter's type, the call is ambiguous:
 
-```pas
+```pascal
 procedure Take(out x: integer); overload;
-procedure Take(out x: string);  overload;
+procedure Take(out x: string); overload;
 
-Take(var y);                        // error: can't determine which overload
+Take(var y); // Error: Can't determine which overloaded function to call
 ```
 
-Pin it down by giving the variable a type through a different argument, or by not overloading on the out type.
+Pin it down through another argument, or do not overload on the out type alone.
 
 ## Name collision
 
-`var name` declares a new variable, so reusing a name already visible in scope is a duplicate, exactly as a second ordinary declaration would be:
+`var name` is a real declaration, so a name already visible in scope is a duplicate:
 
-```pas
+```pascal
 var offset: integer;
 ...
-Find(s, sub, var offset);           // error: duplicate identifier "offset"
+Find(s, sub, var offset); // Error: Duplicate identifier "offset"
 ```
 
 Drop the `var` to pass the existing variable (`Find(s, sub, offset)`), or pick a fresh name.
 
 ## Managed types
 
-Captured and discarded out-variables of a managed type (string, dynamic array, interface, Variant) are ordinary locals, so they are initialised on entry and finalised at scope end through the normal mechanism - no leaks, including for `_` discards in a loop:
+Captured and discarded out-variables of a managed type (string, dynamic array, interface, `Variant`) are ordinary locals: initialized on entry, finalized at scope end through the normal mechanism. Discards in a loop finalize per iteration - no leaks:
 
-```pas
+```pascal
 procedure Build(out s: string); ...
 
 Build(var text);                    // text finalized at scope end
-Writeln(text);
-
-for i := 1 to N do
-  Build(_);                         // hidden temp finalized each iteration
+for i := 1 to n do
+  Build(_);                         // hidden temp finalized each pass
 ```
 
 ## Scope
 
-The variable is added to the nearest enclosing block: a routine body, a nested `begin..end`, or the program / unit main block. It is not limited to the single statement - like an inline `var`, it lives to the end of that block:
+The variable is added to the nearest enclosing block: a routine body, a nested `begin..end`, or the program main block. Like an inline `var`, it lives to the end of that block, not just the one statement:
 
-```pas
-procedure Run;
+```pascal
+procedure run;
 begin
-  if Lookup(key, var found) then    // `found` declared in Run's body
-    Use(found);
-  Writeln(found);                   // still in scope here
+  if lookup(key, var found) then use(found);
+  writeln(found); // still in scope here
 end;
 ```
 
 ## How it works
 
-The parser turns `var x` / `_` into a load of a placeholder local (created with an error type) and flags the call argument. Overload matching treats a flagged argument as an exact match for an `out` parameter of any type and a non-match for anything else. Once a candidate wins, binding sets the placeholder's type to the chosen `out` parameter's type and re-checks the load. The flag is cleared at that point, so it never reaches code generation or a `.ppu`.
+The parser turns `var x` / `_` into a load of a placeholder local (created with an error type) and flags the call argument. Overload matching treats a flagged argument as an exact match for an `out` parameter of any type and a non-match for anything else. Once a candidate wins, binding sets the placeholder's type to the chosen `out` parameter's type and re-checks the load. The flag is cleared at that point, so it never reaches code generation or a PPU.
 
 ## Want it off?
 
-```pas
+```pascal
 {$mode unleashed}
 {$modeswitch outvar-}
 
-GetCursorPos(var p);                // syntax error: `var` not valid here
+GetCursorPos(var p); // no longer recognized - syntax error
 ```
 
 Outside unleashed (or with the switch off) `var` / `_` at an argument are not recognized, so existing code is never affected - the feature is purely opt-in.
+
+## Demo
+
+```pascal
+program out_var_demo;
+
+{$mode unleashed}
+
+uses SysUtils;
+
+procedure splitAt(const s: string; sep: char; out head, tail: string);
+begin
+  var p := Pos(sep, s);
+  if p = 0 then begin
+    head := s;
+    tail := '';
+  end else begin
+    head := Copy(s, 1, p-1);
+    tail := Copy(s, p+1, Length(s));
+  end;
+end;
+
+begin
+  // declare receivers right at the call
+  splitAt('width=1920', '=', var key, var value);
+  if TryStrToInt(value, var w) then writeln($'{key} -> {w} (as integer)');
+
+  // only care whether it parses - discard the value
+  if TryStrToInt('oops', _) then writeln('parsed') else writeln('not a number');
+
+  // the variables are ordinary locals from here on
+  w += 80;
+  writeln($'padded: {w}');
+  {$ifdef WINDOWS}readln;{$endif}
+end.
+```
+
+Output:
+
+```
+width -> 1920 (as integer)
+not a number
+padded: 2000
+```

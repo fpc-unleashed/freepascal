@@ -1,36 +1,69 @@
-# Indexed Labels
+# Indexed Labels and Lazy Labels
 
-Declare arrays of labels and jump to them by index or string key. Useful for dispatch tables and state machines.
+Two extensions to `label` / `goto`. **Indexed labels** declare a whole family of labels under one name, keyed by ordinal values or strings, and jump to them by index - including a runtime index, which compiles to a case dispatch. **Lazy labels** drop the declaration requirement entirely: a `goto` to an undeclared name simply creates the label.
 
-Always available when `{$goto on}` is active. No modeswitch required.
+Availability:
 
-## Numeric range syntax
+- Indexed labels: every mode, whenever goto support is active (`{$goto on}` / `-Sg`; automatic in `{$mode unleashed}`). No modeswitch.
+- Lazy labels: `{$mode unleashed}` only.
 
-```pas
+## Indexed labels
+
+### Numeric ranges
+
+```pascal
 label state[0..4];
+
+goto state[2];
+
+state[0]: writeln('zero');
+state[1]: writeln('one');
+state[2]: writeln('two');
+state[3]: writeln('three');
+state[4]: writeln('four');
 ```
 
-Declares labels `state$0` through `state$4` internally. Use them with constant or variable indices:
+`label state[0..4]` declares five labels addressed as `state[0]` .. `state[4]`. As with plain labels, control falls through from one label to the next unless you jump away.
 
-```pas
-goto state[0]; // jump to state$0
+### Value lists, whole types, constant expressions
 
-state[0]: writeln('state 0');
-state[1]: writeln('state 1');
-state[2]: writeln('state 2');
-state[3]: writeln('state 3');
-state[4]: writeln('state 4');
+The index spec accepts more than a plain range - explicit value lists, a whole ordinal type, constant expressions, and mixes of all of them:
+
+```pascal
+label steps[1, 2, 3];     // explicit value list
+label bits[byte];         // whole ordinal type: 0..255
+label edge[0..3-1];       // constant expressions fold: 0..2
+label mix[1..3, 7];       // ranges and values mix
 ```
 
-## String key syntax
+Declared labels that are never defined are fine - `label bits[byte]` declares 256 potential targets and you define only the ones you use. Constant indices in `goto` fold at compile time to a direct jump with zero overhead:
 
-```pas
+```pascal
+const BASE = 3;
+goto steps[BASE-1]; // resolves to a direct jump to steps[2]
+```
+
+### Ordinal index types
+
+Any ordinal type works as the key space, enums included:
+
+```pascal
+type TMode = (mFast, mSlow, mIdle);
+
+label handler[mFast..mIdle];
+
+goto handler[mode]; // mode: TMode, runtime dispatch
+
+handler[mFast]: ...
+handler[mSlow]: ...
+handler[mIdle]: ...
+```
+
+### String keys
+
+```pascal
 label action['start', 'stop', 'reset'];
-```
 
-Declares labels keyed by string. Jump with a string constant:
-
-```pas
 goto action['start'];
 
 action['start']: writeln('starting');
@@ -38,83 +71,114 @@ action['stop']:  writeln('stopping');
 action['reset']: writeln('resetting');
 ```
 
-## Variable index
+String keys are case-insensitive: `goto action['START']` jumps to `action['start']`. Only constant strings work - a string key is resolved entirely at compile time.
 
-When the index is a variable (not a compile-time constant), the compiler generates a case dispatch that jumps to the correct label. Requires an explicit `label` declaration with a range:
+### Variable index: runtime dispatch
 
-```pas
+When the index is a runtime value, the compiler generates a hidden case statement that jumps to the matching label:
+
+```pascal
 label state[0..4];
 var n: integer;
 
 n := 2;
-goto state[n]; // dispatches via case statement
+goto state[n]; // lowered to: case n of 0: goto state[0]; ... end
 ```
 
-Variable indices only work with numeric ranges, not string keys.
+A variable index requires an explicit `label` declaration with an ordinal range - the declaration is what tells the compiler the full target set. Without it the goto reports `Error: Label not found`. String-keyed labels never take a variable index (their resolution is compile-time only).
 
-## Ordinal index types
+## Lazy labels
 
-The index range can use any ordinal type:
+In `{$mode unleashed}` a `goto` to an undeclared name creates the label on the spot - no `label` section needed:
 
-```pas
-type TMode = (mFast, mSlow, mIdle);
-
-label handler[mFast..mIdle];
-
-goto handler[mode];
-
-handler[mFast]: writeln('fast');
-handler[mSlow]: writeln('slow');
-handler[mIdle]: writeln('idle');
-```
-
-## Constant expressions
-
-Compile-time constant expressions in the index resolve to a direct jump with zero overhead:
-
-```pas
-label state[0..9];
-
-const base = 3;
-goto state[base + 1]; // resolves to goto state$4 at compile time
-```
-
-# Lazy Label Declarations
-
-Standard Pascal requires all labels to be declared in a `label` section before use. Unleashed mode relaxes this: if a `goto` references a label name that has not been declared, the compiler creates the label automatically.
-
-```pas
-{$goto on}
-procedure Foo;
+```pascal
 begin
-  goto done;       // no prior "label done;" needed
-  writeln('skip');
+  goto done;
+  writeln('skipped');
 done:
-  writeln('end');
+  writeln('done');
 end;
 ```
 
-## Lazy labels with constant index
+Constant-index gotos are lazy too; each referenced target is auto-declared as it is encountered:
 
-Lazy labels also work with constant-index gotos. The compiler auto-declares the individual label targets as they are encountered:
-
-```pas
-{$goto on}
-procedure Bar;
-begin
-  goto step[1]; // auto-declares label "step$1"
+```pascal
+goto step[1]; // auto-declares the indexed label family
 
 step[0]: writeln('zero');
 step[1]: writeln('one');
-step[2]: writeln('two');
-end;
 ```
 
-## Limitations
+### Lazy limitations
 
-- Variable-index goto (`goto name[variable]`) requires an explicit `label name[lo..hi]` declaration. Lazy labels do not create the range information needed for variable dispatch.
-- String-key labels always require an explicit `label` declaration with the key list.
+- A variable-index `goto name[n]` still requires an explicit `label name[lo..hi]` declaration - laziness cannot recover the range needed to build the dispatch table.
+- String-keyed labels always require an explicit declaration with the key list.
 
-## Scope
+Lazy labels follow the same scoping rules as declared ones: visible in the whole routine body.
 
-Lazy labels follow the same scoping rules as explicitly declared labels. They are visible within the entire procedure body.
+## Demo
+
+A bytecode interpreter for a small stack machine. The opcode dispatch is a single variable-index `goto` over an enum-keyed label family - the classic computed-goto interpreter loop, no `case` ladder around the whole body:
+
+```pascal
+program indexed_labels_demo;
+
+{$mode unleashed}
+
+type
+  TOp = (opPush, opAdd, opMul, opPrint, opHalt);
+
+// tiny stack machine: computed goto dispatches on the current opcode
+procedure run(const code: array of integer);
+label
+  dispatch, op[opPush..opHalt];
+var
+  stack: array[0..15] of integer;
+  sp, pc: integer;
+begin
+  sp := 0;
+  pc := 0;
+
+dispatch:
+  var cur := TOp(code[pc]);
+  inc(pc);
+  goto op[cur]; // runtime dispatch, lowered to a case jump
+
+op[opPush]:
+  begin
+    stack[sp] := code[pc];
+    inc(sp); inc(pc);
+    goto dispatch;
+  end;
+op[opAdd]:
+  begin
+    dec(sp); stack[sp-1] += stack[sp];
+    goto dispatch;
+  end;
+op[opMul]:
+  begin
+    dec(sp); stack[sp-1] *= stack[sp];
+    goto dispatch;
+  end;
+op[opPrint]:
+  begin
+    writeln('top = ', stack[sp-1]);
+    goto dispatch;
+  end;
+op[opHalt]:
+  writeln('halted');
+end;
+
+begin
+  // (2 + 3) * 7 = 35
+  run([ord(opPush), 2, ord(opPush), 3, ord(opAdd), ord(opPush), 7, ord(opMul), ord(opPrint), ord(opHalt)]);
+  {$ifdef WINDOWS}readln;{$endif}
+end.
+```
+
+Output:
+
+```
+top = 35
+halted
+```

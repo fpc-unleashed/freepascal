@@ -1,22 +1,18 @@
-# SwapValues
+# SwapValues()
 
-`SwapValues(a, b)` swaps the values of two same-typed variables. It is a compiler builtin: no unit, no `uses`, no generic syntax. It works with only the implicit `System` unit in scope, like `Inc`, `Dec`, or `SetLength`.
+`SwapValues(a, b)` swaps the values of two same-typed variables. It is a compiler builtin: no unit, no `uses`, no generic syntax. It works with only the implicit `System` unit in scope, like `Inc()`, `Dec()`, or `SetLength()`.
 
-Available in `{$mode unleashed}`. There is no separate modeswitch.
-
-```pas
-{$mode unleashed}
-```
+Available in `{$mode unleashed}`; no separate modeswitch.
 
 ## What it does
 
-`SwapValues(a, b)` exchanges the contents of `a` and `b`. Both must be assignable (a variable, field, array element, or dereferenced pointer) and of the same type.
+`SwapValues(a, b)` exchanges the contents of `a` and `b`. Both must be assignable (a variable, field, array element, or dereferenced pointer - a property works too, see below) and of the same type.
 
-```pas
-var i, j: Integer;
+```pascal
+var i, j: integer;
 begin
   i := 1; j := 2;
-  SwapValues(i, j);   // i = 2, j = 1
+  SwapValues(i, j); // i = 2, j = 1
 end;
 ```
 
@@ -24,25 +20,25 @@ The swap is a bitwise move. For an ordinal or pointer-sized operand the compiler
 
 ## Why a builtin, and why the name
 
-SysUtils already ships `generic procedure Swap<T>` and `generic function Exchange<T>`, and at `-O3` they compile to the same optimal code. The reason for a builtin is to drop the unit dependency: pulling in SysUtils just to swap two variables drags in exception setup, replaced error and assertion handlers, and noticeable binary growth. `SwapValues` costs nothing beyond the swap itself, so minimal-RTL, low-level, and gamedev code that uses only `System` can swap two variables without paying for SysUtils.
+SysUtils already ships `generic procedure Swap<T>` and `generic function Exchange<T>`, and at `-O3` they compile to the same optimal code. The reason for a builtin is to drop the unit dependency: pulling in SysUtils just to swap two variables drags in exception setup, replaced error and assertion handlers, and noticeable binary growth. `SwapValues()` costs nothing beyond the swap itself, so minimal-RTL, low-level, and gamedev code that uses only `System` can swap two variables without paying for SysUtils.
 
-The name `SwapValues` is deliberately fresh. `Swap` and `Exchange` both already name routines: `System.Swap` is the one-argument byte-half-swap, and SysUtils ships `Swap<T>` and a differently-shaped `Exchange<T>` (`function Exchange<T>(var target; const newvalue): T`). Reusing either name forces a collision with those overloads. `SwapValues` has no such clash, reads at a glance like what it does, and stays out of the way of any code already using `Swap` or `Exchange`.
+The name `SwapValues()` is deliberately fresh. `Swap()` and `Exchange()` both already name routines: `System.Swap` is the one-argument byte-half-swap, and SysUtils ships `Swap<T>` and a differently-shaped `Exchange<T>` (`function Exchange<T>(var target; const newvalue): T`). Reusing either name forces a collision with those overloads. `SwapValues()` has no such clash, reads at a glance like what it does, and stays out of the way of any code already using `Swap()` or `Exchange()`.
 
 ## Managed types: no reference-count churn
 
-For managed types (`string`, dynamic array, interface, `Variant`) the swap exchanges the reference words bitwise. A naive `tmp := a; a := b; b := tmp` would emit `incr_ref` / `decr_ref` (or `fpc_ansistr_assign`) on every step; `SwapValues` emits none. The two variables trade ownership, total reference counts are preserved, so swapping in a loop neither leaks nor double-frees.
+For managed types (`string`, dynamic array, interface, `Variant`) the swap exchanges the reference words bitwise. A naive `tmp := a; a := b; b := tmp` would emit `incr_ref` / `decr_ref` (or `fpc_ansistr_assign`) on every step; `SwapValues()` emits none. The two variables trade ownership, total reference counts are preserved, so swapping in a loop neither leaks nor double-frees.
 
-```pas
+```pascal
 var s, t: string;
 begin
   s := 'left'; t := 'right';
-  SwapValues(s, t);   // s = 'right', t = 'left', no refcount calls
+  SwapValues(s, t); // s = 'right', t = 'left', no refcount calls
 end;
 ```
 
 ## Codegen
 
-For an ordinal the swap is four moves through a register, with no stack temporary:
+For an ordinal the swap is four moves through registers, with no stack temporary:
 
 ```
 movl   gj(%rip), %eax
@@ -60,7 +56,7 @@ movq   %r8, (%rdx)
 movq   %rax, (%rcx)
 ```
 
-An argument whose address has side effects (e.g. `arr[NextIndex]`) has that address taken once, so each operand is evaluated exactly once.
+An argument whose address has side effects (e.g. `arr[nextIndex()]`) has that address taken once, so each operand is evaluated exactly once.
 
 ## Same variable twice
 
@@ -68,65 +64,115 @@ An argument whose address has side effects (e.g. `arr[NextIndex]`) has that addr
 
 ## Property operands
 
-A property read through a getter has no address, so it cannot take the in-place path. `SwapValues` still accepts it: when either operand is such a property, the swap expands through a hidden temporary that drives the accessors, the same way `Inc(obj.Prop)` expands to `obj.SetProp(obj.GetProp + 1)`:
+A property read through a getter has no address, so it cannot take the in-place path. `SwapValues()` still accepts it: when either operand is such a property, the swap expands through a hidden temporary that drives the accessors, the same way `inc(obj.prop)` expands to `obj.setProp(obj.getProp + 1)`:
 
-```pas
-SwapValues(obj.A, obj.B);
+```pascal
+SwapValues(obj.a, obj.b);
 // expands to:
-// tmp := obj.GetA;
-// obj.SetA(obj.GetB);
-// obj.SetB(tmp);
+// tmp := obj.getA;
+// obj.setA(obj.getB);
+// obj.setB(tmp);
 ```
 
 The two modes are picked automatically:
 
 - both operands addressable (variable, field, array element, dereference, or a property that reads and writes the same plain field): the in-place bitwise swap, unchanged;
-- any operand without an address: the temporary expansion. An addressable operand mixed in simply reads and writes its storage directly, so property-with-variable works with the same expansion.
+- any operand without an address: the temporary expansion. An addressable operand mixed in simply reads and writes its storage directly, so property-with-variable and property-with-field-property work with the same expansion.
 
-The property must have both a read and a write specifier; a read-only or write-only property is rejected with an error saying so. Array properties work, including a side-effecting index expression: the index, like the instance expression, is evaluated exactly once for the whole swap:
+The property must have both a read and a write specifier; a read-only or write-only property is rejected with a dedicated error. Array properties work, including a side-effecting index expression: the index, like the instance expression, is evaluated exactly once for the whole swap:
 
-```pas
-SwapValues(obj.Items[Next()], x);
+```pascal
+SwapValues(obj.items[next()], x);
 // expands to:
-// i := Next();                    // once
-// tmp := obj.GetItem(i);
-// obj.SetItem(i, x);
+// i := next();                    // once
+// tmp := obj.getItem(i);
+// obj.setItem(i, x);
 // x := tmp;
 ```
 
 ### Cost and atomicity
 
-The expansion calls one getter and one setter per property operand (up to 2 getters and 2 setters for property-with-property), and for a managed type the temporary does reference counting the accessors demand. Since setters run user code, the exchange is not atomic: a setter can execute arbitrary code and observe the state mid-swap.
+The expansion calls one getter and one setter per accessor-driven operand (up to 2 getters and 2 setters for property-with-property), and for a managed type the temporary does the reference counting the accessors demand. Since setters run user code, the exchange is not atomic: a setter can execute arbitrary code and observe the state mid-swap.
 
-Because those calls are invisible in the source, the expansion emits a hint per property operand:
+Because those calls are invisible in the source, the expansion emits hint 4141 per accessor-driven property operand (hints are shown with `-vh` on the command line; the Lazarus IDE shows them by default):
 
 ```
-Hint: SwapValues on "A" is not an in-place swap: it uses a temporary and calls the getter and setter of each property operand
+Hint: SwapValues on "a" is not an in-place swap: it uses a temporary and calls the getter and setter of each property operand
 ```
 
 Silence it with any of the standard forms:
 
-```pas
-{$WARN 4141 OFF}
-SwapValues(obj.A, x);
-{$WARN 4141 ON}
+```pascal
+{$warn 4141 off}
+SwapValues(obj.a, x);
+{$warn 4141 on}
 
-{$push}{$HINTS OFF}
-SwapValues(obj.A, x);
-{$pop}
-
-{$push}{$WARN 4141 OFF}
-SwapValues(obj.A, x);
+{$push}{$hints off}
+SwapValues(obj.a, x);
 {$pop}
 ```
 
 ## Diagnostics
 
-- A non-assignable argument (literal, constant, function result) is rejected.
-- A property operand must have both read and write specifiers; `Property "X" has no write accessor` otherwise.
-- The two arguments must be the same type, otherwise `Type mismatch`.
-- Exactly two arguments are required, one or three gives `Wrong number of parameters`.
+| Situation | Message |
+|---|---|
+| Non-assignable argument (literal, constant, function result) | `Variable identifier expected` |
+| Property operand without a write accessor | `Property "X" has no write accessor` |
+| Arguments of different types | `Type mismatch` |
+| One argument or three and more | `Wrong number of parameters specified for call to "SwapValues"` |
 
 ## Coexistence
 
-`SwapValues` is recognized as the builtin only in `{$mode unleashed}`, and only when no `SwapValues` symbol is in scope. A user-declared `SwapValues` (variable, routine, type) resolves normally and shadows the builtin. Outside unleashed mode `SwapValues` is an ordinary identifier with no special meaning, so legacy code that uses the name keeps compiling unchanged.
+`SwapValues()` is recognized as the builtin only in `{$mode unleashed}`, and only when no `SwapValues()` symbol is in scope. A user-declared `SwapValues()` (variable, routine, type) resolves normally and shadows the builtin:
+
+```pascal
+procedure SwapValues(a, b: integer);
+begin
+  writeln('user routine wins: ', a, ' ', b);
+end;
+
+begin
+  SwapValues(1, 2); // calls the user routine, prints "user routine wins: 1 2"
+end.
+```
+
+Outside unleashed mode `SwapValues()` is an ordinary identifier with no special meaning, so legacy code that uses the name keeps compiling unchanged.
+
+## Demo
+
+```pascal
+program swap_values_demo;
+
+{$mode unleashed}
+
+begin
+  // bubble sort in place - SwapValues needs no uses clause
+  var a := [5, 2, 9, 1, 7];
+  for var pass := high(a) downto 1 do
+    for var i := 0 to pass-1 do
+      if a[i] > a[i+1] then SwapValues(a[i], a[i+1]);
+  for var v in a do write(v, ' ');
+  writeln;
+
+  // managed types trade ownership bitwise - no refcount churn
+  var s := 'left';
+  var t := 'right';
+  SwapValues(s, t);
+  writeln(s, ' | ', t);
+
+  // records swap as raw bytes
+  var p1: record x, y: integer; end := (x: 1; y: 2);
+  var p2: Type(p1) := (x: 30; y: 40);
+  SwapValues(p1, p2);
+  writeln($'p1=({p1.x},{p1.y}) p2=({p2.x},{p2.y})');
+  {$ifdef WINDOWS}readln;{$endif}
+end.
+```
+
+Output:
+
+```
+1 2 5 7 9
+right | left
+p1=(30,40) p2=(1,2)
+```

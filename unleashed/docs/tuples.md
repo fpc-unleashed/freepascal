@@ -1,296 +1,231 @@
 # Anonymous Tuples
 
-Tuples are lightweight, anonymous record types written in parentheses. A tuple is stored as an ordinary internal record, so everything the record infrastructure already knows how to do (Result.field access, per-field assignment, copy semantics, managed type init/fini, passing by value/var/const) works unchanged.
+Tuples are lightweight anonymous record types written in parentheses, with literals, destructuring, comparison, and full record semantics. Use them instead of `out`-parameter pairs and one-shot record types declared only to return two values. A tuple is stored as an ordinary internal record, so everything the record infrastructure already does (field access, per-field assignment, copy semantics, managed-type init / fini, passing by value / var / const) works unchanged.
 
-Feature gated by modeswitch `TUPLES`, enabled by default in `{$mode unleashed}`.
+Modeswitch: `tuples`, enabled by default in `{$mode unleashed}`.
 
 ## Declaring tuple types
 
-### Positional (auto-named fields _1, _2, ...)
+### Positional (auto-named `_1`, `_2`, ...)
 
-```pas
-function GetPair: (Integer, Integer);
-
-var
-  p: (Integer, String);
+```pascal
+function getPair: (integer, integer);
+var p: (integer, string);
 ```
 
-Fields are generated with canonical names `_1`, `_2`, `_3`, ... and accessed via those names or by constant integer index (0-based):
+Fields get canonical names `_1`, `_2`, ..., accessible by name or by constant integer index (0-based):
 
-```pas
-Result._1 := 10;             { by name }
-Result._2 := 'hello';
-WriteLn(p[0], ' ', p[1]);   { by index - same as _1, _2 }
+```pascal
+p._1 := 10;                 // by name
+p._2 := 'hello';
+writeln(p[0], ' ', p[1]);   // by index - same as _1, _2
 ```
 
-The index must be a compile-time constant. Variable indices are not supported because field types can differ (`(Integer, String)` - the compiler cannot determine the result type of `t[i]` when `i` is a variable).
+The index must be a compile-time constant - a variable index is impossible because field types can differ (`(integer, string)`), so `t[i]` for a runtime `i` has no single result type.
 
 ### Named (user-chosen field names)
 
-Names on the left, `:` then the type. Multiple names share a type via comma. Different type groups are separated by `;`, as in record field declarations.
+Names on the left, `:`, then the type. Names share a type via comma; type groups are separated by `;`, as in record fields:
 
-```pas
-function Coords: (a, b: Integer);
-function Row: (x: Integer; y: String);
-function Mixed: (a, b: Integer; s: String; f: Double);
-```
-
-Access is by the declared names:
-
-```pas
-Result.a := 10;
-Result.b := 20;
+```pascal
+function coords: (a, b: integer);
+function row: (x: integer; y: string);
+function mixed: (a, b: integer; s: string; f: double);
 ```
 
 ## Tuple literals
 
-### Positional literal
-
-```pas
-Result := (10, 20);
+```pascal
+// positional
+result := (10, 20);
 p := (42, 'hello');
-arr[i] := (1, 2);
+
+// named (any order, each field set exactly once)
+result := (a: 10, b: 20);
+result := (b: 20, a: 10);
 ```
 
-Applies to any assignment whose left-hand side has a tuple type, and requires the element count to match.
+## `exit` sugar
 
-### Named literal (comma delimited)
+Inside a function with a tuple return type, `exit` takes a literal directly:
 
-```pas
-Result := (a: 10, b: 20);
-Result := (b: 20, a: 10);  { fields may be written in any order }
-```
-
-Names must match the fields of the target tuple, and every field must be set exactly once.
-
-## Return syntax sugar: tuple Exit
-
-Inside a function with a tuple return type, `Exit` accepts a literal directly without extra parentheses:
-
-```pas
-function Foo: (Integer, Integer);
+```pascal
+function foo: (integer, integer);
 begin
-  if cond then Exit(10, 20);  { positional }
-  Result := (100, 200);
+  if cond then exit(10, 20); // positional
+  result := (100, 200);
 end;
 
-function Bar: (a, b: Integer);
+function bar: (a, b: integer);
 begin
-  Exit(a: 1, b: 2);          { named }
+  exit(a: 1, b: 2); // named
 end;
 ```
 
-`Exit(single_expr)` still works for a plain tuple-compatible value.
+## Destructuring
 
-## Tuples as array elements
+```pascal
+// inline var destructuring - binds by POSITION, names may differ from the fields
+var (x, y) := getPair;
+var (num, text) := getMix;
 
-```pas
-var
-  pairs: array of (Integer, Integer);
-  rows: array of (a, b: Integer);
+// multi-assignment to existing variables
+var x, y: integer;
+(x, y) := getPair;
 
-pairs := [(1, 2), (3, 4), (5, 6)];
-rows[0] := (a: 10, b: 20);
-```
-
-Tuple literals inside array literals build the declared element type automatically, and sub-32-bit integer literals plus constant strings are promoted to Int32 / the mode's default string type to match typical declarations.
-
-## Inline var destructuring
-
-```pas
-var (x, y) := GetPair;
-var (a, b) := GetCoords;
-var (num, text) := GetMix;
-```
-
-Destructuring always happens by POSITION, so the introduced variables may use names different from the source tuple's fields. Each new variable gets the type of the corresponding field.
-
-## Multi-assignment to existing variables
-
-```pas
-var x, y: Integer;
-...
-(x, y) := GetPair;
-```
-
-Same positional binding, but the variables must already exist. Used together with a tuple literal this gives a swap idiom:
-
-```pas
+// swap idiom
 (x, y) := (y, x);
+
+// wildcard _ ignores a field
+var (first, _, _, last) := getQuad;
 ```
 
-## Tuples as function parameters
+## Function parameters
 
-Tuples can be used directly as parameter types:
+```pascal
+// tuple parameter type
+procedure show(p: (integer, integer));
 
-```pas
-procedure Show(p: (Integer, Integer));
-begin
-  WriteLn(p._1, ' ', p._2);
-end;
+// destructured parameter - name the fields directly
+procedure process((x, y): (integer, integer));
 
-Show((10, 20));
+// inline named-tuple shorthand (equivalent to the explicit form above)
+procedure bar((x, y: integer; name: string));
 ```
 
-### Parameter destructuring
+## Comparison
 
-Destructured parameters let you name the fields directly:
-
-```pas
-procedure Process((x, y): (Integer, Integer));
-begin
-  WriteLn(x, ' ', y);  { x, y available directly }
-end;
+```pascal
+if (1, 2) = (1, 2) then ...;   // field-by-field equality
+if (1, 2) < (1, 5) then ...;   // lexicographic ordering
 ```
 
-### Inline named tuple parameters
+Tuples of different shapes: `=` returns false and `<>` returns true (no error), but the ordering operators (`<`, `>`, `<=`, `>=`) between different shapes are a compile error (`Tuples have different shapes and cannot be compared`).
 
-As a shorthand, the type can be declared inline together with the field names. These two declarations are equivalent:
+## `writeln()`
 
-```pas
-procedure Foo((a, b): (a, b: Integer));  { explicit }
-procedure Foo((a, b: Integer));          { shorthand }
+```pascal
+var t := (42, 'hello');
+writeln(t); // 42, hello
 ```
-
-Multiple type groups with `;` are supported:
-
-```pas
-procedure Bar((x, y: Integer; name: String));
-begin
-  WriteLn(x, ' ', y, ' ', name);
-end;
-```
-
-### Wildcard `_`
-
-Ignore tuple fields in destructuring:
-
-```pas
-var (first, _, _, last) := GetQuad;
-for var (key, _) in pairs do ...
-```
-
-## Comparison operators
-
-Tuples support `=`, `<>`, `<`, `<=`, `>`, `>=`:
-
-```pas
-if (1, 2) = (1, 2) then ...;  { true - field-by-field equality }
-if (1, 2) < (1, 5) then ...;  { true - lexicographic ordering }
-```
-
-Tuples of different shapes compare as not equal without error:
-
-```pas
-(1, 2, 3) = (1, 2, 3, 4)  { false, not an error }
-(1, 2) <> (1, 2, 3)       { true, not an error }
-```
-
-Ordering operators (`<`, `>`, `<=`, `>=`) between tuples of different shapes emit a compile-time error: "Tuples have different shapes and cannot be compared".
-
-## WriteLn
-
-Tuples can be passed directly to `Write`/`WriteLn`:
-
-```pas
-var t: (Integer, String);
-t := (42, 'hello');
-WriteLn(t);  { outputs: 42, hello }
-```
-
-## Constant-index access
-
-Tuple fields can be accessed by constant integer index (0-based):
-
-```pas
-var t: (Integer, String);
-WriteLn(t[0]);  { same as t._1 }
-WriteLn(t[1]);  { same as t._2 }
-```
-
-Variable indices are not supported (heterogeneous field types).
 
 ## for-in destructuring
 
-```pas
+```pascal
 for var (key, value) in dict do
-  WriteLn(key, '=', value);
+  writeln(key, '=', value);
+
+for var (key, _) in pairs do // wildcard works here too
+  writeln(key);
 ```
 
-Each element of the collection is destructured into the declared names exactly like a single `var (k, v) := element`.
+## Tuples as array elements
+
+```pascal
+var pairs: array of (integer, integer);
+pairs := [(1, 2), (3, 4), (5, 6)];
+```
+
+Tuple literals inside an array literal build the declared element type automatically; sub-32-bit integer literals and constant strings promote to `Int32` / the mode's default string type to match the typical declarations.
 
 ## Nested tuples
 
-Tuples may contain tuples as fields, positionally or named:
-
-```pas
-function Node: (id: Integer; pos: (x, y: Integer));
-var
-  n: (Integer, (String, Integer));
-begin
-  n := (5, ('label', 42));
-end;
+```pascal
+var n: (integer, (string, integer));
+n := (5, ('label', 42));
+writeln(n._2._1); // label
 ```
 
 ## Tuples as record fields
 
-```pas
+```pascal
 type
   TItem = record
-    id: Integer;
-    pt: (x, y: Integer);
+    id: integer;
+    pt: (x, y: integer);
   end;
-
-it.pt := (1, 2);           { positional tuple literal }
-it.pt := (x: 10, y: 20);  { named tuple literal }
 ```
 
 ## Structural compatibility
 
-Two tuple records with matching shape (same field count, same types in order, and matching field names) are treated as equal, so a function returning `(Integer, Integer)` can be assigned to a variable declared as `(Integer, Integer)` in another place.
-
-If either side is a positional tuple (auto `_1, _2, ...` names), the field-name check is skipped and only the types are compared. This lets a positional literal like `(10, 20)` be assigned to a named tuple `(a, b: Integer)` of the same shape. Two named tuples with different user-chosen names remain distinct.
-
-Tuples are also structurally compatible with regular records of the same shape when either side has the tuple flag.
+Two tuples of matching shape (same field count, same types in order) are compatible. If either side is positional, field names are not checked - so a positional literal `(10, 20)` assigns to a named tuple `(a, b: integer)` of the same shape. Two named tuples with different names stay distinct. Tuples are also structurally compatible with regular records of the same shape when either side carries the tuple flag.
 
 ## Generics
 
-Generic type parameters are accepted as tuple field types:
-
-```pas
-generic function MakePair<A, B>(x: A; y: B): (A, B);
-generic function MakeNamed<T>(val: T): (key: String; value: T);
+```pascal
+function makePair<A, B>(x: A; y: B): (A, B);
 ```
 
-`array of X` as a generic function return type is an existing FPC limitation and requires a typed alias:
+`array of (A, B)` as a generic function return type hits an existing FPC limitation - alias it first:
 
-```pas
-type
-  TArrOfPair = array of (Integer, String);
+```pascal
+type TArrOfPair = array of (integer, string);
 
-generic function Zip<A, B>(xs: array of A; ys: array of B): TArrOfPair;
+function zip<A, B>(xs: array of A; ys: array of B): TArrOfPair;
 ```
 
 ## Typed constants
 
-Typed constants support positional tuple literals:
-
-```pas
+```pascal
 const
-  origin: (Integer, Integer) = (0, 0);
-  greet:  (Integer, String) = (42, 'hello');
-  point:  (x, y: Integer) = (10, 20);
+  origin: (integer, integer) = (0, 0);           // positional
+  point:  (x, y: integer)    = (10, 20);         // named type, positional literal
+  named:  (x, y: integer)    = (x: 10, y: 20);   // named type, named literal
+  classic: (integer, integer) = (_1: 0; _2: 0);  // record-style also works
 ```
 
-The classic record-style syntax with field names still works:
+## Not supported
 
-```pas
-const
-  origin: (Integer, Integer) = (_1: 0; _2: 0);
-  point:  (x, y: Integer) = (x: 10, y: 20);
+- **One-element tuples** - `(42)` is an arithmetic expression, not a tuple.
+- **`case` on a tuple** - a tuple is not an ordinal / string, so `case t of (1, 2): ...` reports `Ordinal or string expression expected`. Use [`match`](match.md) with tuple patterns instead.
+- **Full RTTI / TypeInfo** for tuple types.
+
+## Demo
+
+```pascal
+program tuple_demo;
+
+{$mode unleashed}
+
+// two return values without an out-pair or a throwaway record type
+function minMax(const a: array of integer): (lo, hi: integer);
+begin
+  result := (a[0], a[0]);
+  for var v in a do begin
+    if v < result.lo then result.lo := v;
+    if v > result.hi then result.hi := v;
+  end;
+end;
+
+function divMod(a, b: integer): (integer, integer);
+begin
+  exit(a div b, a mod b);
+end;
+
+var grid: array of (integer, integer);
+begin
+  var (lo, hi) := minMax([34, 7, 23, 62, 5]); // destructuring
+  writeln($'min={lo} max={hi}');
+
+  var (q, r) := divMod(17, 5);
+  writeln($'17 = {q}*5 + {r}');
+
+  var x := 1; var y := 2;
+  (x, y) := (y, x); // swap
+  writeln($'swapped: {x} {y}');
+
+  grid := [(1, 2), (3, 4), (5, 6)];
+  for var (a, b) in grid do write($'({a},{b}) ');
+  writeln;
+  {$ifdef WINDOWS}readln;{$endif}
+end.
 ```
 
-## Not supported (MVP)
+Output:
 
-- One-element tuples. `(42)` is an arithmetic expression.
-- Full RTTI / TypeInfo for tuple types.
+```
+min=5 max=62
+17 = 3*5 + 2
+swapped: 2 1
+(1,2) (3,4) (5,6)
+```
