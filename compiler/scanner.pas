@@ -779,7 +779,9 @@ implementation
 {$endif i8086}
 
             { Undefine old symbol }
-            if (m_delphi in oldmodeswitches) then
+            if (m_unleashed in oldmodeswitches) then
+              undef_system_macro('FPC_UNLEASHED')
+            else if (m_delphi in oldmodeswitches) then
               undef_system_macro('FPC_DELPHI')
             else if (m_tp7 in oldmodeswitches) then
               undef_system_macro('FPC_TP')
@@ -796,8 +798,11 @@ implementation
             else if (m_extpas in oldmodeswitches) then
               undef_system_macro('FPC_EXTENDEDPASCAL');
 
-            { define new symbol in delphi,objfpc,tp,gpc,macpas mode }
-            if (m_delphi in current_settings.modeswitches) then
+            { define new symbol in unleashed,delphi,objfpc,tp,gpc,macpas mode }
+            { m_unleashed first: the unleashed set includes m_objfpc }
+            if (m_unleashed in current_settings.modeswitches) then
+              def_system_macro('FPC_UNLEASHED')
+            else if (m_delphi in current_settings.modeswitches) then
               def_system_macro('FPC_DELPHI')
             else if (m_tp7 in current_settings.modeswitches) then
               def_system_macro('FPC_TP')
