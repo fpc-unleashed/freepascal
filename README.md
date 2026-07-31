@@ -160,10 +160,10 @@ Run it, pick a directory (default `C:\unleashed` on Windows, `$HOME/unleashed` o
 
 ```ini
 [ALIASfpcURL]
-unleashed.git=https://github.com/unleashedpascal/freepascal.git
+unleashed.git=https://github.com/unleashedpascal/compiler.git
 
 [ALIASlazURL]
-unleashed.git=https://github.com/unleashedpascal/lazarus.git
+unleashed.git=https://github.com/unleashedpascal/ide.git
 ```
 
 3. Reopen **fpcupdeluxe**, uncheck **GitLab**, and select `unleashed.git` as both the **FPC version** and the **Lazarus version**.
@@ -177,14 +177,14 @@ unleashed.git=https://github.com/unleashedpascal/lazarus.git
 Delete or rename the `fpcsrc` folder in your installation directory, then:
 
 ```bash
-git clone https://github.com/unleashedpascal/freepascal.git fpcsrc
+git clone https://github.com/unleashedpascal/compiler.git fpcsrc
 ```
 
 In fpcupdeluxe: **Setup+**, check **FPC/Laz rebuild only**, confirm, then click **Only FPC**.
 
 ## Unleashed IDE
 
-For the best experience, use **[Unleashed Pascal IDE](https://github.com/unleashedpascal/lazarus)** - a fork of the Lazarus IDE that understands unleashed mode end to end. Its parser, code completion, and Code Insight know the new syntax, so inline vars, tuples, `match`, `async` / `await`, and the rest autocomplete and navigate like any built-in construct, with no false-positive error markers in the editor.
+For the best experience, use **[Unleashed Pascal IDE](https://github.com/unleashedpascal/ide)** - a fork of the Lazarus IDE that understands unleashed mode end to end. Its parser, code completion, and Code Insight know the new syntax, so inline vars, tuples, `match`, `async` / `await`, and the rest autocomplete and navigate like any built-in construct, with no false-positive error markers in the editor.
 
 Stock Lazarus still builds and runs Unleashed projects fine, but its Code Insight does not recognize the new syntax and will flag it as errors. If you stay on stock Lazarus, enable the mode through `-Munleashed` in the project's Custom Options rather than `{$mode unleashed}` in the source - that keeps the editor's background parser quieter about the constructs it cannot model.
 
