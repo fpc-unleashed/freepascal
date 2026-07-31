@@ -4,7 +4,7 @@ Three CLI flags that override metadata fields the compiler embeds into the produ
 
 | Flag | Field | Scope | Default |
 |---|---|---|---|
-| `--fpcsignature=<str>` | `.fpc.version` ident string | every target | `FPC Unleashed <version> [<date>] for <cpu> - <target>` |
+| `--fpcsignature=<str>` | `.fpc.version` ident string | every target | `Unleashed Pascal <version> [<date>] for <cpu> - <target>` |
 | `--linkerversion=<Major.Minor>` | PE optional header `MajorLinkerVersion` / `MinorLinkerVersion` | Windows PE only | derived from the FPC version, e.g. `3.31` for FPC 3.3.1 |
 | `--osversion=<spec>` | PE optional header `MajorOperatingSystemVersion` / `MinorOperatingSystemVersion` | Windows PE only | `4.0` unless `-WP<X>.<Y>` is set |
 
@@ -18,7 +18,7 @@ Three behaviors depending on how the flag is passed:
 
 | Invocation | Result |
 |---|---|
-| (no flag) | default ident: `FPC Unleashed <version> [<date>] for <cpu> - <target>` |
+| (no flag) | default ident: `Unleashed Pascal <version> [<date>] for <cpu> - <target>` |
 | `--fpcsignature=<str>` | the exact `<str>` is embedded, raw and uninterpreted |
 | `--fpcsignature=` (empty) | the `.fpc.version` section is **not emitted at all** - no FPC marker in the binary |
 
@@ -151,15 +151,15 @@ Observed on win64 with this exact program:
 
 ```
 > fpc meta_demo.pp
-> strings meta_demo.exe | grep "FPC Unleashed"
-FPC Unleashed 3.3.1 [2026/07/28] for x86_64 - Win64
+> strings meta_demo.exe | grep "Unleashed Pascal"
+Unleashed Pascal 3.3.1 [2026/07/28] for x86_64 - Win64
 
 > fpc --fpcsignature="MyApp 1.2.3 (build 4567)" meta_demo.pp
-> strings meta_demo.exe | grep -E "MyApp|FPC Unleashed"
+> strings meta_demo.exe | grep -E "MyApp|Unleashed Pascal"
 MyApp 1.2.3 (build 4567)
 
 > fpc --fpcsignature= meta_demo.pp
-> strings meta_demo.exe | grep -E "MyApp|FPC Unleashed"
+> strings meta_demo.exe | grep -E "MyApp|Unleashed Pascal"
 (nothing - the section is gone)
 
 > fpc --linkerversion=14.39 --osversion=6.3 meta_demo.pp
