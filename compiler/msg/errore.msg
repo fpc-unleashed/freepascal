@@ -4229,7 +4229,7 @@ package_u_ppl_filename=13029_U_PPL filename $1
 # Logo (option -l)
 #
 option_logo=11023_[
-Free Pascal Compiler version $FPCFULLVERSION [$FPCDATE] for $FPCCPU
+Unleashed Pascal Compiler version $FPCFULLVERSION [$FPCDATE] for $FPCCPU
 Copyright (c) 1993-2026 by Florian Klaempfl and others
 ]
 
@@ -4237,7 +4237,7 @@ Copyright (c) 1993-2026 by Florian Klaempfl and others
 # Info (option -i)
 #
 option_info=11024_[
-Free Pascal Compiler version $FPCVERSION
+Unleashed Pascal Compiler version $FPCVERSION
 
 Compiler date      : $FPCDATE
 Compiler CPU target: $FPCCPU
