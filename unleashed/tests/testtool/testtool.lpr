@@ -859,7 +859,7 @@ end;
 
 procedure PrintHelp;
 begin
-  WriteLn('testtool - FPC Unleashed test runner');
+  WriteLn('testtool - Unleashed Pascal test runner');
   WriteLn;
   WriteLn('usage: testtool [options]');
   WriteLn;
