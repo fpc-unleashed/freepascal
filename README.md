@@ -146,8 +146,8 @@ Each feature has a dedicated reference page with the full grammar, semantics, ed
 
 Self-contained GUI installer for Windows and Linux: it downloads sources, builds the compiler and the Lazarus IDE into a directory of your choice, optionally installs cross compilers, and drops a desktop shortcut. No PATH changes, no registry side effects, no overwriting of an existing FPC. Run it again any time to add a cross target or pull an update - it applies only that change and leaves the rest of the install alone.
 
-- Repo: [fpc-unleashed/installer](https://github.com/fpc-unleashed/installer)
-- Downloads: [installer/releases](https://github.com/fpc-unleashed/installer/releases) - tagged stable releases plus a rolling `nightly` that tracks `main`
+- Repo: [unleashedpascal/installer](https://github.com/unleashedpascal/installer)
+- Downloads: [installer/releases](https://github.com/unleashedpascal/installer/releases) - tagged stable releases plus a rolling `nightly` that tracks `main`
   - `installer_win64_x86_64.exe` - Windows host
   - `installer_linux_x86_64` / `installer_linux_x86_64.AppImage` - Linux host
 
@@ -160,10 +160,10 @@ Run it, pick a directory (default `C:\unleashed` on Windows, `$HOME/unleashed` o
 
 ```ini
 [ALIASfpcURL]
-unleashed.git=https://github.com/fpc-unleashed/freepascal.git
+unleashed.git=https://github.com/unleashedpascal/freepascal.git
 
 [ALIASlazURL]
-unleashed.git=https://github.com/fpc-unleashed/lazarus.git
+unleashed.git=https://github.com/unleashedpascal/lazarus.git
 ```
 
 3. Reopen **fpcupdeluxe**, uncheck **GitLab**, and select `unleashed.git` as both the **FPC version** and the **Lazarus version**.
@@ -177,14 +177,14 @@ unleashed.git=https://github.com/fpc-unleashed/lazarus.git
 Delete or rename the `fpcsrc` folder in your installation directory, then:
 
 ```bash
-git clone https://github.com/fpc-unleashed/freepascal.git fpcsrc
+git clone https://github.com/unleashedpascal/freepascal.git fpcsrc
 ```
 
 In fpcupdeluxe: **Setup+**, check **FPC/Laz rebuild only**, confirm, then click **Only FPC**.
 
 ## Unleashed IDE
 
-For the best experience, use **[Lazarus Unleashed](https://github.com/fpc-unleashed/lazarus)** - a fork of the Lazarus IDE that understands unleashed mode end to end. Its parser, code completion, and Code Insight know the new syntax, so inline vars, tuples, `match`, `async` / `await`, and the rest autocomplete and navigate like any built-in construct, with no false-positive error markers in the editor.
+For the best experience, use **[Unleashed Pascal IDE](https://github.com/unleashedpascal/lazarus)** - a fork of the Lazarus IDE that understands unleashed mode end to end. Its parser, code completion, and Code Insight know the new syntax, so inline vars, tuples, `match`, `async` / `await`, and the rest autocomplete and navigate like any built-in construct, with no false-positive error markers in the editor.
 
 Stock Lazarus still builds and runs Unleashed projects fine, but its Code Insight does not recognize the new syntax and will flag it as errors. If you stay on stock Lazarus, enable the mode through `-Munleashed` in the project's Custom Options rather than `{$mode unleashed}` in the source - that keeps the editor's background parser quieter about the constructs it cannot model.
 

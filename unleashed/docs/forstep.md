@@ -44,7 +44,7 @@ for i := 1 to step do use(i); // OK - the upper bound is the variable
 for i := 0 to step step 1 do use(i); // OK - first `step` is the upper bound, second is the keyword
 ```
 
-The SynEdit highlighter in Lazarus Unleashed mirrors this: only the keyword position lights up.
+The SynEdit highlighter in Unleashed Pascal IDE mirrors this: only the keyword position lights up.
 
 ## Constant `step 1` folds back
 

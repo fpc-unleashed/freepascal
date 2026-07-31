@@ -1,6 +1,6 @@
 # Introduced Functions, Procedures and Intrinsics
 
-Catalog of identifiers that FPC Unleashed adds on top of stock FPC and that you can call from user code without any extra `uses` clause. Three categories:
+Catalog of identifiers that Unleashed Pascal adds on top of stock FPC and that you can call from user code without any extra `uses` clause. Three categories:
 
 - **Intrinsic** - recognized by the compiler itself, no symbol in any unit. Compile-time fold where possible, no overhead. Often gated on a modeswitch (typically `composablerecords`, default-on in `{$mode unleashed}`).
 - **RTL `system`** - real routines living in the `system` unit. Available globally just like `GetMem()` or `writeln()`; no `uses` needed because `system` is implicit.
