@@ -7448,7 +7448,7 @@ implementation
       end;
 
 
-    { FPC Unleashed: build classic-var autofree desugar:
+    { build classic-var autofree desugar:
         x := autofree T.Create
       becomes a transparent helper block:
         x := T.Create;
@@ -7535,7 +7535,7 @@ implementation
            _ASSIGNMENT :
              begin
                 consume(_ASSIGNMENT);
-                { FPC Unleashed: classic-var autofree -- `x := autofree T.Create` }
+                { classic-var autofree -- `x := autofree T.Create` }
                 autofree_active := (m_autofree in current_settings.modeswitches) and
                                    (current_scanner.token = _AUTOFREE);
                 if autofree_active then

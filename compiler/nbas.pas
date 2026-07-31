@@ -43,7 +43,7 @@ interface
        end;
        tnothingnodeclass = class of tnothingnode;
 
-       { FPC Unleashed: marker node for `defer STATEMENT;`
+       { marker node for `defer STATEMENT;`
          Created by parser, rewritten away in statement_block post-pass.
          Should never reach typecheck/firstpass - internalerror if it does. }
        tdefernode = class(tunarynode)
@@ -160,7 +160,7 @@ interface
 
        TBlockNodeFlag = (
          bnf_strippable, { Block node can be removed via simplify etc. }
-         { FPC Unleashed: helper block introduced by parser (e.g. autofree
+         { helper block introduced by parser (e.g. autofree
            desugar) - rewrite_defers should walk through it instead of
            treating it as a separate scope. }
          bnf_defer_transparent

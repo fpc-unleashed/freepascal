@@ -2587,7 +2587,7 @@ implementation
       end;
 
 
-    { FPC Unleashed: build the body for a scoped-with autofree cleanup:
+    { build the body for a scoped-with autofree cleanup:
         if vs<>nil then begin vs.Free; vs:=nil end
       Returned node is intended to be wrapped in a cdefernode. }
     function build_lifetime_freeandnil(vs: tabstractnormalvarsym;
@@ -2638,7 +2638,7 @@ implementation
          dupsym,fsym : tsym;
          localfields : TFPHashList;
          entrypos : tfileposinfo;
-         { FPC Unleashed: scoped-with state }
+         { scoped-with state }
          lifetime_var : tabstractnormalvarsym;
          lifetime_autofree : boolean;
          lifetime_init : tnode;
@@ -2679,7 +2679,7 @@ implementation
 
       begin
          calltempnode:=nil;
-         { FPC Unleashed: scoped-with -- recognise inline-var and autofree
+         { scoped-with -- recognise inline-var and autofree
            in the with-clause before falling back to the classic with-target
            expression. }
          lifetime_handled := false;
@@ -2845,7 +2845,7 @@ implementation
            begin
              p:=comp_expr([ef_accept_equal]);
              do_typecheckpass(p);
-             { FPC Unleashed: form B -- with NAME := [autofree] EXPR do
+             { form B -- with NAME := [autofree] EXPR do
                (existing variable). Detected by `:=` after a plain load. }
              if (m_autofree in current_settings.modeswitches) and
                 (current_scanner.token = _ASSIGNMENT) and
@@ -2931,7 +2931,7 @@ implementation
             valuenode:=nil;
             tempnode:=nil;
 
-            { FPC Unleashed: scoped-with -- always wrap in a block so we
+            { scoped-with -- always wrap in a block so we
               can prepend `lifetime_var := init_expr;` before the with-body.
               Form D (typed declaration, no init) skips the assignment. }
             if lifetime_handled then
@@ -3154,7 +3154,7 @@ implementation
                   tblocknode(newblock).blocksymtable := withblockst;
               end;
 
-            { FPC Unleashed: scoped-with -- rewrite any defers the body
+            { scoped-with -- rewrite any defers the body
               registered (e.g. `with X do defer Foo;` or stray defers in
               a begin..end body that wasn't already a defer-scope) so they
               fire at with-scope exit, not in the enclosing routine.
@@ -3169,7 +3169,7 @@ implementation
                 tblocknode(p).left := hp;
               end;
 
-            { FPC Unleashed: scoped-with autofree -- wrap the body in
+            { scoped-with autofree -- wrap the body in
               try..finally with the auto-cleanup, so the holder's Free
               fires regardless of how the body exits. }
             if lifetime_handled and lifetime_autofree and
@@ -3374,7 +3374,7 @@ implementation
                     break;
                   consume_emptystats;
                end;
-             { FPC Unleashed: try-body is its own defer scope; rewrite
+             { try-body is its own defer scope; rewrite
                nested `defer` statements before they leak into the
                enclosing routine's scope. }
              if assigned(first) then
@@ -4174,7 +4174,7 @@ implementation
                  not(m_multi_var_init in current_settings.modeswitches) then
                 Message(parser_e_initialized_only_one_var);
               consume(_ASSIGNMENT);
-              { FPC Unleashed: optional `autofree` modifier on the init
+              { optional `autofree` modifier on the init
                 expression. Sets up an automatic .Free at scope exit. }
               autofree_active := false;
               if current_scanner.token = _AUTOFREE then
@@ -4252,7 +4252,7 @@ implementation
                     begin
                       if autofree_active then
                         begin
-                          { FPC Unleashed: autofree requires class type derived from TObject. }
+                          { autofree requires class type derived from TObject. }
                           if not (is_class(hdef) and def_is_related(tobjectdef(hdef), class_tobject)) then
                             begin
                               Message(parser_e_autofree_requires_class);
@@ -6256,7 +6256,7 @@ implementation
          if (starttoken<>_INITIALIZATION) or (current_scanner.token<>_FINALIZATION) then
            consume(_END);
 
-         { FPC Unleashed: rewrite defer markers into try..finally with bool flags.
+         { rewrite defer markers into try..finally with bool flags.
            Must run while the block-scope symtable is still on the stack so that
            generated flag-vars land in the right scope. No-op if no defer in tree. }
          if assigned(first) then
