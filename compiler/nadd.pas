@@ -2534,8 +2534,12 @@ const
              isbinaryoverloaded(hp,[ocf_check_non_overloadable,ocf_check_only]) then
            message3(parser_w_operator_overloaded_hidden_3,left.resultdef.typename,arraytokeninfo[_PLUS].str,right.resultdef.typename);
 
+         { skip string constants: they carry an arraydef resultdef, but must
+           be compared as strings (element compare would index them 1-based
+           via low() 0, reading shifted bytes) }
          if (nodetype in [equaln,unequaln]) and (m_array_operators in current_settings.modeswitches) and (m_array_equality in current_settings.modeswitches) and
-            (left.resultdef.typ=arraydef) and (right.resultdef.typ=arraydef) then
+            (left.resultdef.typ=arraydef) and (right.resultdef.typ=arraydef) and
+            (left.nodetype<>stringconstn) and (right.nodetype<>stringconstn) then
            begin
              result:=create_compare_array_node(left, right);
              if nodetype=unequaln then
