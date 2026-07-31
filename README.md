@@ -1,6 +1,6 @@
 # Unleashed Pascal
 
-**Unleashed Pascal** is a community-driven fork of **Free Pascal** for developers who want modern language features today, not after an official release that will likely never ship them. Everything upstream rejected, ignored, or shelved as "too experimental" lives here, and it all turns on with one line:
+**Unleashed Pascal** is a community-driven fork of **Free Pascal** that explores modern language features the official compiler chose not to adopt. Upstream is deliberately conservative - which has its value; this fork is where the experimental ideas get to run. Everything turns on with one line:
 
 ```pascal
 {$mode unleashed}
@@ -190,7 +190,7 @@ Stock Lazarus still builds and runs Unleashed projects fine, but its Code Insigh
 
 ## Contributing
 
-**Unleashed Pascal** is a home for innovation. If you have built a language feature that was considered _too experimental_ or _not standard enough_ for upstream, this is where it belongs.
+**Unleashed Pascal** is a home for innovation. If you have built a language feature that did not find a home upstream, this is where it belongs.
 
 We are looking for **new language ideas** - propose modeswitches, syntax extensions, or compiler enhancements via GitHub Issues or Discussions; a well-described idea with clear use cases is valuable even without an implementation - and **complete, high-quality implementations** with production-grade code, test coverage, and documentation.
 
