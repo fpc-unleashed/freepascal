@@ -140,11 +140,19 @@ Semantic adjustments and small syntax unlocks - full catalog in [tweaks.md](unle
 
 Each feature has a dedicated reference page with the full grammar, semantics, edge cases, IDE notes, and a runnable demo. Start at the index: [unleashed/docs/README.md](unleashed/docs/README.md).
 
+## Unleashed IDE
+
+For the best experience, use **[Unleashed Pascal IDE](https://github.com/unleashedpascal/ide)** - a fork of the Lazarus IDE that understands unleashed mode end to end. Its parser, code completion, and Code Insight know the new syntax, so inline vars, tuples, `match`, `async` / `await`, and the rest autocomplete and navigate like any built-in construct, with no false-positive error markers in the editor.
+
+Stock Lazarus still builds and runs Unleashed projects fine, but its Code Insight does not recognize the new syntax and will flag it as errors. If you stay on stock Lazarus, enable the mode through `-Munleashed` in the project's Custom Options rather than `{$mode unleashed}` in the source - that keeps the editor's background parser quieter about the constructs it cannot model.
+
 ## Installation
 
-### Option 1: Official installer (recommended)
+### Option 1: Official installer
 
-Self-contained GUI installer for Windows and Linux: it downloads sources, builds the compiler and the Lazarus IDE into a directory of your choice, optionally installs cross compilers, and drops a desktop shortcut. No PATH changes, no registry side effects, no overwriting of an existing FPC. Run it again any time to add a cross target or pull an update - it applies only that change and leaves the rest of the install alone.
+Self-contained GUI installer for Windows and Linux: it downloads sources, builds the compiler and the IDE into a directory of your choice, optionally installs cross compilers, and drops a desktop shortcut wired to a per-install IDE config. No PATH changes, no registry side effects, no overwriting of an existing FPC - the whole thing lives in one folder and can be deleted by deleting that folder.
+
+Cross targets are checkboxes: `x86_64-win64`, `x86_64-linux`, `i386-win32`, `i386-linux`, `wasm32-wasip1`. You can also pin the compiler and the IDE to a branch or a specific commit instead of taking the latest.
 
 - Repo: [unleashedpascal/installer](https://github.com/unleashedpascal/installer)
 - Downloads: [installer/releases](https://github.com/unleashedpascal/installer/releases) - tagged stable releases plus a rolling `nightly` that tracks `main`
@@ -153,40 +161,17 @@ Self-contained GUI installer for Windows and Linux: it downloads sources, builds
 
 Run it, pick a directory (default `C:\unleashed` on Windows, `$HOME/unleashed` on Linux), tick the cross targets you want, click Install.
 
-### Option 2: Fresh install via fpcupdeluxe
+It can also build optional IDE addons in the same pass, so the editor is set up the way you like it before you write the first line - **Minimap** (a scaled-down view of the whole unit next to the editor), **MetaDarkStyle** (dark IDE theme), **CPU-View** (debugger plugin) and CHM help files, among others.
 
-1. Download [fpcupdeluxe](https://github.com/LongDirtyAnimAlf/fpcupdeluxe) and run it once to generate `fpcup.ini`.
-2. Add to `fpcup.ini`:
+Re-runs are surgical: unchanged parts self-skip, a newly ticked cross target gets built, an unticked one gets removed, and toggling an addon rebuilds just the IDE. Point it at an existing install to pull an update without touching anything else.
 
-```ini
-[ALIASfpcURL]
-unleashed.git=https://github.com/unleashedpascal/compiler.git
+### Option 2: fpcupdeluxe
 
-[ALIASlazURL]
-unleashed.git=https://github.com/unleashedpascal/ide.git
-```
+fpcupdeluxe supports Unleashed out of the box - nothing to configure. Download [fpcupdeluxe](https://github.com/LongDirtyAnimAlf/fpcupdeluxe/releases/tag/v2.4.0jpu), untick **GitLab**, and pick `unleashed.git` as the **FPC version** and the **Lazarus version**. From there it behaves like any regular FPC install: FPC only, Lazarus only, or both at once, with cross-compilers on the `Cross` tab.
 
-3. Reopen **fpcupdeluxe**, uncheck **GitLab**, and select `unleashed.git` as both the **FPC version** and the **Lazarus version**.
-4. In **Setup+** tick **Docked Lazarus IDE** (required - the default window layout is tuned for docked mode).
-5. Click **Install/update FPC+Lazarus**. Cross-compilers are on the `Cross` tab.
+In **Setup+** tick **Docked Lazarus IDE** - the default window layout is tuned for docked mode.
 
 ![fpcupdeluxe](unleashed/img/installation_fpcupdeluxe.png)
-
-### Option 3: Upgrade an existing fpcupdeluxe setup
-
-Delete or rename the `fpcsrc` folder in your installation directory, then:
-
-```bash
-git clone https://github.com/unleashedpascal/compiler.git fpcsrc
-```
-
-In fpcupdeluxe: **Setup+**, check **FPC/Laz rebuild only**, confirm, then click **Only FPC**.
-
-## Unleashed IDE
-
-For the best experience, use **[Unleashed Pascal IDE](https://github.com/unleashedpascal/ide)** - a fork of the Lazarus IDE that understands unleashed mode end to end. Its parser, code completion, and Code Insight know the new syntax, so inline vars, tuples, `match`, `async` / `await`, and the rest autocomplete and navigate like any built-in construct, with no false-positive error markers in the editor.
-
-Stock Lazarus still builds and runs Unleashed projects fine, but its Code Insight does not recognize the new syntax and will flag it as errors. If you stay on stock Lazarus, enable the mode through `-Munleashed` in the project's Custom Options rather than `{$mode unleashed}` in the source - that keeps the editor's background parser quieter about the constructs it cannot model.
 
 ## Contributing
 
