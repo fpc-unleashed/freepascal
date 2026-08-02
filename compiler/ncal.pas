@@ -3211,9 +3211,13 @@ implementation
             result:=ctemprefnode.create(basetemp)
           else
             result:=caddrnode.create_internal(basenode.getcopy);
-          result:=ctypeconvnode.create_internal(result,cpointerdef.getreusable(u8inttype));
+          { offset in the integer domain: pointer arithmetic is rejected in
+            modes without pointermath, this expansion must work in all }
           if off<>0 then
-            result:=caddnode.create(addn,result,cordconstnode.create(off,ptrsinttype,false));
+            begin
+              result:=ctypeconvnode.create_internal(result,ptruinttype);
+              result:=caddnode.create(addn,result,cordconstnode.create(off,ptruinttype,false));
+            end;
           result:=ctypeconvnode.create_internal(result,cpointerdef.getreusable(widthtype(w)));
           result:=cderefnode.create(result);
         end;
