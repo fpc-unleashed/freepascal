@@ -1198,7 +1198,11 @@ implementation
                                 if (not fields_allowed)and(current_scanner.idtoken<>_CASE) then
                                   Message(parser_e_field_not_allowed_here);
                                 vdoptions:=[vd_record];
-                                if classfields then
+                                { a method/property ends the `class var`
+                                  section (fields_allowed is cleared), so a
+                                  variant part after it is instance layout
+                                  again, not a static overlay }
+                                if classfields and fields_allowed then
                                   include(vdoptions,vd_class);
                                 if not (m_implicit_generics in current_settings.modeswitches) then
                                   include(vdoptions,vd_check_generic);
