@@ -218,7 +218,11 @@ implementation
             _no_inline('recursion');
             exit;
           end;
-        if pi_has_assembler_block in current_procinfo.flags then
+        { an inlined pure-assembler routine keeps its body for the codegen
+          splice; a mixed Pascal body with an inline asm block stays blocked }
+        if (pi_has_assembler_block in current_procinfo.flags) and
+           not((pio_forceinline in procdef.implprocoptions) and
+               (po_assembler in procdef.procoptions)) then
           begin
             _no_inline('assembler');
             exit;

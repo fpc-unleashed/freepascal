@@ -303,7 +303,8 @@ interface
          if not (asmnf_has_registerlist in asmnodeflags) then
            cg.allocallcpuregisters(current_asmdata.CurrAsmList);
 
-         if (po_inline in current_procinfo.procdef.procoptions) then
+         if (po_inline in current_procinfo.procdef.procoptions) or
+            (asmnf_inlined in asmnodeflags) then
            begin
              hp:=tai(p_asm.first);
              while assigned(hp) do

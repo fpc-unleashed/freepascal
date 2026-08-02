@@ -105,6 +105,12 @@ interface
           procedure extra_call_ref_code(var ref: treference);virtual;
           function do_call_ref(ref: treference): tcgpara;virtual;
 
+          { splice the body of an inlined assembler routine in place of the
+            call; parameters are already loaded in their ABI locations by
+            pushparas, so the body sees exactly the calling-convention state a
+            real call would set up }
+          function splice_asm_inline_body: tcgpara;
+
           { store all the parameters in the temporary paralocs in their final
             location, and create the paralocs array that will be passed to
             hlcg.a_call_* }
@@ -138,7 +144,18 @@ implementation
       cgobj,tgobj,hlcgobj,
       procinfo,
       aasmtai,
+      nbas,nutils,pass_1,
       wpobase;
+
+
+    { mark spliced assembler blocks so their local labels get relabeled per
+      call site (see tcgasmnode.pass_generate_code) }
+    function mark_inlined_asm(var n:tnode; arg:pointer):foreachnoderesult;
+      begin
+        if n.nodetype=asmn then
+          include(tasmnode(n).asmnodeflags,asmnf_inlined);
+        result:=fen_false;
+      end;
 
 
     function can_skip_para_push(parasym: tparavarsym): boolean;
@@ -539,6 +556,25 @@ implementation
         InternalError(2014012901);
         { silence warning }
         result.init;
+      end;
+
+
+    function tcgcallnode.splice_asm_inline_body: tcgpara;
+      var
+        bodycopy : tnode;
+      begin
+        { copy the saved body, relabel its local labels, and emit it directly
+          instead of a call; pushparas already put the arguments where the
+          assembler body expects them (ABI registers/stack) }
+        bodycopy:=tprocdef(procdefinition).inlininginfo^.code.getcopy;
+        foreachnodestatic(bodycopy,@mark_inlined_asm,nil);
+        typecheckpass(bodycopy);
+        firstpass(bodycopy);
+        secondpass(bodycopy);
+        bodycopy.free;
+        { the result sits in the routine's normal function-result location }
+        procdefinition.init_paraloc_info(callerside);
+        result:=procdefinition.funcretloc[callerside];
       end;
 
 
@@ -1199,7 +1235,9 @@ implementation
                           else
                             name_to_call:=overrideprocnamedef.mangledname;
                         end;
-                      if cnf_inherited in callnodeflags then
+                      if cnf_asm_inline in callnodeflags then
+                        retloc:=splice_asm_inline_body
+                      else if cnf_inherited in callnodeflags then
                         retloc:=hlcg.a_call_name_inherited(current_asmdata.CurrAsmList,tprocdef(procdefinition),name_to_call,paralocs)
                       { under certain conditions, a static call (i.e. without PIC) can be generated }
                       else if ((procdefinition.owner=current_procinfo.procdef.owner) or

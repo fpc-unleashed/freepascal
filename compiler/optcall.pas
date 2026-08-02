@@ -124,6 +124,10 @@ unit optcall;
           exit;
         callnode:=tcallnode(_n);
 
+        { assembler bodies are spliced in codegen, not here }
+        if cnf_asm_inline in callnode.callnodeflags then
+          exit;
+
         if not(callnode.doinlining) then
           begin
             if not(po_compilerproc in callnode.procdefinition.procoptions) then

@@ -115,7 +115,10 @@ interface
        TAsmNodeFlag = (
          asmnf_get_asm_position,
          { Used registers in assembler block }
-         asmnf_has_registerlist
+         asmnf_has_registerlist,
+         { this block is a copy spliced into a call site by the inliner, so its
+           local labels must be relabeled even when the host is not itself inline }
+         asmnf_inlined
        );
 
        TAsmNodeFlags = set of TAsmNodeFlag;

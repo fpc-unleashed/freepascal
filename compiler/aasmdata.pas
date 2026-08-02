@@ -684,9 +684,14 @@ implementation
       var
         i  : longint;
       begin
+        if FAltSymbolList.Count=0 then
+          exit;
         for i:=0 to FAltSymbolList.Count-1 do
           TAsmSymbol(FAltSymbolList[i]).altsymbol:=nil;
         FAltSymbolList.Clear;
+        { advance so the next inline expansion of the same routine gets fresh
+          label names instead of clashing on the same _N suffix }
+        inc(FNextAltNr);
       end;
 
 

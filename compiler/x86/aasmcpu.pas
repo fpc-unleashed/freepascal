@@ -33,6 +33,7 @@ interface
       globtype,verbose,
       cpubase,
       cgbase,cgutils,
+      symtype,
       aasmbase,aasmtai,aasmsym,
       ogbase;
 
@@ -651,6 +652,8 @@ interface
          function  Pass1(objdata:TObjData):longint;override;
          procedure Pass2(objdata:TObjData);override;
          procedure SetOperandOrder(order:TOperandOrder);
+         constructor ppuload(t:taitype;ppufile:tcompilerppufile);override;
+         procedure ppuwrite(ppufile:tcompilerppufile);override;
          function is_same_reg_move(regtype: Tregistertype):boolean;override;
          { register spilling code }
          function spilling_get_operation_type(opnr: longint): topertype;override;
@@ -1481,6 +1484,24 @@ implementation
            Swapoperands;
            FOperandOrder:=order;
          end;
+      end;
+
+
+    constructor taicpu.ppuload(t:taitype;ppufile:tcompilerppufile);
+      begin
+        inherited ppuload(t,ppufile);
+        { the zero-initialized field would claim op_intel; the ppu image is
+          always att order (see ppuwrite) }
+        FOperandOrder:=op_att;
+      end;
+
+
+    procedure taicpu.ppuwrite(ppufile:tcompilerppufile);
+      begin
+        { the internal assembler swaps the operands to intel order in place;
+          the ppu image must always be att order }
+        SetOperandOrder(op_att);
+        inherited ppuwrite(ppufile);
       end;
 
 
