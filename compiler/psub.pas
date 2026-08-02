@@ -1951,6 +1951,98 @@ implementation
       end;
 
 
+    const
+      { node types a body may consist of to qualify for automatic inlining:
+        plain expressions, branches, exits, calls and raises; loops,
+        exception frames, asm blocks and jumps either bloat the caller or
+        cannot be priced by a node count. Calls are admitted so wrappers,
+        default-argument overloads and raising guard helpers qualify; the
+        inliner's depth budget keeps chains of them bounded }
+      autoinline_allowed_nodes = [addn,muln,subn,divn,symdifn,modn,assignn,
+        loadn,rangen,ltn,lten,gtn,gten,equaln,unequaln,inn,orn,xorn,shrn,
+        shln,slashn,andn,subscriptn,derefn,addrn,ordconstn,typeconvn,calln,
+        callparan,realconstn,unaryminusn,unaryplusn,vecn,pointerconstn,
+        stringconstn,notn,inlinen,niln,typen,setelementn,setconstn,blockn,
+        statementn,ifn,exitn,casen,starstarn,arrayconstructorn,
+        arrayconstructorrangen,tempcreaten,temprefn,tempdeleten,nothingn,
+        loadvmtaddrn,guidconstn,rttin,loadparentfpn,raisen];
+      { intrinsics that stay simple inline code; the others (write, str,
+        new, setlength, ...) expand into runtime calls during pass_1 }
+      autoinline_allowed_intrinsics = [in_inc_x,in_dec_x,in_succ_x,in_pred_x,
+        in_ord_x,in_chr_byte,in_length_x,in_assigned_x,in_abs_long,
+        in_abs_real,in_sqr_real,in_sizeof_x,in_typeof_x,in_lo_word,
+        in_hi_word,in_lo_long,in_hi_long,in_lo_qword,in_hi_qword,
+        in_ror_x,in_ror_x_y,in_rol_x,in_rol_x_y,in_include_x_y,
+        in_exclude_x_y,in_aligned_x,in_unaligned_x,in_volatile_x];
+      { size cap, in nodes, for bodies that pass the shape test; bodies
+        containing a call get a tighter budget (a single call, half the
+        nodes) since every splice duplicates that call's setup code -
+        without the tighter cap a compiler self-build grows 23% instead
+        of 4% }
+      autoinline_max_nodes = 40;
+      autoinline_max_nodes_with_call = 20;
+
+    type
+      tautoinlinectx = record
+        pd: tprocdef;
+        ncalls: longint;
+      end;
+      pautoinlinectx = ^tautoinlinectx;
+
+    { true when the tree loads a parameter of the procdef passed as arg }
+    function loads_para_of(var n: tnode; arg: pointer): foreachnoderesult;
+      begin
+        if (n.nodetype=loadn) and
+           (tloadnode(n).symtableentry.typ=paravarsym) and
+           (tloadnode(n).symtableentry.owner=tprocdef(arg).parast) then
+          result:=fen_norecurse_true
+        else
+          result:=fen_false;
+      end;
+
+    { true when the call passes an expression over one of procdef's own
+      parameters on by reference. Inlining can bind such a formal to a
+      constant actual, and the inliner then materializes only the element
+      the inner reference names instead of the whole object, so reading
+      past it copies garbage (reproduced with move(s[1],...) inside an
+      inline routine taking "const s: shortstring" and a literal actual;
+      stock FPC miscompiles that the same way) }
+    function forwards_para_by_ref(call: tcallnode; pd: tprocdef): boolean;
+      var
+        para: tcallparanode;
+      begin
+        result:=true;
+        para:=tcallparanode(call.left);
+        while assigned(para) do
+          begin
+            if assigned(para.parasym) and
+               ((para.parasym.varspez in [vs_var,vs_out,vs_constref]) or
+                (para.parasym.vardef.typ=formaldef)) and
+               foreachnodestatic(para.left,@loads_para_of,pd) then
+              exit;
+            para:=tcallparanode(para.right);
+          end;
+        result:=false;
+      end;
+
+    { arg is a pautoinlinectx for the procdef whose body is being judged }
+    function check_autoinline_shape(var n: tnode; arg: pointer): foreachnoderesult;
+      begin
+        if n.nodetype=calln then
+          inc(pautoinlinectx(arg)^.ncalls);
+        if not(n.nodetype in autoinline_allowed_nodes) or
+           ((n.nodetype=inlinen) and
+            not(tinlinenode(n).inlinenumber in autoinline_allowed_intrinsics)) or
+           { direct recursion would only unroll a few budgeted levels }
+           ((n.nodetype=calln) and
+            ((tcallnode(n).procdefinition=tabstractprocdef(pautoinlinectx(arg)^.pd)) or
+             forwards_para_by_ref(tcallnode(n),pautoinlinectx(arg)^.pd))) then
+          result:=fen_norecurse_true
+        else
+          result:=fen_false;
+      end;
+
+
     procedure tcgprocinfo.generate_code;
 
        procedure check_for_threadvars_in_initfinal;
@@ -1967,19 +2059,21 @@ implementation
 
        function heuristics_favors_autoinlining(code: tnode): boolean;
          var
-           complexityAvail : integer;
+           ctx: tautoinlinectx;
          begin
-           { rough approximation if we should auto inline:
-             - if the tree is simple enough
-             - if the tree is not too big
-             A bigger tree which is simpler might be autoinlined otoh
-             a smaller and complexer tree as well: so we use the sum of
-             both measures here }
-
-           { This is a shortcutted version of
-             "result:=node_count(code)+node_complexity(code)<=25". }
-           complexityAvail:=25-node_complexity(code);
-           result:=(complexityAvail>0) and (node_count(code,complexityAvail+1)<=dword(complexityAvail));
+           { small bodies of plain expressions, branches and exits qualify;
+             node_complexity is no measure here since it prices any control
+             flow as infinite, so gate on the node types and a node count }
+           result:=false;
+           if node_count(code,autoinline_max_nodes+1)>autoinline_max_nodes then
+             exit;
+           ctx.pd:=procdef;
+           ctx.ncalls:=0;
+           if foreachnodestatic(code,@check_autoinline_shape,@ctx) then
+             exit;
+           result:=(ctx.ncalls=0) or
+             ((ctx.ncalls=1) and
+              (node_count(code,autoinline_max_nodes_with_call+1)<=autoinline_max_nodes_with_call));
          end;
 
       var
