@@ -137,6 +137,13 @@ Semantic adjustments and small syntax unlocks - full catalog in [tweaks.md](unle
 - **`goto`, Macros, C-Operators without Directives** - all implied by the mode.
 - **`DEBUG` / `RELEASE` Defines** - set automatically from `-g`: react to a debug build with `{$ifdef DEBUG}`, no `-dDEBUG` needed.
 
+### Optimizer
+
+| Switch | One-liner | Docs |
+|---|---|---|
+| **`-OoMEMINLINE`** | on from `-O2`: `FillChar(hdr, sizeof(hdr), 0)` with a constant count up to 64 bytes becomes direct stores, no RTL call | [optimizations.md](unleashed/docs/optimizations.md) |
+| **`-OoAUTOINLINE`** | on from `-O3`: small routines are inlined without an `inline` directive, judged by the shape of the body | [optimizations.md](unleashed/docs/optimizations.md) |
+
 ## Detailed documentation
 
 Each feature has a dedicated reference page with the full grammar, semantics, edge cases, IDE notes, and a runnable demo. Start at the index: [unleashed/docs/README.md](unleashed/docs/README.md).

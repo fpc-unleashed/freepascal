@@ -224,3 +224,11 @@ Declare a family of labels keyed by ordinal ranges (`label state[0..4]`) or stri
 ### [Tweaks](tweaks.md)
 
 Small semantic adjustments that make standard constructs behave the way most people expect, all unleashed-mode-only: the **preserved for-loop counter** (after `for i := 1 to N do ... break;` the counter keeps its value, undefined in stock Pascal), the **`is not` / `not in`** operators (shorthand for the parenthesized negation), and the module switches (`goto`, C-operators, macros) that unleashed turns on automatically.
+
+---
+
+## Optimizer
+
+### [Optimizer Switches](optimizations.md)
+
+Two optimizer switches that need no mode, no modeswitch and no source change - only an optimization level. `-OoMEMINLINE` (on from `-O2`) expands `FillChar()` / `FillByte()` / `FillWord()` / `FillDWord()` / `FillQWord()` / `Move()` calls with a constant count of at most 64 bytes into direct stores, replicating a runtime fill value with one multiply and loading every chunk before storing so an overlapping `Move()` still behaves like the RTL one. `-OoAUTOINLINE` (on from `-O3`) inlines routines that carry no `inline` directive, judging the shape of the body (expressions, branches, exits, at most one call) against a node budget rather than a complexity score. Both are switchable per routine with `{$optimization NOMEMINLINE}` / `{$optimization NOAUTOINLINE}`.
