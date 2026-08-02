@@ -3355,6 +3355,11 @@ var
           end;
 
         po_comp := (pd.procoptions*proc_direcdata[p].mutexclpo);
+        { a forward declaration of an inline routine works in unleashed mode:
+          code generation of callers is postponed until the body is parsed }
+        if (proc_direcdata[p].idtok=_FORWARD) and
+           (m_unleashed in current_settings.modeswitches) then
+          exclude(po_comp,po_inline);
         if (po_comp<>[]) then
           begin
             MessagePos2(tokenloc, parser_e_proc_dir_conflict,name,get_first_proc_str(po_comp));
