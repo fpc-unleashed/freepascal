@@ -282,6 +282,8 @@ implementation
             begin
               perform(tnode(tcallnode(n).callinitblock));
               perform(tcallnode(n).methodpointer);
+              perform(tcallnode(n).call_self_node);
+              perform(tcallnode(n).call_vmt_node);
               perform(tcallnode(n).funcretnode);
               perform(tnode(tcallnode(n).vmt_entry));
               perform(tnode(tcallnode(n).callcleanupblock));
