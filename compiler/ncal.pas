@@ -5711,6 +5711,16 @@ implementation
         if para.parasym.vardef.typ=formaldef then
           exit(false);
 
+        { A constant actual is spliced into the body as the constant node
+          itself, so an expression selecting part of it (s[1] of a string
+          constant) folds to a constant of that part alone and the address
+          the body takes is the address of a temp holding just that part.
+          Materialize the whole value instead whenever the body takes the
+          parameter's address. }
+        if is_constnode(para.left) and
+           tabstractvarsym(para.parasym).addr_taken then
+          exit(true);
+
         { We don't need temps for parameters that are already temps, except if
           the passed temp could be put in a regvar while the parameter inside
           the routine cannot be (e.g., because its address is taken in the
