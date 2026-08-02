@@ -134,6 +134,11 @@ interface
     { parses only the body of a non nested routine; needs a correctly setup pd }
     procedure read_proc_body(pd:tprocdef);
 
+    { generates the code of routines postponed because they call a forceinline
+      routine whose body was not parsed yet; with force also those whose
+      called body never showed up (so the error is reported) }
+    procedure generate_deferred_forceinline_procs(force:boolean);
+
     procedure import_external_proc(pd:tprocdef);
 
 
@@ -3104,6 +3109,154 @@ implementation
       end;
 
 
+    type
+      { routine whose code generation is postponed until the bodies of the
+        forceinline routines it calls have been parsed; carries the settings
+        active at the end of its body so the postponed passes see them }
+      tdeferredcodegen = class
+        pi : tcgprocinfo;
+        settings : tsettings;
+        constructor create(_pi:tcgprocinfo);
+        destructor destroy;override;
+      end;
+
+
+    constructor tdeferredcodegen.create(_pi:tcgprocinfo);
+      begin
+        pi:=_pi;
+        settings:=current_settings;
+      end;
+
+
+    destructor tdeferredcodegen.destroy;
+      begin
+        pi.free;
+        inherited destroy;
+      end;
+
+
+    type
+      tpendingwalkinfo = record
+        { inline bodies already descended into, to survive cycles }
+        visited : tfpobjectlist;
+        pending : boolean;
+      end;
+      ppendingwalkinfo = ^tpendingwalkinfo;
+
+
+    function find_pending_forceinline(var n:tnode;arg:pointer):foreachnoderesult; forward;
+
+    function tree_has_pending_forceinline(var t:tnode;arg:pointer):boolean;
+      begin
+        result:=foreachnodestatic(t,@find_pending_forceinline,arg);
+      end;
+
+    function find_pending_forceinline(var n:tnode;arg:pointer):foreachnoderesult;
+      var
+        pd : tprocdef;
+        info : ppendingwalkinfo;
+      begin
+        result:=fen_false;
+        info:=ppendingwalkinfo(arg);
+        if info^.pending then
+          begin
+            result:=fen_norecurse_true;
+            exit;
+          end;
+        if (n.nodetype<>calln) or
+           not assigned(tcallnode(n).procdefinition) or
+           (tcallnode(n).procdefinition.typ<>procdef) then
+          exit;
+        pd:=tprocdef(tcallnode(n).procdefinition);
+        if not(po_inline in pd.procoptions) then
+          exit;
+        { the body of a routine from another unit can never show up later in
+          this compilation, so only wait for bodies of the current module }
+        if (pio_forceinline in pd.implprocoptions) and
+           pd.forwarddef and
+           not pd.has_inlininginfo and
+           findunitsymtable(pd.owner).iscurrentunit then
+          begin
+            info^.pending:=true;
+            result:=fen_norecurse_true;
+            exit;
+          end;
+        { inlining substitutes the body, which may itself contain calls to
+          forceinline routines whose bodies are still pending }
+        if pd.has_inlininginfo and
+           (info^.visited.indexof(pd)<0) then
+          begin
+            info^.visited.add(pd);
+            if tree_has_pending_forceinline(pd.inlininginfo^.code,arg) then
+              result:=fen_norecurse_true;
+          end;
+      end;
+
+
+    { true when the routine (or one of its nested routines, or an inline body
+      it expands) calls a forceinline routine whose body has not been parsed
+      yet }
+    function has_pending_forceinline_calls(pi:tcgprocinfo):boolean;
+      var
+        info : tpendingwalkinfo;
+
+      function walk(p:tcgprocinfo):boolean;
+        var
+          hpi : tcgprocinfo;
+        begin
+          result:=true;
+          if assigned(p.code) then
+            begin
+              foreachnodestatic(p.code,@find_pending_forceinline,@info);
+              if info.pending then
+                exit;
+            end;
+          hpi:=tcgprocinfo(p.get_first_nestedproc);
+          while assigned(hpi) do
+            begin
+              if walk(hpi) then
+                exit;
+              hpi:=tcgprocinfo(hpi.next);
+            end;
+          result:=false;
+        end;
+
+      begin
+        info.visited:=tfpobjectlist.create(false);
+        info.pending:=false;
+        result:=walk(pi);
+        info.visited.free;
+      end;
+
+
+    procedure generate_deferred_forceinline_procs(force:boolean);
+      var
+        i : longint;
+        entry : tdeferredcodegen;
+        oldsettings : tsettings;
+      begin
+        i:=0;
+        while i<current_module.pendingforceinlinecodegen.count do
+          begin
+            entry:=tdeferredcodegen(current_module.pendingforceinlinecodegen[i]);
+            if force or not has_pending_forceinline_calls(entry.pi) then
+              begin
+                current_module.pendingforceinlinecodegen.extract(entry);
+                oldsettings:=current_settings;
+                current_settings:=entry.settings;
+                { the message state stack may have changed since the body was
+                  parsed, keep the live one }
+                current_settings.pmessage:=oldsettings.pmessage;
+                entry.pi.generate_code_tree;
+                current_settings:=oldsettings;
+                entry.free;
+              end
+            else
+              inc(i);
+          end;
+      end;
+
+
     procedure read_proc_body(old_current_procinfo:tprocinfo;pd:tprocdef);
       {
         Parses the procedure directives, then parses the procedure body, then
@@ -3113,9 +3266,11 @@ implementation
       var
         oldfailtokenmode : tmodeswitches;
         isnestedproc     : boolean;
+        deferredcodegen  : boolean;
       begin
         Message1(parser_d_procedure_start,pd.fullprocname(false));
         oldfailtokenmode:=[];
+        deferredcodegen:=false;
 
         { create a new procedure }
         current_procinfo:=cprocinfo.create(old_current_procinfo);
@@ -3175,7 +3330,20 @@ implementation
                 { convert all load nodes that might have been captured by a
                   capture object }
                 tcgprocinfo(current_procinfo).convert_captured_syms;
-                tcgprocinfo(current_procinfo).generate_code_tree;
+                { postpone the code generation when a called forceinline
+                  routine has no body yet; it is caught up once that body
+                  has been parsed }
+                if has_pending_forceinline_calls(tcgprocinfo(current_procinfo)) then
+                  begin
+                    current_module.pendingforceinlinecodegen.add(
+                      tdeferredcodegen.create(tcgprocinfo(current_procinfo)));
+                    deferredcodegen:=true;
+                  end
+                else
+                  tcgprocinfo(current_procinfo).generate_code_tree;
+                { the body parsed above may be the one other postponed
+                  routines are waiting for }
+                generate_deferred_forceinline_procs(false);
               end;
           end;
 
@@ -3200,8 +3368,13 @@ implementation
           consume(_SEMICOLON);
 
         if not isnestedproc then
-          { current_procinfo is checked for nil later on }
-          freeandnil(current_procinfo);
+          { current_procinfo is checked for nil later on; a deferred procinfo
+            is owned by the pending list and freed after its postponed code
+            generation }
+          if deferredcodegen then
+            current_procinfo:=nil
+          else
+            freeandnil(current_procinfo);
       end;
 
 

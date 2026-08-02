@@ -283,6 +283,9 @@ interface
         { contains a list of specializations for which the method bodies need
           to be generated }
         pendingspecializations : TFPHashObjectList;
+        { routines whose code generation is postponed until the bodies of the
+          forceinline routines they call have been parsed }
+        pendingforceinlinecodegen : tfpobjectlist;
         { list of attributes that are used and thus need their construction
           functions generated }
         used_rtti_attrs: tfpobjectlist;
@@ -777,6 +780,7 @@ implementation
         extendeddefs:=TFPHashObjectList.Create(true);
         genericdummysyms:=tfphashobjectlist.create(true);
         pendingspecializations:=tfphashobjectlist.create(false);
+        pendingforceinlinecodegen:=tfpobjectlist.create(true);
         waitingforunit:=tfpobjectlist.create(false);
         waitingunits:=tfpobjectlist.create(false);
         used_rtti_attrs:=tfpobjectlist.create(false);
@@ -903,6 +907,8 @@ implementation
         genericdummysyms := nil;
         pendingspecializations.free;
         pendingspecializations := nil;
+        pendingforceinlinecodegen.free;
+        pendingforceinlinecodegen := nil;
         waitingforunit.free;
         waitingforunit := nil;
         waitingunits.free;
@@ -1115,6 +1121,8 @@ implementation
         linkorderedsymbols:=TCmdStrList.Create;
         pendingspecializations.free;
         pendingspecializations:=tfphashobjectlist.create(false);
+        pendingforceinlinecodegen.free;
+        pendingforceinlinecodegen:=tfpobjectlist.create(true);
         genericdummysyms.Free;
         genericdummysyms := tfphashobjectlist.create(true);
         extendeddefs.Free;

@@ -1731,6 +1731,10 @@ type
          { Generate specializations of objectdefs methods }
          generate_specialization_procs;
 
+         { generate the code of routines postponed until all forceinline
+           bodies were parsed }
+         generate_deferred_forceinline_procs(true);
+
          // This needs to be done before we generate the VMTs
          if (target_cpu=tsystemcpu.cpu_wasm32) then
            begin
@@ -2898,6 +2902,10 @@ type
         { Generate specializations of objectdefs methods }
         if Errorcount=0 then
           generate_specialization_procs;
+
+        { generate the code of routines postponed until all forceinline
+          bodies were parsed }
+        generate_deferred_forceinline_procs(true);
 
         { This needs to be done before we generate the VMTs }
         if (target_cpu=tsystemcpu.cpu_wasm32) then
