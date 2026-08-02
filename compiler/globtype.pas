@@ -886,7 +886,10 @@ interface
          { set if no frame pointer is needed, the rules when this applies is target specific }
          pi_no_framepointer_needed,
          { procedure has been normalized so no expressions contain block nodes }
-         pi_normalized
+         pi_normalized,
+         { ppu image of pio_forceinline, which does not fit the one-byte
+           on-disk implprocoptions set }
+         pi_forceinline
        );
        tprocinfoflags=set of tprocinfoflag;
 

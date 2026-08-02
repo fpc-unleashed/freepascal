@@ -481,9 +481,15 @@ type
     { inline is forbidden (calls get_frame) }
     pio_inline_forbidden,
     { auto zero-init every local variable at function entry }
-    pio_zeroinit
+    pio_zeroinit,
+    { must be inlined at every call site, warning when impossible }
+    pio_forceinline
   );
   timplprocoptions = set of timplprocoption;
+  { on-disk ppu image of implprocoptions: one byte holding the first 8
+    flags; pio_forceinline travels as pi_forceinline in the inlining
+    info flags }
+  timplprocoptionsppu = set of pio_empty..pio_zeroinit;
 
   { kinds of synthetic procdefs that can be generated }
   tsynthetickind = (

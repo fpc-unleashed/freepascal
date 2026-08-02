@@ -192,8 +192,13 @@ implementation
       procedure _no_inline(const reason: TMsgStr);
         begin
           include(procdef.implprocoptions,pio_inline_not_possible);
-          Message1(parser_n_not_supported_for_inline,reason);
-          Message(parser_h_inlining_disabled);
+          if pio_forceinline in procdef.implprocoptions then
+            Message1(parser_w_forceinline_not_possible,reason)
+          else
+            begin
+              Message1(parser_n_not_supported_for_inline,reason);
+              Message(parser_h_inlining_disabled);
+            end;
         end;
 
       var
@@ -206,6 +211,13 @@ implementation
           ppu file }
         if df_generic in current_procinfo.procdef.defoptions then
           exit;
+        { expanding a recursive routine at every call site never terminates }
+        if (pio_forceinline in procdef.implprocoptions) and
+           (pi_is_recursive in current_procinfo.flags) then
+          begin
+            _no_inline('recursion');
+            exit;
+          end;
         if pi_has_assembler_block in current_procinfo.flags then
           begin
             _no_inline('assembler');

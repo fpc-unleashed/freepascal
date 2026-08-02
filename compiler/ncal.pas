@@ -5239,13 +5239,25 @@ implementation
       var
         st   : tsymtable;
         para : tcallparanode;
+        forceinline : boolean;
       begin
-        { Can we inline the procedure? }
+        forceinline:=(procdefinition.typ=procdef) and
+          (pio_forceinline in tprocdef(procdefinition).implprocoptions);
+        { Can we inline the procedure? forceinline skips the size heuristics }
         if (po_inline in procdefinition.procoptions) and
            (procdefinition.typ=procdef) and
            tprocdef(procdefinition).has_inlininginfo and
-           heuristics_favors_inlining then
+           (forceinline or heuristics_favors_inlining) then
           begin
+            { expanding mutually recursive forced-inline routines never
+              terminates; a legitimate chain of distinct routines stays far
+              below this depth }
+            if forceinline and (inlinelevel>=64) then
+              begin
+                CGMessagePos2(fileinfo,cg_w_forceinline_not_inlined,tprocdef(procdefinition).procsym.realname,
+                  'the expansion depth limit was reached (mutually recursive inline routines)');
+                exit;
+              end;
             include(callnodeflags,cnf_do_inline);
             { Check if we can inline the procedure when it references proc/var that
               are not in the globally available }
@@ -5259,6 +5271,9 @@ implementation
               begin
                 Comment(V_lineinfo+V_Debug,'Not inlining "'+tprocdef(procdefinition).procsym.realname+'", references private symbols from other unit');
                 exclude(callnodeflags,cnf_do_inline);
+                if forceinline then
+                  CGMessagePos2(fileinfo,cg_w_forceinline_not_inlined,tprocdef(procdefinition).procsym.realname,
+                    'it references private symbols from another unit');
               end;
             para:=tcallparanode(parameters);
             while assigned(para) do
@@ -5268,11 +5283,21 @@ implementation
                     Comment(V_lineinfo+V_Debug,'Not inlining "'+tprocdef(procdefinition).procsym.realname+
                       '", invocation parameter contains an unsafe/unsupported construct');
                     exclude(callnodeflags,cnf_do_inline);
+                    if forceinline then
+                      CGMessagePos2(fileinfo,cg_w_forceinline_not_inlined,tprocdef(procdefinition).procsym.realname,
+                        'an invocation parameter contains an unsafe or unsupported construct');
                     break;
                   end;
                 para:=tcallparanode(para.nextpara);
               end;
-          end;
+          end
+        else if forceinline and (po_inline in procdefinition.procoptions) and
+           { when inlining was already reported impossible at the definition,
+             the warning was given there }
+           not(pio_inline_not_possible in tprocdef(procdefinition).implprocoptions) then
+          { only has_inlininginfo can fail above when forceinline is set }
+          CGMessagePos2(fileinfo,cg_w_forceinline_not_inlined,tprocdef(procdefinition).procsym.realname,
+            'the routine body is not available (undefined forward or implementation in a unit not yet compiled)');
       end;
 
 

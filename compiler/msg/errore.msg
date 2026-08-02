@@ -498,7 +498,7 @@ scan_e_improperly_indented_multiline_string=02120_E_Incorrectly indented multi-l
 #
 # Parser
 #
-# 03445 is the last used one
+# 03446 is the last used one
 #
 % \section{Parser messages}
 % This section lists all parser messages. The parser takes care of the
@@ -2001,12 +2001,16 @@ parser_e_inline_decl_control_body=03445_E_Inline variable declaration cannot be 
 parser_w_unaligned_useless=03375_W_Unaligned is useless here.
 parser_w_aligned_useless=03376_W_Aligned is useless here.
 % Use of aligned(EXPR) or unaligned(EXPR) only has an effect if EXPR is a dereference.
+parser_w_forceinline_not_possible=03446_W_Routine marked as "inline" will not be inlined: $1
+% The routine body uses a construct the inliner cannot expand (recursion,
+% nested routines, a variant array parameter, ...), so every call emits a
+% regular call instead.
 %
 % \end{description}
 %
 # Type Checking
 #
-# 03445 is the last used parser one
+# 03446 is the last used parser one
 #
 # 04141 is the last used one
 #
@@ -2840,7 +2844,7 @@ sym_e_label_index_expected=05102_E_Label "$1" is an indexed label, an index is r
 #
 # Codegenerator
 #
-# 06062 is the last used one
+# 06066 is the last used one
 #
 % \section{Code generator messages}
 % This section lists all messages that can be displayed if the code
@@ -3014,6 +3018,13 @@ cg_f_unknown_internal_procedure_number=06063_F_Unknown internal procedure number
 cg_e_intrinsic_not_supported_by_instruction_set=06064_E_Intrinsic not supported by the currently selected instruction set
 % The intrinsic translates into an assembler instruction which is not supported by the instruction set
 % selected by \var{-Cp}
+cg_e_forceinline_not_inlined=06065_E_Call to subroutine "$1" marked as "inline" cannot be inlined: $2
+% The expansion of the call was already underway when the problem was
+% detected, so a fallback to a regular call is not possible anymore.
+cg_w_forceinline_not_inlined=06066_W_Call to subroutine "$1" marked as "inline" was not inlined: $2
+% The call could not be expanded inline (for example the routine body is
+% mutually recursive, or not available in this compilation), a regular
+% call is emitted instead.
 %
 % \end{description}
 # EndOfTeX

@@ -7032,6 +7032,8 @@ implementation
         i,aliasnamescount,sizeleft : longint;
         level : byte;
         buf : array[0..255] of byte;
+        ppuimplopts : timplprocoptionsppu;
+        iopt : timplprocoption;
       begin
          inherited ppuload(procdef,ppufile);
 {$ifdef symansistr}
@@ -7073,12 +7075,18 @@ implementation
          if (po_dispid in procoptions) then
            dispid:=ppufile.getlongint;
          { inline stuff }
-         ppufile.getset(tppuset1(implprocoptions));
+         ppufile.getset(tppuset1(ppuimplopts));
+         implprocoptions:=[];
+         for iopt:=pio_empty to pio_zeroinit do
+           if iopt in ppuimplopts then
+             include(implprocoptions,iopt);
          if has_inlininginfo then
            begin
              ppufile.getderef(funcretsymderef);
              new(inlininginfo);
              ppufile.getset(tppuset4(inlininginfo^.flags));
+             if pi_forceinline in inlininginfo^.flags then
+               include(implprocoptions,pio_forceinline);
            end
          else
            begin
@@ -7208,6 +7216,8 @@ implementation
         aliasnamescount,i,sizeleft : longint;
         item : TCmdStrListItem;
         buf : array[0..255] of byte;
+        ppuimplopts : timplprocoptionsppu;
+        iopt : timplprocoption;
       begin
          { released procdef? }
          if not assigned(parast) then
@@ -7246,10 +7256,16 @@ implementation
          { inline stuff }
          oldcrc:=ppufile.do_crc;
          ppufile.do_crc:=false;
-         ppufile.putset(tppuset1(implprocoptions));
+         ppuimplopts:=[];
+         for iopt:=pio_empty to pio_zeroinit do
+           if iopt in implprocoptions then
+             include(ppuimplopts,iopt);
+         ppufile.putset(tppuset1(ppuimplopts));
          if has_inlininginfo then
            begin
              ppufile.putderef(funcretsymderef);
+             if pio_forceinline in implprocoptions then
+               include(inlininginfo^.flags,pi_forceinline);
              ppufile.putset(tppuset4(inlininginfo^.flags));
            end;
 

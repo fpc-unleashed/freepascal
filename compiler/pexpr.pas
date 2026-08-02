@@ -547,7 +547,9 @@ implementation
                               if not(assigned(exit_procinfo.nestedexitlabel)) then
                                 begin
                                   include(current_procinfo.flags,pi_has_nested_exit);
-                                  exclude(current_procinfo.procdef.procoptions,po_inline);
+                                  { when inline is forced keep po_inline so checknodeinlining reports it }
+                                  if not(pio_forceinline in current_procinfo.procdef.implprocoptions) then
+                                    exclude(current_procinfo.procdef.procoptions,po_inline);
                                   if is_nested_pd(current_procinfo.procdef) then
                                     current_procinfo.set_needs_parentfp(exit_procinfo.procdef.parast.symtablelevel);
 

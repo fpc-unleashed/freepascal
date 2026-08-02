@@ -613,9 +613,22 @@ implementation
                 ;
             end;
 
+            { in unleashed mode inline is forced: every call site expands,
+              the size heuristics are skipped, and a failure to expand is
+              a warning instead of silence. $inline off keeps its meaning:
+              it degrades the routine to a stock hint, so a build can turn
+              the expansions off for debugging }
+            if (po_inline in pd.procoptions) and
+               (pd.typ=procdef) and
+               (cs_do_inline in current_settings.localswitches) and
+               (m_unleashed in current_settings.modeswitches) then
+              include(tprocdef(pd).implprocoptions,pio_forceinline);
+
             { Inlining is enabled and supported? }
             if (po_inline in pd.procoptions) and
-               not(cs_do_inline in current_settings.localswitches) then
+               not(cs_do_inline in current_settings.localswitches) and
+               { a forced inline does not depend on the $inline switch }
+               not((pd.typ=procdef) and (pio_forceinline in tprocdef(pd).implprocoptions)) then
               begin
                 { Give an error if inline is not supported by the compiler mode,
                   otherwise only give a hint that this procedure will not be inlined }

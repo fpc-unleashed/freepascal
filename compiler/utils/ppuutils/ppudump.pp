@@ -1750,7 +1750,9 @@ const
          (mask:pi_no_framepointer_needed;
          str:' set if no frame pointer is needed, the rules when this applies is target specific'),
          (mask:pi_normalized;
-         str:'  has been normalized so no expressions contain block nodes ')
+         str:'  has been normalized so no expressions contain block nodes '),
+         (mask:pi_forceinline;
+         str:' must be inlined at every call site')
   );
 var
   procinfooptions : tprocinfoflags;
@@ -3489,13 +3491,19 @@ const
     (mask:pio_thunk; str:'Thunk'),
     (mask:pio_fastmath; str:'FastMath'),
     (mask:pio_inline_forbidden; str:'InlineForbidden'),
-    (mask:pio_zeroinit; str:'ZeroInit')
+    (mask:pio_zeroinit; str:'ZeroInit'),
+    (mask:pio_forceinline; str:'ForceInline')
   );
 var
   i: timplprocoption;
+  ppuimplopts: timplprocoptionsppu;
   first: boolean;
 begin
-  ppufile.getset(tppuset1(implprocoptions));
+  ppufile.getset(tppuset1(ppuimplopts));
+  implprocoptions:=[];
+  for i:=pio_empty to pio_zeroinit do
+    if i in ppuimplopts then
+      include(implprocoptions,i);
   if implprocoptions<>[] then
     begin
       first:=true;
