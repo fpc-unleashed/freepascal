@@ -26,7 +26,7 @@ unit nbas;
 interface
 
     uses
-       globtype,
+       globtype,cclasses,
        cgbase,cgutils,
        aasmtai,aasmdata,aasmcpu,
        node,
@@ -420,11 +420,19 @@ interface
        { same as above, but create a regular temp rather than reference temp }
        function maybereplacewithtemp(var n: tnode; var block: tblocknode; var stat: tstatementnode; size: ASizeInt; allowreg: boolean): ttempcreatenode;
 
+       { collects the symbols referenced by top_local operands of the
+         instructions in the given assembler list }
+       procedure asmlist_collect_local_syms(p: TAsmList; syms: TFPObjectList);
+       { redirects top_local operands according to map (alternating pairs of
+         original and replacement symbol); a staticvarsym replacement turns the
+         operand into a plain symbol reference }
+       procedure asmlist_rewrite_local_syms(p: TAsmList; map: TFPObjectList);
+
 implementation
 
     uses
       verbose,globals,systems,
-      ppu,
+      ppu,aasmbase,cpubase,
       symsym,symconst,symdef,defutil,defcmp,
       pass_1,
       nutils,nld,ncnv,
@@ -1196,6 +1204,100 @@ implementation
           write(T,'"');
       end;
 {$endif DEBUG_NODE_XML}
+
+    procedure asmlist_collect_local_syms(p: TAsmList; syms: TFPObjectList);
+      var
+        hp : tai;
+        i  : longint;
+      begin
+        if not assigned(p) then
+          exit;
+        hp:=tai(p.first);
+        while assigned(hp) do
+          begin
+            if hp.typ=ait_instruction then
+              for i:=0 to tai_cpu_abstract(hp).ops-1 do
+                with tai_cpu_abstract(hp).oper[i]^ do
+                  if (typ=top_local) and
+                     (syms.IndexOf(TObject(localoper^.localsym))<0) then
+                    syms.Add(TObject(localoper^.localsym));
+            hp:=tai(hp.next);
+          end;
+      end;
+
+
+    procedure asmlist_rewrite_local_syms(p: TAsmList; map: TFPObjectList);
+      var
+        hp : tai;
+        i,j : longint;
+        newsym : tsym;
+        sofs : longint;
+        indexreg : tregister;
+        getoffset : boolean;
+{$ifdef x86}
+        segment : tregister;
+        scale : byte;
+{$endif x86}
+      begin
+        if not assigned(p) then
+          exit;
+        hp:=tai(p.first);
+        while assigned(hp) do
+          begin
+            if hp.typ=ait_instruction then
+              for i:=0 to tai_cpu_abstract(hp).ops-1 do
+                with tai_cpu_abstract(hp).oper[i]^ do
+                  if typ=top_local then
+                    begin
+                      newsym:=nil;
+                      j:=0;
+                      while j<map.count do
+                        begin
+                          if TObject(localoper^.localsym)=map[j] then
+                            begin
+                              newsym:=tsym(map[j+1]);
+                              break;
+                            end;
+                          inc(j,2);
+                        end;
+                      if assigned(newsym) then
+                        if newsym.typ=staticvarsym then
+                          begin
+                            { statics are addressed by symbol, not via a frame
+                              location, so turn the operand into a reference }
+                            sofs:=localoper^.localsymofs;
+                            indexreg:=localoper^.localindexreg;
+                            getoffset:=localoper^.localgetoffset;
+{$ifdef x86}
+                            segment:=localoper^.localsegment;
+                            scale:=localoper^.localscale;
+{$endif x86}
+                            dispose(localoper);
+                            typ:=top_ref;
+                            new(ref);
+                            reference_reset_base(ref^,NR_NO,sofs,ctempposinvalid,
+                              tabstractvarsym(newsym).vardef.alignment,[]);
+                            ref^.symbol:=current_asmdata.RefAsmSymbol(tstaticvarsym(newsym).mangledname,AT_DATA);
+{$ifdef x86_64}
+                            { keep the access position-independent }
+                            if indexreg=NR_NO then
+                              ref^.base:=NR_RIP;
+{$endif x86_64}
+                            ref^.index:=indexreg;
+{$ifdef x86}
+                            ref^.segment:=segment;
+                            ref^.scalefactor:=scale;
+{$endif x86}
+                            if getoffset then
+                              ref^.refaddr:=addr_full;
+                          end
+                        else
+                          localoper^.localsym:=newsym;
+                    end;
+            hp:=tai(hp.next);
+          end;
+      end;
+
 
 {*****************************************************************************
                              TASMNODE

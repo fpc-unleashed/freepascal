@@ -67,6 +67,19 @@ unit optcall;
       end;
 
 
+    { redirect assembler operands to the per-expansion backing symbols and mark
+      the block so its local labels get relabeled per call site }
+    function rewriteinlinedasm(var n:tnode; arg:pointer):foreachnoderesult;
+      begin
+        result:=fen_false;
+        if n.nodetype=asmn then
+          begin
+            asmlist_rewrite_local_syms(tasmnode(n).p_asm,TFPObjectList(arg));
+            include(tasmnode(n).asmnodeflags,asmnf_inlined);
+          end;
+      end;
+
+
     { reference symbols that are imported from another unit }
     function importglobalsyms(var n:tnode; arg:pointer):foreachnoderesult;
       var
@@ -165,6 +178,8 @@ unit optcall;
         foreachnodestatic(pm_postprocess,body,@importglobalsyms,nil);
         foreachnodestatic(pm_postprocess,body,@setinlinelevel,pointer(callnode.inlinelevel+1));
         foreachnode(pm_preprocess,body,@callnode.replaceparaload,@callnode.fileinfo);
+        if assigned(callnode.inlineasmsymmap) then
+          foreachnodestatic(pm_postprocess,body,@rewriteinlinedasm,callnode.inlineasmsymmap);
 
         { Concat the body and finalization parts }
         addstatement(callnode.inlineinitstatement,body);
@@ -213,6 +228,10 @@ unit optcall;
         { free the temps for the locals }
         callnode.inlinelocals.free;
         callnode.inlinelocals:=nil;
+        callnode.inlineasmsyms.free;
+        callnode.inlineasmsyms:=nil;
+        callnode.inlineasmsymmap.free;
+        callnode.inlineasmsymmap:=nil;
         callnode.inlineinitstatement:=nil;
         callnode.inlinecleanupstatement:=nil;
 

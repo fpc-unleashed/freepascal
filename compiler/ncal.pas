@@ -106,6 +106,12 @@ interface
           { inlining support }
           inlinelevel             : PtrUInt;
           inlinelocals            : TFPObjectList;
+          { symbols referenced from assembler statements of the inlined body:
+            flat set, and the alternating orig/replacement pairs created for
+            this expansion (asm operands resolve through sym.localloc, so they
+            need symbol-backed storage instead of temps) }
+          inlineasmsyms,
+          inlineasmsymmap         : TFPObjectList;
           inlineinitstatement,
           inlinecleanupstatement  : tstatementnode;
           { checks whether we have to create a temp to store the value of a
@@ -121,6 +127,7 @@ interface
             entries first, block-scoped locals follow in blocklocalsymtables
             order; -1 for syms not belonging to the inlined routine }
           function inlinelocalindex(sym: tsym): integer;
+          function create_asm_backing_sym(orgsym: tabstractnormalvarsym): tsym;
           procedure createinlineparas;
           procedure wrapcomplexinlinepara(para: tcallparanode); virtual;
           function  replaceparaload(var n: tnode; arg: pointer): foreachnoderesult;
@@ -5636,6 +5643,48 @@ implementation
       end;
 
 
+    var
+      inlineasmsymcounter: longint;
+
+
+    function collect_inline_asm_syms(var n: tnode; arg: pointer): foreachnoderesult;
+      begin
+        result:=fen_false;
+        if n.nodetype=asmn then
+          asmlist_collect_local_syms(tasmnode(n).p_asm,TFPObjectList(arg));
+      end;
+
+
+    { creates host-side symbol-backed storage standing in for orgsym, so that
+      assembler operands referencing it can be redirected per expansion }
+    function tcallnode.create_asm_backing_sym(orgsym: tabstractnormalvarsym): tsym;
+      var
+        st : tsymtable;
+      begin
+        inc(inlineasmsymcounter);
+        st:=current_procinfo.procdef.localst;
+        if st.symtabletype=staticsymtable then
+          begin
+            { the main program block has no local frame symtable }
+            result:=cstaticvarsym.create('$inlasm'+tostr(inlineasmsymcounter)+'$'+orgsym.realname,
+              vs_value,orgsym.vardef,[]);
+            st.insertsym(result);
+            cnodeutils.insertbssdata(tstaticvarsym(result));
+          end
+        else
+          begin
+            result:=clocalvarsym.create('$inlasm'+tostr(inlineasmsymcounter)+'$'+orgsym.realname,
+              vs_value,orgsym.vardef,[]);
+            st.insertsym(result);
+          end;
+        { reads and writes happen inside the assembler block, invisibly to the
+          analysis passes }
+        tabstractvarsym(result).varstate:=vs_readwritten;
+        inlineasmsymmap.Add(orgsym);
+        inlineasmsymmap.Add(result);
+      end;
+
+
     function tcallnode.replaceparaload(var n: tnode; arg: pointer): foreachnoderesult;
       var
         paras: tcallparanode;
@@ -5702,8 +5751,15 @@ implementation
           begin
             if not assigned(funcretnode) then
               internalerror(200709081);
+            if assigned(inlineasmsyms) and (inlineasmsyms.IndexOf(p)>=0) then
+              CGMessagePos2(fileinfo,cg_e_forceinline_not_inlined,
+                tprocdef(procdefinition).procsym.realname,
+                'the function result is referenced from an assembler block');
             inlinelocals[indexnr] := funcretnode.getcopy
           end
+        else if assigned(inlineasmsyms) and (inlineasmsyms.IndexOf(p)>=0) then
+          inlinelocals[indexnr]:=cloadnode.create(create_asm_backing_sym(tabstractnormalvarsym(p)),
+            current_procinfo.procdef.localst)
         else
           begin
             tempnode :=ctempcreatenode.create(tabstractvarsym(p).vardef,
@@ -5982,10 +6038,20 @@ implementation
       var
         para: tcallparanode;
         n: tnode;
+        newsym: tsym;
         complexpara: boolean;
         blocksts: tfpobjectlist;
         localcount, blk_i: integer;
       begin
+        { symbols referenced from assembler statements keep symbol-backed
+          storage: their asm operands resolve through sym.localloc and cannot
+          point at temps }
+        if pi_has_assembler_block in tprocdef(procdefinition).inlininginfo^.flags then
+          begin
+            inlineasmsyms:=TFPObjectList.create(false);
+            inlineasmsymmap:=TFPObjectList.create(false);
+            foreachnodestatic(tprocdef(procdefinition).inlininginfo^.code,@collect_inline_asm_syms,inlineasmsyms);
+          end;
         { parameters }
         para := tcallparanode(left);
         while assigned(para) do
@@ -6008,6 +6074,25 @@ implementation
                 if not maybecreateinlineparatemp(para,complexpara) and
                    complexpara then
                   wrapcomplexinlinepara(para);
+
+                { a parameter referenced from an assembler statement also needs
+                  symbol-backed storage, with the whole parameter routed
+                  through it so the Pascal and assembler sides agree }
+                if assigned(inlineasmsyms) and
+                   (inlineasmsyms.IndexOf(para.parasym)>=0) then
+                  begin
+                    if para.parasym.varspez<>vs_value then
+                      CGMessagePos2(fileinfo,cg_e_forceinline_not_inlined,
+                        tprocdef(procdefinition).procsym.realname,
+                        'a parameter passed by reference is referenced from an assembler block')
+                    else
+                      begin
+                        newsym:=create_asm_backing_sym(para.parasym);
+                        addstatement(inlineinitstatement,
+                          cassignmentnode.create(cloadnode.create(newsym,newsym.owner),para.left));
+                        para.left:=cloadnode.create(newsym,newsym.owner);
+                      end;
+                  end;
               end;
             para := tcallparanode(para.right);
           end;
