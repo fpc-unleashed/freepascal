@@ -380,7 +380,10 @@ interface
          cs_opt_use_load_modify_store,
          cs_opt_unused_para,
          cs_opt_consts,
-         cs_opt_forloop
+         cs_opt_forloop,
+         { expand FillChar/FillByte/FillWord/FillDWord/FillQWord/Move calls
+           with a small constant byte count into direct stores }
+         cs_opt_meminline
        );
        toptimizerswitches = set of toptimizerswitch;
 
@@ -454,7 +457,7 @@ interface
          'ORDERFIELDS','FASTMATH','DEADVALUES','REMOVEEMPTYPROCS',
          'CONSTPROP',
          'DEADSTORE','FORCENOSTACKFRAME','USELOADMODIFYSTORE',
-         'UNUSEDPARA','CONSTS','FORLOOP'
+         'UNUSEDPARA','CONSTS','FORLOOP','MEMINLINE'
        );
        WPOptimizerSwitchStr : array [twpoptimizerswitch] of string[14] = (
          'DEVIRTCALLS','OPTVMTS','SYMBOLLIVENESS'
@@ -485,7 +488,7 @@ interface
 
        { switches being applied to all CPUs at the given level }
        genericlevel1optimizerswitches = [cs_opt_level1,cs_opt_peephole];
-       genericlevel2optimizerswitches = [cs_opt_level2,cs_opt_remove_empty_proc,cs_opt_unused_para];
+       genericlevel2optimizerswitches = [cs_opt_level2,cs_opt_remove_empty_proc,cs_opt_unused_para,cs_opt_meminline];
        genericlevel3optimizerswitches = [cs_opt_level3,cs_opt_constant_propagate,cs_opt_nodedfa,cs_opt_loopstrength
                                          {$ifndef llvm},cs_opt_use_load_modify_store{$endif},
                                          cs_opt_loopunroll,cs_opt_forloop];

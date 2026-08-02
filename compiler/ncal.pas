@@ -91,6 +91,7 @@ interface
           procedure register_created_object_types;
           function get_expect_loc: tcgloc;
           function  handle_compilerproc: tnode;
+          function  try_expand_blockop: tnode;
           procedure set_para_callnode(n : tcallnode);
 
        protected
@@ -3123,6 +3124,297 @@ implementation
       end;
 
 
+    { expands a FillChar/FillByte/FillWord/FillDWord/FillQWord/Move call with a
+      small constant byte count into direct (possibly overlapping) stores,
+      avoiding the RTL call and its size dispatch; returns nil when the call
+      does not qualify }
+    function tcallnode.try_expand_blockop: tnode;
+      const
+        maxfillbytes = 64;
+        maxmovebytes = 64;
+        maxchunks = 9;
+      type
+        tchunk = record
+          off, width: longint;
+        end;
+      var
+        chunks: array[0..maxchunks-1] of tchunk;
+        nchunks: longint;
+
+      procedure addchunk(off, width: longint);
+        begin
+          chunks[nchunks].off:=off;
+          chunks[nchunks].width:=width;
+          inc(nchunks);
+        end;
+
+      { covers [0..total) with naturally sized stores; sizes that are no
+        multiple of the widest chunk get a final store overlapping the
+        previous one, which is cheaper than a mix of narrower stores }
+      procedure buildchunks(total: longint);
+        var
+          off: longint;
+        begin
+          nchunks:=0;
+          case total of
+            1,2,4,8:
+              addchunk(0,total);
+            3:
+              begin
+                addchunk(0,2);
+                addchunk(2,1);
+              end;
+            5,6,7:
+              begin
+                addchunk(0,4);
+                addchunk(total-4,4);
+              end;
+            else
+              begin
+                off:=0;
+                while total-off>=8 do
+                  begin
+                    addchunk(off,8);
+                    inc(off,8);
+                  end;
+                if off<total then
+                  addchunk(total-8,8);
+              end;
+          end;
+        end;
+
+      function widthtype(w: longint): tdef;
+        begin
+          case w of
+            1: result:=u8inttype;
+            2: result:=u16inttype;
+            4: result:=u32inttype;
+            else result:=u64inttype;
+          end;
+        end;
+
+      { true when taking the operand's address per store is trivially cheap and
+        free of side effects, so no pointer temp is needed and the stores can
+        fold the address into their reference }
+      function issimpletarget(n: tnode): boolean;
+        begin
+          result:=(n.nodetype=loadn) and
+            (tloadnode(n).symtableentry.typ in [staticvarsym,localvarsym,paravarsym]) and
+            not(vo_is_thread_var in tabstractvarsym(tloadnode(n).symtableentry).varoptions);
+        end;
+
+      { builds a dereference of basetemp (or of the address of basenode) at
+        byte offset off, typed as the width w unsigned integer }
+      function chunkderef(basetemp: ttempcreatenode; basenode: tnode; off, w: longint): tnode;
+        begin
+          if assigned(basetemp) then
+            result:=ctemprefnode.create(basetemp)
+          else
+            result:=caddrnode.create_internal(basenode.getcopy);
+          result:=ctypeconvnode.create_internal(result,cpointerdef.getreusable(u8inttype));
+          if off<>0 then
+            result:=caddnode.create(addn,result,cordconstnode.create(off,ptrsinttype,false));
+          result:=ctypeconvnode.create_internal(result,cpointerdef.getreusable(widthtype(w)));
+          result:=cderefnode.create(result);
+        end;
+
+      function chunkpattern(const patq: qword; w: longint): qword;
+        begin
+          case w of
+            1: result:=patq and $ff;
+            2: result:=patq and $ffff;
+            4: result:=patq and $ffffffff;
+            else result:=patq;
+          end;
+        end;
+
+      var
+        pname: TSymStr;
+        isfill, valconst: boolean;
+        unitsize, cap, total, i: longint;
+        dstnode, srcnode, cntnode, valnode, stripped, repl, storeval: tnode;
+        para: tcallparanode;
+        patq, replmul: qword;
+        newblock: tblocknode;
+        newstatement: tstatementnode;
+        dptr, sptr, vtmp: ttempcreatenode;
+        loadtemps: array[0..maxchunks-1] of ttempcreatenode;
+      begin
+        result:=nil;
+        if not(cs_opt_meminline in current_settings.optimizerswitches) then
+          exit;
+        { the expansion uses unaligned stores }
+        if tf_requires_proper_alignment in target_info.flags then
+          exit;
+        if not assigned(procdefinition) or
+           (procdefinition.typ<>procdef) or
+           not assigned(tprocdef(procdefinition).procsym) or
+           (tprocdef(procdefinition).procsym.owner<>systemunit) then
+          exit;
+        pname:=tprocdef(procdefinition).procsym.name;
+        isfill:=true;
+        unitsize:=1;
+        if (pname='FILLCHAR') or (pname='FILLBYTE') then
+          unitsize:=1
+        else if pname='FILLWORD' then
+          unitsize:=2
+        else if pname='FILLDWORD' then
+          unitsize:=4
+        else if pname='FILLQWORD' then
+          unitsize:=8
+        else if pname='MOVE' then
+          isfill:=false
+        else
+          exit;
+        { collect the actuals by formal name; bail out on anything unexpected }
+        dstnode:=nil;
+        srcnode:=nil;
+        cntnode:=nil;
+        valnode:=nil;
+        para:=tcallparanode(left);
+        while assigned(para) do
+          begin
+            if not assigned(para.parasym) then
+              exit;
+            if para.parasym.name='X' then
+              dstnode:=para.left
+            else if para.parasym.name='SOURCE' then
+              srcnode:=para.left
+            else if para.parasym.name='DEST' then
+              dstnode:=para.left
+            else if para.parasym.name='COUNT' then
+              cntnode:=para.left
+            else if para.parasym.name='VALUE' then
+              valnode:=para.left
+            else
+              exit;
+            para:=tcallparanode(para.right);
+          end;
+        if not assigned(dstnode) or not assigned(cntnode) or
+           (isfill and not assigned(valnode)) or
+           (not isfill and not assigned(srcnode)) then
+          exit;
+        { the expansion takes the operands' addresses; a spliced-in constant
+          actual (an inlined body whose by-ref formal was bound to a literal)
+          has none, so leave those to the RTL call which materializes it }
+        if not valid_for_addr(dstnode,false) or
+           (not isfill and not valid_for_addr(srcnode,false)) then
+          exit;
+        if isfill then
+          cap:=maxfillbytes
+        else
+          cap:=maxmovebytes;
+        { the element count must be a constant in [1..cap div unitsize] }
+        stripped:=cntnode;
+        while (stripped.nodetype=typeconvn) and
+              (ttypeconvnode(stripped).convtype in [tc_equal,tc_int_2_int]) do
+          stripped:=ttypeconvnode(stripped).left;
+        if stripped.nodetype<>ordconstn then
+          exit;
+        if (tordconstnode(stripped).value<1) or
+           (tordconstnode(stripped).value>cap div unitsize) then
+          exit;
+        total:=int64(tordconstnode(stripped).value)*unitsize;
+        patq:=0;
+        valconst:=true;
+        if isfill then
+          begin
+            { a constant fill value is replicated to 64 bits at compile time,
+              a runtime one by a single multiply below }
+            stripped:=valnode;
+            while (stripped.nodetype=typeconvn) and
+                  (ttypeconvnode(stripped).convtype in [tc_equal,tc_int_2_int,tc_bool_2_bool,tc_char_2_char]) do
+              stripped:=ttypeconvnode(stripped).left;
+            valconst:=stripped.nodetype=ordconstn;
+            if valconst then
+              case unitsize of
+                1: patq:=(tordconstnode(stripped).value.uvalue and $ff)*qword($0101010101010101);
+                2: patq:=(tordconstnode(stripped).value.uvalue and $ffff)*qword($0001000100010001);
+                4: patq:=(tordconstnode(stripped).value.uvalue and $ffffffff) or
+                         ((tordconstnode(stripped).value.uvalue and $ffffffff) shl 32);
+                else patq:=tordconstnode(stripped).value.uvalue;
+              end;
+          end;
+        buildchunks(total);
+        newblock:=internalstatements(newstatement);
+        dptr:=nil;
+        sptr:=nil;
+        { complex operands get their address evaluated exactly once into a
+          pointer temp, like the call would }
+        if not isfill and not issimpletarget(srcnode) then
+          begin
+            sptr:=ctempcreatenode.create(voidpointertype,voidpointertype.size,tt_persistent,true);
+            addstatement(newstatement,sptr);
+            addstatement(newstatement,cassignmentnode.create(ctemprefnode.create(sptr),
+              caddrnode.create_internal(srcnode.getcopy)));
+          end;
+        if not issimpletarget(dstnode) then
+          begin
+            dptr:=ctempcreatenode.create(voidpointertype,voidpointertype.size,tt_persistent,true);
+            addstatement(newstatement,dptr);
+            addstatement(newstatement,cassignmentnode.create(ctemprefnode.create(dptr),
+              caddrnode.create_internal(dstnode.getcopy)));
+          end;
+        vtmp:=nil;
+        if isfill and not valconst then
+          begin
+            { evaluate the runtime fill value once and spread it across all
+              64 bits with one multiply; narrower stores truncate the temp }
+            case unitsize of
+              1: replmul:=qword($0101010101010101);
+              2: replmul:=qword($0001000100010001);
+              4: replmul:=qword($0000000100000001);
+              else replmul:=1;
+            end;
+            vtmp:=ctempcreatenode.create(u64inttype,u64inttype.size,tt_persistent,true);
+            addstatement(newstatement,vtmp);
+            repl:=ctypeconvnode.create_internal(valnode.getcopy,widthtype(unitsize));
+            repl:=ctypeconvnode.create_internal(repl,u64inttype);
+            if unitsize<8 then
+              repl:=caddnode.create(muln,repl,cordconstnode.create(replmul,u64inttype,false));
+            addstatement(newstatement,cassignmentnode.create(ctemprefnode.create(vtmp),repl));
+          end;
+        if isfill then
+          begin
+            for i:=0 to nchunks-1 do
+              begin
+                if valconst then
+                  storeval:=cordconstnode.create(chunkpattern(patq,chunks[i].width),widthtype(chunks[i].width),false)
+                else
+                  storeval:=ctypeconvnode.create_internal(ctemprefnode.create(vtmp),widthtype(chunks[i].width));
+                addstatement(newstatement,cassignmentnode.create(
+                  chunkderef(dptr,dstnode,chunks[i].off,chunks[i].width),storeval));
+              end;
+          end
+        else
+          begin
+            { load all chunks before storing any so overlapping source and
+              destination behave like the RTL Move }
+            for i:=0 to nchunks-1 do
+              begin
+                loadtemps[i]:=ctempcreatenode.create(widthtype(chunks[i].width),chunks[i].width,tt_persistent,true);
+                addstatement(newstatement,loadtemps[i]);
+                addstatement(newstatement,cassignmentnode.create(ctemprefnode.create(loadtemps[i]),
+                  chunkderef(sptr,srcnode,chunks[i].off,chunks[i].width)));
+              end;
+            for i:=0 to nchunks-1 do
+              addstatement(newstatement,cassignmentnode.create(
+                chunkderef(dptr,dstnode,chunks[i].off,chunks[i].width),
+                ctemprefnode.create(loadtemps[i])));
+            for i:=0 to nchunks-1 do
+              addstatement(newstatement,ctempdeletenode.create(loadtemps[i]));
+          end;
+        if assigned(vtmp) then
+          addstatement(newstatement,ctempdeletenode.create(vtmp));
+        if assigned(dptr) then
+          addstatement(newstatement,ctempdeletenode.create(dptr));
+        if assigned(sptr) then
+          addstatement(newstatement,ctempdeletenode.create(sptr));
+        firstpass(tnode(newblock));
+        result:=newblock;
+      end;
+
+
     function tcallnode.safe_call_self_node: tnode;
       begin
         if not assigned(call_self_node) then
@@ -4727,7 +5019,7 @@ implementation
         if (intrinsiccode <> Default(TInlineNumber)) then
           result := handle_compilerproc
         else
-          result := nil;
+          result := try_expand_blockop;
       end;
 
 
