@@ -5916,6 +5916,28 @@ implementation
            )
           );
 
+        { an open array has no known size, so it can never be value-copied into
+          a temp of the parameter's type }
+        if is_open_array(para.parasym.vardef) or is_array_of_const(para.parasym.vardef) then
+          begin
+            if is_array_constructor(realtarget.resultdef) then
+              { a constructor literal is inserted directly at each use; a temp
+                of the open-array type would trip on its unknown size }
+              complexpara:=false
+            else
+              begin
+                { force the address-temp path (wrapcomplexinlinepara) so element
+                  access keeps operating on the open-array representation. The
+                  argument's resultdef may have been set back to the original
+                  (e.g. dynamic array) so the "high" parameter is computed
+                  correctly; restore the open-array view here (the high
+                  parameter is a separate argument and is unaffected) }
+                realtarget.resultdef:=para.parasym.vardef;
+                complexpara:=true;
+              end;
+            exit(false);
+          end;
+
         { check if we have to create a temp, assign the parameter's
           contents to that temp and then substitute the parameter
           with the temp everywhere in the function                  }

@@ -281,7 +281,8 @@ implementation
             case currpara.vardef.typ of
               arraydef :
                 begin
-                  if is_array_of_const(currpara.vardef) or
+                  if (is_array_of_const(currpara.vardef) and
+                      not(pio_forceinline in procdef.implprocoptions)) or
                      is_variant_array(currpara.vardef) then
                     begin
                       _no_inline('array of const');
@@ -290,9 +291,20 @@ implementation
                   { open arrays might need re-basing of the index, i.e. if you pass
                     an array[1..10] as open array, you have to add 1 to all index operations
                     if you directly inline it }
-                  if is_open_array(currpara.vardef) then
+                  if is_open_array(currpara.vardef) and
+                     not(pio_forceinline in procdef.implprocoptions) then
                     begin
                       _no_inline('open array');
+                      exit;
+                    end;
+                  { a by-value open array is inlined as a reference to the
+                    caller's data, so writes to it would escape the copy
+                    semantics of a value parameter }
+                  if (is_open_array(currpara.vardef) or is_array_of_const(currpara.vardef)) and
+                     (currpara.varspez=vs_value) and
+                     (currpara.varstate in [vs_written,vs_readwritten]) then
+                    begin
+                      _no_inline('by-value open array modified in the body');
                       exit;
                     end;
                 end;
