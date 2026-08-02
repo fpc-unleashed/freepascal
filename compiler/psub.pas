@@ -246,7 +246,8 @@ implementation
         { the compiler cannot handle inherited in inlined subroutines because
           it tries to search for self in the symtable, however, the symtable
           is not available }
-        if pi_has_inherited in current_procinfo.flags then
+        if (pi_has_inherited in current_procinfo.flags) and
+           not(pio_forceinline in procdef.implprocoptions) then
           begin
             _no_inline('inherited');
             exit;
