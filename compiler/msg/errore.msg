@@ -498,7 +498,7 @@ scan_e_improperly_indented_multiline_string=02120_E_Incorrectly indented multi-l
 #
 # Parser
 #
-# 03442 is the last used one
+# 03444 is the last used one
 #
 % \section{Parser messages}
 % This section lists all parser messages. The parser takes care of the
@@ -1841,6 +1841,17 @@ parser_e_align_bitalign_exclusive=03406_E_"align" and "bitalign" are mutually ex
 % The `align N` and `bitalign N` pre-body modifiers both express
 % alignment in different units. Specifying both is ambiguous: pick
 % bytes (align) or bits (bitalign), not both.
+parser_e_composition_in_class_var=03443_E_"$1" is not allowed in a "class var" or "class threadvar" section
+% Embeds, inline anonymous records and \var{pad} define the instance
+% memory layout of a record, while a \var{class var} section declares
+% static storage. Move the declaration to the instance field section.
+% Unions are supported there: their variants share one static storage
+% blob.
+parser_e_composition_only_in_records=03444_E_"$1" is only allowed in records
+% Unions and embeds compose plain record layouts. Classes and objects
+% manage their own layout (VMT, RTTI), so composition constructs are not
+% available there. Use a field of a record type holding the union
+% instead.
 parser_e_enum_storage_not_ordinal=03407_E_Anonymous enum storage type must be ordinal, got "$1"
 % The `(...) of T` shorthand on an anonymous enum needs an ordinal type
 % (Byte, Word, Integer, Int64, etc.) for the storage. Non-ordinal types

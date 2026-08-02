@@ -2129,7 +2129,9 @@ implementation
                                  target_size: asizeint;
                                  target_align: longword;
                                  target_bitsize: longint;
-                                 target_bitalign: longint);
+                                 target_bitalign: longint;
+                                 to_static: boolean;
+                                 per_thread: boolean);
       { target_size = -1 means "no explicit size", otherwise force the union
         to occupy exactly that many bytes (assert + pad). target_align = 0
         means "no explicit alignment", otherwise force the union's record
@@ -2139,7 +2141,10 @@ implementation
         explicit bit alignment", otherwise behaves like `align ceil(N/8)`
         - the union is byte-overlay so any bit-level alignment value
         collapses to byte alignment, but accepting `bitalign` here keeps
-        the modifier set symmetric with record pre-body modifiers. }
+        the modifier set symmetric with record pre-body modifiers.
+        to_static = the union sits in a `class var` / `class threadvar`
+        section: back it with one hidden static blob instead of instance
+        layout. per_thread additionally marks the blob as a thread var. }
       var
         unionsymtable : trecordsymtable;
         uniondef : trecorddef;
@@ -2152,6 +2157,57 @@ implementation
         dummyattrelementcount : integer;
         i : longint;
         uce : pcomposition_entry;
+        carrier : tfieldvarsym;
+        blob : tstaticvarsym;
+        carrier_path : tfpobjectlist;
+
+      { walk a (possibly nested) union member symtable and create the
+        static access members in recst. direct fields become sp_static
+        fieldvarsyms whose absolutevarsym alias subscripts the blob;
+        `$compose$` carriers (inline anon records / embeds inside a
+        variant) recurse with the carrier appended to the subscript
+        chain, replicating the instance-path name flattening. }
+      procedure add_static_union_members(st: trecordsymtable);
+        var
+          i, j : longint;
+          msym, fv : tfieldvarsym;
+          sl : tpropaccesslist;
+        begin
+          for i:=0 to st.SymList.Count-1 do
+            begin
+              if tsym(st.SymList[i]).typ<>fieldvarsym then
+                begin
+                  { anonymous enum constants / type defs would need a scope
+                    move out of the union symtable, which must stay intact
+                    as the blob's type - not supported in static storage }
+                  if tsym(st.SymList[i]).typ in [enumsym,typesym,constsym] then
+                    Message1(parser_e_composition_in_class_var,'anonymous enum');
+                  continue;
+                end;
+              msym:=tfieldvarsym(st.SymList[i]);
+              if (copy(msym.realname,1,9)='$compose$') and
+                 (msym.vardef.typ=recorddef) then
+                begin
+                  carrier_path.add(msym);
+                  add_static_union_members(trecordsymtable(trecorddef(msym.vardef).symtable));
+                  carrier_path.delete(carrier_path.count-1);
+                  continue;
+                end;
+              if tabstractrecorddef(recst.defowner).composition_count>0 then
+                field_collides_with_compositions(recst,msym.name);
+              fv:=cfieldvarsym.create(msym.realname,vs_value,msym.vardef,[]);
+              include(fv.symoptions,sp_static);
+              fv.visibility:=recst.currentvisibility;
+              recst.insertsym(fv);
+              sl:=tpropaccesslist.create;
+              sl.addsym(sl_load,blob);
+              for j:=0 to carrier_path.count-1 do
+                sl.addsym(sl_subscript,tfieldvarsym(carrier_path[j]));
+              sl.addsym(sl_subscript,msym);
+              recst.insertsym(cabsolutevarsym.create_ref('$'+lower(generate_nested_name(recst,'_'))+'_'+fv.name,fv.vardef,sl));
+            end;
+        end;
+
       begin
         unionsymtable:=trecordsymtable.create('',current_settings.packrecords,current_settings.alignment.recordalignmin);
         uniondef:=crecorddef.create('',unionsymtable);
@@ -2253,6 +2309,46 @@ implementation
                 if shortint(target_align)>unionsymtable.explicitrecordalignment then
                   unionsymtable.explicitrecordalignment:=shortint(target_align);
               end;
+          end;
+
+        { `class var` / `class threadvar` union: one hidden static blob of
+          the union's record type backs all variants, and every variant
+          field becomes a static member whose access alias points at its
+          slot in the blob (same absolutevarsym redirect that
+          make_field_static builds, only sharing one storage). instance
+          layout of the surrounding record stays untouched. }
+        if to_static then
+          begin
+            { the union def stays alive as the blob's type; it has no
+              generic linkage of its own, so mark it internal or the
+              specialization walk trips over it }
+            include(uniondef.defoptions,df_internal);
+            carrier:=cfieldvarsym.create('$union$'+uniondef.unique_id_str,vs_value,uniondef,[]);
+            include(carrier.symoptions,sp_internal);
+            include(carrier.symoptions,sp_static);
+            recst.insertsym(carrier);
+            blob:=make_field_static(recst,carrier);
+            if per_thread then
+              include(blob.varoptions,vo_is_thread_var);
+            if not parse_generic then
+              cnodeutils.insertbssdata(blob);
+            carrier_path:=tfpobjectlist.create(false);
+            try
+              add_static_union_members(unionsymtable);
+            finally
+              carrier_path.free;
+            end;
+            { register variant compositions on the surrounding record: the
+              generic specialization replay maps inline anon defs to their
+              generic counterparts by composition position, so the outer
+              def must carry them here as well. name lookup is unaffected -
+              the static members created above shadow the flatten names. }
+            for i:=0 to uniondef.composition_count-1 do
+              begin
+                uce:=uniondef.composition_at(i);
+                tabstractrecorddef(recst.defowner).add_composition(uce^.carrier,uce^.kind);
+              end;
+            exit;
           end;
 
         if target_align>0 then
@@ -2477,6 +2573,9 @@ implementation
                 (m_composable_records in current_settings.modeswitches) and
                 (current_scanner.token in [_RECORD,_PACKED,_BITPACKED]) then
                begin
+                 { instance layout construct - meaningless as static storage }
+                 if vd_class in options then
+                   Message1(parser_e_composition_in_class_var,'record');
                  { during generic specialisation the inline anon record
                    needs a genericdef hint so its nested record_dec runs
                    in specialisation mode (matching what the regular
@@ -2524,7 +2623,7 @@ implementation
                  composable_pre_consumed_field_name:='';
                end
              else
-             if (vd_record in options) and
+             if ((vd_record in options) or (vd_object in options)) and
                 (m_composable_records in current_settings.modeswitches) and
                 (current_scanner.pattern='UNION') then
                begin
@@ -2539,6 +2638,10 @@ implementation
                    end
                  else
                    begin
+                     { unions define raw record layout - no support in
+                       class/object layout }
+                     if vd_object in options then
+                       Message1(parser_e_composition_only_in_records,'union');
                      { modifiers after `union` keyword:
                        - `of TYPE`: anchor; size := sizeof(TYPE),
                          align := AlignOf(TYPE). these become defaults that
@@ -2700,7 +2803,8 @@ implementation
                      if assigned(anon_target_def) then
                        push_composable_default_type(anon_target_def);
                      try
-                       parse_modern_union(recst,parsed_custom_size,parsed_custom_align,parsed_custom_bitsize,parsed_union_bitalign);
+                       parse_modern_union(recst,parsed_custom_size,parsed_custom_align,parsed_custom_bitsize,parsed_union_bitalign,
+                         (vd_class in options) and not(vd_object in options),vd_threadvar in options);
                      finally
                        if assigned(anon_target_def) then
                          pop_composable_default_type;
@@ -2719,7 +2823,7 @@ implementation
                `embed` is `:` or `,`, treat `embed` as a field name (stock
                FPC accepts records with `embed: T;` / `embed, x: T;` and
                those must keep parsing). }
-             if (vd_record in options) and
+             if ((vd_record in options) or (vd_object in options)) and
                 (m_composable_records in current_settings.modeswitches) and
                 (current_scanner.pattern='EMBED') then
                begin
@@ -2732,6 +2836,12 @@ implementation
                    end
                  else
                    begin
+                     { embeds merge instance fields: no static storage
+                       counterpart, and no support in class/object layout }
+                     if vd_object in options then
+                       Message1(parser_e_composition_only_in_records,'embed')
+                     else if vd_class in options then
+                       Message1(parser_e_composition_in_class_var,'embed');
                      if current_scanner.token=_ID then
                        begin
                          searchsym(upper(current_scanner.orgpattern),srsym,srsymtable);
@@ -2784,6 +2894,9 @@ implementation
                    end
                  else
                    begin
+                     { pad reserves instance bits - meaningless as static storage }
+                     if vd_class in options then
+                       Message1(parser_e_composition_in_class_var,'pad');
                      k:=get_intconst.svalue;
                      if k<0 then
                        begin
