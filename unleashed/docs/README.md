@@ -47,7 +47,7 @@ Also switched on by `{$mode unleashed}` on top of the `objfpc` base - supporting
 
 Also turned on automatically with no directive needed: C-style operators (`+=`, `-=`, `*=`, `/=`), `goto` / `label`, and macros (`{$define name := value}`). Each can be switched off locally.
 
-Several features are **unleashed-mode-only with no dedicated modeswitch**: the preserved for-loop counter, `is not` / `not in`, compound assignment and `inc()` / `dec()` on properties, array size shorthand, lazy labels, nested generic methods, `zeroinit`, `SwapValues()`, and `Type()`. A few work in **every mode** with no switch at all: the word-based compound operators (`div=`, `mod=`, ...), indexed labels, `$embedstr` / `$embedbytes`, and the custom-binary-metadata CLI flags.
+Several features are **unleashed-mode-only with no dedicated modeswitch**: the preserved for-loop counter, `is not` / `not in`, compound assignment and `inc()` / `dec()` on properties, array size shorthand, lazy labels, nested generic methods, `zeroinit`, forced `inline`, `SwapValues()`, and `Type()`. A few work in **every mode** with no switch at all: the word-based compound operators (`div=`, `mod=`, ...), indexed labels, `$embedstr` / `$embedbytes`, and the custom-binary-metadata CLI flags.
 
 ### Conditional Defines
 
@@ -164,6 +164,10 @@ A writable `static` storage class with program-wide lifetime and block-local sco
 ### [`zeroinit` Procedure Modifier](zeroinit.md)
 
 `procedure foo; zeroinit;` zero-initializes every local (including `result`) at entry, in declaration order, before any user statement. New locals are covered automatically, and reads of locals no longer raise the uninitialized-variable warning. Deterministic stack frames for defensive code, codegen targets, and FFI shims. File-type locals keep their RTL init; mutually exclusive with `external` / `interrupt` / `assembler`. Unleashed-mode only, no modeswitch.
+
+### [Forced Inlining](forced-inline.md)
+
+In `{$mode unleashed}` `inline` means inline: every direct call expands, with no size heuristics, at every optimization level, and independent of definition order (a caller parsed before the body waits for it - `forward` combines with `inline` too). When a call cannot be expanded (recursion, nested routines, mutual recursion, a framed assembler body), a warning names the reason and a regular call is emitted. `{$inline off}` degrades the routines declared under it back to stock hints, so a debug build can drop the expansions without touching the sources. Bodies with embedded `asm` statements expand, and a pure `nostackframe` `assembler` body is spliced at the call site. Taking `@Routine` stays legal - indirect calls are ordinary calls. Unleashed-mode only, no modeswitch.
 
 ### [Introduced Functions, Procedures and Intrinsics](introduced-functions.md)
 

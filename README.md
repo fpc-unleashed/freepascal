@@ -114,6 +114,7 @@ Threads in stock Pascal mean `TThread` subclasses, hand-managed critical section
 | **Strip RTTI** | `{$modeswitch striprtti}` empties type-name strings; `expose` / `--rttiexpose=` whitelist | [strip-rtti.md](unleashed/docs/strip-rtti.md) |
 | **Custom Binary Metadata** | `fpc --fpcsignature="" --linkerversion=14.39 --osversion=Win11` | [binary-metadata.md](unleashed/docs/binary-metadata.md) |
 | **File Embedding** | `{$embedbytes preset 'default.bin'}` bakes a file into the binary | [embed.md](unleashed/docs/embed.md) |
+| **Forced Inlining** | `inline` means inline: every call expands, no size heuristics, free definition order; a call that cannot be expanded warns and falls back to a regular call | [forced-inline.md](unleashed/docs/forced-inline.md) |
 
 ### Strings and literals
 
