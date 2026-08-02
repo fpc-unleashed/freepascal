@@ -2125,6 +2125,54 @@ implementation
       including the closing `end` (and any trailing `;`). variants overlay
       from the same offset, identical layout to legacy `case` of variant
       records but with no tag selector. }
+    { walk a (possibly nested) union member symtable and create the
+      static access members in recst. direct fields become sp_static
+      fieldvarsyms whose absolutevarsym alias subscripts the blob;
+      `$compose$` carriers (inline anon records / embeds inside a
+      variant) recurse with the carrier appended to the subscript
+      chain, replicating the instance-path name flattening. }
+    procedure add_static_union_members(recst: tabstractrecordsymtable; blob: tstaticvarsym; carrier_path: tfpobjectlist; st: trecordsymtable);
+      var
+        i, j : longint;
+        msym, fv : tfieldvarsym;
+        sl : tpropaccesslist;
+      begin
+        for i:=0 to st.SymList.Count-1 do
+          begin
+            if tsym(st.SymList[i]).typ<>fieldvarsym then
+              begin
+                { anonymous enum constants / type defs would need a scope
+                  move out of the union symtable, which must stay intact
+                  as the blob's type - not supported in static storage }
+                if tsym(st.SymList[i]).typ in [enumsym,typesym,constsym] then
+                  Message1(parser_e_composition_in_class_var,'anonymous enum');
+                continue;
+              end;
+            msym:=tfieldvarsym(st.SymList[i]);
+            if (copy(msym.realname,1,9)='$compose$') and
+               (msym.vardef.typ=recorddef) then
+              begin
+                carrier_path.add(msym);
+                add_static_union_members(recst,blob,carrier_path,trecordsymtable(trecorddef(msym.vardef).symtable));
+                carrier_path.delete(carrier_path.count-1);
+                continue;
+              end;
+            if tabstractrecorddef(recst.defowner).composition_count>0 then
+              field_collides_with_compositions(recst,msym.name);
+            fv:=cfieldvarsym.create(msym.realname,vs_value,msym.vardef,[]);
+            include(fv.symoptions,sp_static);
+            fv.visibility:=recst.currentvisibility;
+            recst.insertsym(fv);
+            sl:=tpropaccesslist.create;
+            sl.addsym(sl_load,blob);
+            for j:=0 to carrier_path.count-1 do
+              sl.addsym(sl_subscript,tfieldvarsym(carrier_path[j]));
+            sl.addsym(sl_subscript,msym);
+            recst.insertsym(cabsolutevarsym.create_ref('$'+lower(generate_nested_name(recst,'_'))+'_'+fv.name,fv.vardef,sl));
+          end;
+      end;
+
+
     procedure parse_modern_union(recst: tabstractrecordsymtable;
                                  target_size: asizeint;
                                  target_align: longword;
@@ -2160,54 +2208,6 @@ implementation
         carrier : tfieldvarsym;
         blob : tstaticvarsym;
         carrier_path : tfpobjectlist;
-
-      { walk a (possibly nested) union member symtable and create the
-        static access members in recst. direct fields become sp_static
-        fieldvarsyms whose absolutevarsym alias subscripts the blob;
-        `$compose$` carriers (inline anon records / embeds inside a
-        variant) recurse with the carrier appended to the subscript
-        chain, replicating the instance-path name flattening. }
-      procedure add_static_union_members(st: trecordsymtable);
-        var
-          i, j : longint;
-          msym, fv : tfieldvarsym;
-          sl : tpropaccesslist;
-        begin
-          for i:=0 to st.SymList.Count-1 do
-            begin
-              if tsym(st.SymList[i]).typ<>fieldvarsym then
-                begin
-                  { anonymous enum constants / type defs would need a scope
-                    move out of the union symtable, which must stay intact
-                    as the blob's type - not supported in static storage }
-                  if tsym(st.SymList[i]).typ in [enumsym,typesym,constsym] then
-                    Message1(parser_e_composition_in_class_var,'anonymous enum');
-                  continue;
-                end;
-              msym:=tfieldvarsym(st.SymList[i]);
-              if (copy(msym.realname,1,9)='$compose$') and
-                 (msym.vardef.typ=recorddef) then
-                begin
-                  carrier_path.add(msym);
-                  add_static_union_members(trecordsymtable(trecorddef(msym.vardef).symtable));
-                  carrier_path.delete(carrier_path.count-1);
-                  continue;
-                end;
-              if tabstractrecorddef(recst.defowner).composition_count>0 then
-                field_collides_with_compositions(recst,msym.name);
-              fv:=cfieldvarsym.create(msym.realname,vs_value,msym.vardef,[]);
-              include(fv.symoptions,sp_static);
-              fv.visibility:=recst.currentvisibility;
-              recst.insertsym(fv);
-              sl:=tpropaccesslist.create;
-              sl.addsym(sl_load,blob);
-              for j:=0 to carrier_path.count-1 do
-                sl.addsym(sl_subscript,tfieldvarsym(carrier_path[j]));
-              sl.addsym(sl_subscript,msym);
-              recst.insertsym(cabsolutevarsym.create_ref('$'+lower(generate_nested_name(recst,'_'))+'_'+fv.name,fv.vardef,sl));
-            end;
-        end;
-
       begin
         unionsymtable:=trecordsymtable.create('',current_settings.packrecords,current_settings.alignment.recordalignmin);
         uniondef:=crecorddef.create('',unionsymtable);
@@ -2334,7 +2334,7 @@ implementation
               cnodeutils.insertbssdata(blob);
             carrier_path:=tfpobjectlist.create(false);
             try
-              add_static_union_members(unionsymtable);
+              add_static_union_members(recst,blob,carrier_path,unionsymtable);
             finally
               carrier_path.free;
             end;
@@ -2439,6 +2439,9 @@ implementation
          unionsymtable : trecordsymtable;
          offset : longint;
          uniondef : trecorddef;
+         carrier : tfieldvarsym;
+         carrier_path : tfpobjectlist;
+         static_variant : boolean;
          hintsymoptions : tsymoptions;
          deprecatedmsg : pshortstring;
          hadgendummy,
@@ -3469,8 +3472,19 @@ implementation
               maxalignment:=0;
               maxpadalign:=0;
 
+              UnionSymtable:=trecordsymtable.create('',current_settings.packrecords,current_settings.alignment.recordalignmin);
+              UnionDef:=crecorddef.create('',unionsymtable);
+              uniondef.isunion:=true;
+
+              { a variant part in a `class var` / `class threadvar` section
+                overlays one hidden static blob instead of instance layout }
+              static_variant:=vd_class in options;
+
               { already inside a variant record? if not, setup a new variantdesc chain }
-              if not(assigned(variantdesc)) then
+              if static_variant then
+                { the blob's record type owns the variant description }
+                variantdesc:=@uniondef.variantrecdesc
+              else if not(assigned(variantdesc)) then
                 variantdesc:=@trecorddef(trecordsymtable(recst).defowner).variantrecdesc;
 
               { else just concat the info to the given one }
@@ -3498,7 +3512,18 @@ implementation
               if assigned(fieldvs) then
                 begin
                   fieldvs.vardef:=casetype;
-                  recst.addfield(fieldvs,recst.currentvisibility);
+                  if static_variant then
+                    begin
+                      { the variant selector becomes a plain class var }
+                      fieldvs.visibility:=recst.currentvisibility;
+                      hstaticvs:=make_field_static(recst,fieldvs);
+                      if vd_threadvar in options then
+                        include(hstaticvs.varoptions,vo_is_thread_var);
+                      if not parse_generic then
+                        cnodeutils.insertbssdata(hstaticvs);
+                    end
+                  else
+                    recst.addfield(fieldvs,recst.currentvisibility);
                 end;
               if not(is_ordinal(casetype))
 {$ifndef cpu64bitaddr}
@@ -3507,10 +3532,6 @@ implementation
                  then
                 Message(type_e_ordinal_expr_expected);
               consume(_OF);
-
-              UnionSymtable:=trecordsymtable.create('',current_settings.packrecords,current_settings.alignment.recordalignmin);
-              UnionDef:=crecorddef.create('',unionsymtable);
-              uniondef.isunion:=true;
 
               startvarrecsize:=UnionSymtable.datasize;
               { align the bitpacking to the next byte }
@@ -3576,42 +3597,81 @@ implementation
               unionsymtable.datasize:=maxsize;
               unionsymtable.fieldalignment:=maxalignment;
               unionsymtable.addalignmentpadding;
+              { `class var` / `class threadvar` variant part: one hidden
+                static blob of the union's record type backs all variants,
+                and every variant field becomes a static member whose
+                access alias points at its slot in the blob (same
+                absolutevarsym redirect that make_field_static builds,
+                only sharing one storage). instance layout of the
+                surrounding record stays untouched. }
+              if static_variant then
+                begin
+                  { the union def stays alive as the blob's type; it has no
+                    generic linkage of its own, so mark it internal or the
+                    specialization walk trips over it }
+                  include(uniondef.defoptions,df_internal);
+                  carrier:=cfieldvarsym.create('$union$'+uniondef.unique_id_str,vs_value,uniondef,[]);
+                  include(carrier.symoptions,sp_internal);
+                  include(carrier.symoptions,sp_static);
+                  recst.insertsym(carrier);
+                  hstaticvs:=make_field_static(recst,carrier);
+                  if vd_threadvar in options then
+                    include(hstaticvs.varoptions,vo_is_thread_var);
+                  if not parse_generic then
+                    cnodeutils.insertbssdata(hstaticvs);
+                  carrier_path:=tfpobjectlist.create(false);
+                  try
+                    add_static_union_members(recst,hstaticvs,carrier_path,unionsymtable);
+                  finally
+                    carrier_path.free;
+                  end;
+                  { see parse_modern_union: the outer def must carry inline
+                    anon compositions for generic specialization replay }
+                  for i:=0 to uniondef.composition_count-1 do
+                    begin
+                      uce:=uniondef.composition_at(i);
+                      tabstractrecorddef(recst.defowner).add_composition(uce^.carrier,uce^.kind);
+                    end;
+                end
+              else
+                begin
 {$if defined(powerpc) or defined(powerpc64)}
-              { parent inherits the alignment padding if the variant is the first "field" of the parent record/variant }
-              if (target_info.system in [system_powerpc_darwin, system_powerpc_macosclassic, system_powerpc64_darwin]) and
-                 is_first_type and
-                 (recst.usefieldalignment=C_alignment) and
-                 (maxpadalign>recst.padalignment) then
-                recst.padalignment:=maxpadalign;
+                  { parent inherits the alignment padding if the variant is the first "field" of the parent record/variant }
+                  if (target_info.system in [system_powerpc_darwin, system_powerpc_macosclassic, system_powerpc64_darwin]) and
+                     is_first_type and
+                     (recst.usefieldalignment=C_alignment) and
+                     (maxpadalign>recst.padalignment) then
+                    recst.padalignment:=maxpadalign;
 {$endif powerpc or powerpc64}
-              { Align the offset where the union symtable is added }
-              case recst.usefieldalignment of
-                { allow the unionsymtable to be aligned however it wants }
-                { (within the global min/max limits)                     }
-                0, { default }
-                C_alignment:
-                  usedalign:=used_align(unionsymtable.recordalignment,current_settings.alignment.recordalignmin,current_settings.alignment.maxCrecordalign);
-                { 1 byte alignment if we are bitpacked }
-                bit_alignment:
-                  usedalign:=1;
-                mac68k_alignment:
-                  usedalign:=2;
-                { otherwise alignment at the packrecords alignment of the }
-                { current record                                          }
-                else
-                  usedalign:=used_align(recst.fieldalignment,current_settings.alignment.recordalignmin,current_settings.alignment.recordalignmax);
-              end;
-              offset:=align(recst.datasize,usedalign);
-              recst.datasize:=offset+unionsymtable.datasize;
+                  { Align the offset where the union symtable is added }
+                  case recst.usefieldalignment of
+                    { allow the unionsymtable to be aligned however it wants }
+                    { (within the global min/max limits)                     }
+                    0, { default }
+                    C_alignment:
+                      usedalign:=used_align(unionsymtable.recordalignment,current_settings.alignment.recordalignmin,current_settings.alignment.maxCrecordalign);
+                    { 1 byte alignment if we are bitpacked }
+                    bit_alignment:
+                      usedalign:=1;
+                    mac68k_alignment:
+                      usedalign:=2;
+                    { otherwise alignment at the packrecords alignment of the }
+                    { current record                                          }
+                    else
+                      usedalign:=used_align(recst.fieldalignment,current_settings.alignment.recordalignmin,current_settings.alignment.recordalignmax);
+                  end;
+                  offset:=align(recst.datasize,usedalign);
+                  recst.datasize:=offset+unionsymtable.datasize;
 
-              if unionsymtable.recordalignment>recst.fieldalignment then
-                recst.fieldalignment:=unionsymtable.recordalignment;
+                  if unionsymtable.recordalignment>recst.fieldalignment then
+                    recst.fieldalignment:=unionsymtable.recordalignment;
 
-              if unionsymtable.explicitrecordalignment>recst.explicitrecordalignment then
-                recst.explicitrecordalignment:=unionsymtable.explicitrecordalignment;
+                  if unionsymtable.explicitrecordalignment>recst.explicitrecordalignment then
+                    recst.explicitrecordalignment:=unionsymtable.explicitrecordalignment;
 
-              trecordsymtable(recst).insertunionst(Unionsymtable,offset);
-              uniondef.owner.deletedef(uniondef);
+                  trecordsymtable(recst).insertunionst(Unionsymtable,offset);
+                  uniondef.owner.deletedef(uniondef);
+                end;
            end;
          { free the list }
          sc.free;
