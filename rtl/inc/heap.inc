@@ -207,7 +207,8 @@ type
     { Tuned so that first ChooseFixedArenaSize(High(FixedSizes)) fits 10 fixed chunks of the maximum size. }
     MinFixedArenaSize = {$if sizeof(pointer) > 4} 5 * 1024 + 15 * 32 {$else} 4 * 1024 + 5 * 32 {$endif};
     MaxFixedArenaSize = 64 * 1024;
-    MaxKeptFixedArenas = 4;
+    { Cached empty arenas skip a re-split per refill; workloads cycle several size classes at once. }
+    MaxKeptFixedArenas = 32;
     MaxOutgoingToFreeBytes = sizeof(pointer) * 1024; { Batch up to this much outgoing frees per thread. }
 
     { Bin index that corresponds to the minimum size ChooseFixedArenaSize can return.
