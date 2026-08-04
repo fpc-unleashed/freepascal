@@ -67,7 +67,10 @@ interface
           nonlocal,
           { true when this is the sentinel symbol for an array label declaration,
             e.g. "label foo[1..10]" - the actual targets are foo$1..foo$10 }
-          arraylabel : boolean;
+          arraylabel,
+          { true for a member of an array label family, e.g. foo$3; declared
+            members may stay undefined without a warning }
+          arraylabel_member : boolean;
           { for integer array labels: lo..hi range for jump table generation }
           arraylabel_lo,
           arraylabel_hi : longint;
@@ -810,6 +813,7 @@ implementation
          defined:=false;
          nonlocal:=false;
          arraylabel:=false;
+         arraylabel_member:=false;
          arraylabel_lo:=0;
          arraylabel_hi:=0;
          arraylabel_dispatched:=false;

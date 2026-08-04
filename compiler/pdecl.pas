@@ -870,9 +870,10 @@ implementation
         end;
 
       { Create and insert a single label symbol with name n. }
-      procedure insert_one_label(const n: TIDString);
+      procedure insert_one_label(const n: TIDString; member: boolean=false);
         begin
           labelsym:=clabelsym.create(n);
+          labelsym.arraylabel_member:=member;
           symtablestack.top.insertsym(labelsym);
           if m_non_local_goto in current_settings.modeswitches then
             begin
@@ -931,7 +932,7 @@ implementation
                         repeat
                           strval:=upper(current_scanner.cstringpattern);
                           consume(_CSTRING);
-                          insert_one_label(labname+'$'+strval);
+                          insert_one_label(labname+'$'+strval,true);
                           { store string index on sentinel for variable goto }
                           i:=length(sentinel.arraylabel_strings);
                           setlength(sentinel.arraylabel_strings,i+1);
@@ -966,7 +967,7 @@ implementation
                               if set_bounds_from_type(p.resultdef,lo,hi) then
                                 begin
                                   for i:=lo to hi do
-                                    insert_one_label(labname+'$'+tostr(i));
+                                    insert_one_label(labname+'$'+tostr(i),true);
                                   sentinel.arraylabel_lo:=lo;
                                   sentinel.arraylabel_hi:=hi;
                                 end;
@@ -987,7 +988,7 @@ implementation
                                     Message(parser_e_array_lower_less_than_upper_bound)
                                   else
                                     for i:=lo to hi do
-                                      insert_one_label(labname+'$'+tostr(i));
+                                      insert_one_label(labname+'$'+tostr(i),true);
                                   if lo<sentinel.arraylabel_lo then
                                     sentinel.arraylabel_lo:=lo;
                                   if hi>sentinel.arraylabel_hi then
@@ -999,7 +1000,7 @@ implementation
                               if get_const_ord_value(p,lv) and
                                  const_to_longint(lv,lo) then
                                 begin
-                                  insert_one_label(labname+'$'+tostr(lo));
+                                  insert_one_label(labname+'$'+tostr(lo),true);
                                   if lo<sentinel.arraylabel_lo then
                                     sentinel.arraylabel_lo:=lo;
                                   if lo>sentinel.arraylabel_hi then

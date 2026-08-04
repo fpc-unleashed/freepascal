@@ -286,6 +286,8 @@ implementation
            end;
 
          result:=get_or_create_labelsym(basename+'$'+suffix,labsym,labsymtable);
+         if result then
+           labsym.arraylabel_member:=true;
        end;
 
 

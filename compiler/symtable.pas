@@ -982,7 +982,8 @@ implementation
              exit;
            if tlabelsym(sym).used then
             Message1(sym_e_label_used_and_not_defined,tlabelsym(sym).prettyname)
-           else
+           { declared members of an array label family may stay undefined }
+           else if not tlabelsym(sym).arraylabel_member then
             Message1(sym_w_label_not_defined,tlabelsym(sym).prettyname);
          end;
       end;
