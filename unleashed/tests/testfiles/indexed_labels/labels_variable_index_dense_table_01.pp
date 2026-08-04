@@ -1,5 +1,5 @@
 { %OPT=-O2 }
-program labels_variable_index_dense_dispatch_01;
+program labels_variable_index_dense_table_01;
 
 {$mode unleashed}
 

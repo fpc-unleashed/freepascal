@@ -1,3 +1,4 @@
+{ %CPU=x86_64 }
 program inline_forced_asm_framed_fallback_01;
 {$mode unleashed}
 {$asmmode intel}

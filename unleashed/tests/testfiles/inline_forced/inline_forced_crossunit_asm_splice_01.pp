@@ -1,4 +1,4 @@
-{ %PRECOMPILE=uinline_forced_crossunit_asm_splice_01.pas }
+{ %PRECOMPILE=uinline_forced_crossunit_asm_splice_01.pas %CPU=x86_64 }
 program inline_forced_crossunit_asm_splice_01;
 
 {$mode unleashed}

@@ -1,4 +1,4 @@
-{ %PRECOMPILE=uinline_forced_crossunit_asm_framed_01.pas }
+{ %PRECOMPILE=uinline_forced_crossunit_asm_framed_01.pas %CPU=x86_64 }
 { a framed assembler routine cannot be inlined; the flag survives the ppu
   roundtrip and the call site falls back to a regular call }
 program inline_forced_crossunit_asm_framed_fallback_01;
