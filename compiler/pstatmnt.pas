@@ -4757,6 +4757,10 @@ implementation
                 inc(blockid);
               end;
           end;
+        { the dispatch is baked from the range known here; freeze the family
+          so later additions outside it are rejected instead of being
+          silently unreachable }
+        sentinel.arraylabel_dispatched:=true;
         result:=casenode;
       end;
 

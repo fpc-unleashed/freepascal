@@ -269,10 +269,19 @@ implementation
                end
              else
                begin
-                 if ordinalindex<sentinel.arraylabel_lo then
-                   sentinel.arraylabel_lo:=ordinalindex;
-                 if ordinalindex>sentinel.arraylabel_hi then
-                   sentinel.arraylabel_hi:=ordinalindex;
+                 if (ordinalindex<sentinel.arraylabel_lo) or
+                    (ordinalindex>sentinel.arraylabel_hi) then
+                   begin
+                     { a variable-index goto already generated its dispatch
+                       from the current range - a label outside it could
+                       never be reached through that dispatch }
+                     if sentinel.arraylabel_dispatched then
+                       Message2(sym_e_label_index_outside_dispatch,sentinel.realname,tostr(ordinalindex));
+                     if ordinalindex<sentinel.arraylabel_lo then
+                       sentinel.arraylabel_lo:=ordinalindex;
+                     if ordinalindex>sentinel.arraylabel_hi then
+                       sentinel.arraylabel_hi:=ordinalindex;
+                   end;
                end;
            end;
 

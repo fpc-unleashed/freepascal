@@ -36,6 +36,8 @@ label edge[0..3-1];       // constant expressions fold: 0..2
 label mix[1..3, 7];       // ranges and values mix
 ```
 
+The index spec is always a set of *values*, never a count. A single value in brackets is a one-element value list: `label mylabel[256]` declares exactly one label, `mylabel[256]` - not 256 labels. To declare 256 labels indexed from zero, write `label mylabel[0..255]` or `label mylabel[byte]`.
+
 Declared labels that are never defined are fine - `label bits[byte]` declares 256 potential targets and you define only the ones you use. Constant indices in `goto` fold at compile time to a direct jump with zero overhead:
 
 ```pascal
@@ -87,6 +89,8 @@ goto state[n]; // lowered to: case n of 0: goto state[0]; ... end
 
 A variable index requires an explicit `label` declaration with an ordinal range - the declaration is what tells the compiler the full target set. Without it the goto reports `Error: Label not found`. String-keyed labels never take a variable index (their resolution is compile-time only).
 
+The dispatch covers exactly the declared index set. Labels defined outside the declared set (possible in `{$mode unleashed}` through lazy labels) are not reachable through a variable-index `goto` - make sure the declaration spans every index the dispatch may take.
+
 ## Lazy labels
 
 In `{$mode unleashed}` a `goto` to an undeclared name creates the label on the spot - no `label` section needed:
@@ -112,6 +116,7 @@ step[1]: writeln('one');
 ### Lazy limitations
 
 - A variable-index `goto name[n]` still requires an explicit `label name[lo..hi]` declaration - laziness cannot recover the range needed to build the dispatch table.
+- Lazily defined indices do not extend an existing declaration: with `label mylabel[256]` in scope, defining `mylabel[0]:` .. `mylabel[3]:` creates those labels lazily, but a variable-index dispatch is still built from the declared set only.
 - String-keyed labels always require an explicit declaration with the key list.
 
 Lazy labels follow the same scoping rules as declared ones: visible in the whole routine body.

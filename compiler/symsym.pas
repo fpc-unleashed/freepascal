@@ -71,6 +71,11 @@ interface
           { for integer array labels: lo..hi range for jump table generation }
           arraylabel_lo,
           arraylabel_hi : longint;
+          { true once a variable-index goto has generated its dispatch from
+            the lo..hi range above; the family is frozen from that point on,
+            adding indices outside the range is an error (the already
+            generated dispatch could never reach them) }
+          arraylabel_dispatched : boolean;
           { for string array labels: list of uppercased string indices }
           arraylabel_strings : array of string;
           { points to the matching node, only valid resultdef pass is run and
@@ -807,6 +812,7 @@ implementation
          arraylabel:=false;
          arraylabel_lo:=0;
          arraylabel_hi:=0;
+         arraylabel_dispatched:=false;
          arraylabel_strings:=nil;
          code:=nil;
       end;

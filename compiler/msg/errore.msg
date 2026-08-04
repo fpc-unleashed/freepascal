@@ -2507,7 +2507,7 @@ type_h_swapvalues_not_inplace=04141_H_SwapValues on "$1" is not an in-place swap
 #
 # Symtable
 #
-# 05102 is the last used one
+# 05103 is the last used one
 #
 % \section{Symbol handling}
 % This section lists all the messages that concern the handling of symbols.
@@ -2839,6 +2839,12 @@ sym_e_label_index_expected=05102_E_Label "$1" is an indexed label, an index is r
 % \var{label foo['a','b']}, so every use must name one element of it, both when
 % defining the target (\var{foo[3]:}) and when jumping to it
 % (\var{goto foo[3]}). The bare name only denotes the whole declaration.
+sym_e_label_index_outside_dispatch=05103_E_Index $2 of label "$1" is outside the range of an earlier "goto $1[...]" with a variable index; declare the full range in the label declaration
+% A \var{goto} with a variable index compiles to a dispatch built from the
+% index range known at that point. This label index lies outside that range,
+% so the already generated dispatch could never reach it. Declare the whole
+% range up front, e.g. \var{label foo[0..255]}, instead of relying on lazily
+% created labels to extend the family after the \var{goto}.
 %
 % \end{description}
 #
