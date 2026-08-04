@@ -1,4 +1,4 @@
-program tforstep2;
+program forstep_step_side_effect_once_01;
 
 { step expression evaluated once, even when it has side effects }
 

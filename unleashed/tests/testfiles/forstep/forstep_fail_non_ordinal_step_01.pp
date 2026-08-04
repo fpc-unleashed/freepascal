@@ -2,7 +2,7 @@
 
 // for-step: non-ordinal step expression (string) must be rejected
 
-program tb0304;
+program forstep_fail_non_ordinal_step_01;
 
 {$mode unleashed}
 

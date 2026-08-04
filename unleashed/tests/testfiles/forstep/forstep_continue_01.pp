@@ -1,4 +1,4 @@
-program tforstep7;
+program forstep_continue_01;
 
 { continue inside a for-step body must skip the rest of the body and
   resume from the next stepped iteration, not loop forever }

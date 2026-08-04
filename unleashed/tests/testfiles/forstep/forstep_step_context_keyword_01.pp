@@ -1,4 +1,4 @@
-program tforstep8;
+program forstep_step_context_keyword_01;
 
 { `step` is a context-sensitive keyword: only recognized between the
   to/downto expression and `do`. Anywhere else it stays an identifier. }

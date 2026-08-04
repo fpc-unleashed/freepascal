@@ -1,4 +1,4 @@
-program tforstep1;
+program forstep_basic_fwd_back_01;
 
 { basic forward and backward step }
 

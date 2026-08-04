@@ -1,4 +1,4 @@
-program tforstep6;
+program forstep_plain_for_regression_01;
 
 { regression: regular for loops without step still work in mode unleashed }
 

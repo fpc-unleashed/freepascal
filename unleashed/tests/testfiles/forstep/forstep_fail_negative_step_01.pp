@@ -2,7 +2,7 @@
 
 // for-step: negative step constant must be rejected at compile time
 
-program tb0303;
+program forstep_fail_negative_step_01;
 
 {$mode unleashed}
 

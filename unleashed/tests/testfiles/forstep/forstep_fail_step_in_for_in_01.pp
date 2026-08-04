@@ -2,7 +2,7 @@
 
 // for-step: step is not allowed in for-in loops
 
-program tb0305;
+program forstep_fail_step_in_for_in_01;
 
 {$mode unleashed}
 

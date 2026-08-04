@@ -1,4 +1,4 @@
-program tforstep5;
+program forstep_inline_var_02;
 
 { inline var with step in mode unleashed }
 

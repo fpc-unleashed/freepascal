@@ -2,7 +2,7 @@
 
 // for-step: zero step constant must be rejected at compile time
 
-program tb0302;
+program forstep_fail_zero_step_01;
 
 {$mode unleashed}
 
