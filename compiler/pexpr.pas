@@ -4378,7 +4378,62 @@ implementation
                 begin
                   if srsym.owner<>current_procinfo.procdef.localst then
                     CGMessage(parser_e_label_outside_proc);
-                  result:=cloadnode.create(srsym,srsym.owner)
+                  if tlabelsym(srsym).arraylabel then
+                    begin
+                      { @name[index]: address of the indexed member label }
+                      if current_scanner.token<>_LECKKLAMMER then
+                        begin
+                          Message1(sym_e_label_index_expected,srsym.realname);
+                          result:=cerrornode.create;
+                        end
+                      else
+                        begin
+                          arrlabname:=srsym.name;
+                          arrlabsuffix:='';
+                          arrlabisstring:=false;
+                          arrlabtmpnode:=nil;
+                          consume(_LECKKLAMMER);
+                          if current_scanner.token=_CSTRING then
+                            begin
+                              arrlabsuffix:=upper(current_scanner.cstringpattern);
+                              arrlabisstring:=true;
+                              consume(_CSTRING);
+                              consume(_RECKKLAMMER);
+                            end
+                          else
+                            begin
+                              arrlabtmpnode:=comp_expr([ef_accept_equal]);
+                              consume(_RECKKLAMMER);
+                              do_typecheckpass(arrlabtmpnode);
+                              if arrlabtmpnode.nodetype=ordconstn then
+                                begin
+                                  arrlabidx:=longint(int64(tordconstnode(arrlabtmpnode).value));
+                                  arrlabsuffix:=tostr(arrlabidx);
+                                  arrlabtmpnode.free;
+                                  arrlabtmpnode:=nil;
+                                end;
+                            end;
+                          if assigned(arrlabtmpnode) then
+                            begin
+                              { runtime index: select the member address
+                                through a hidden case dispatch }
+                              result:=generate_arraylabel_addr(tlabelsym(srsym),arrlabtmpnode);
+                              arrlabtmpnode:=nil;
+                            end
+                          else if (arrlabisstring or (arrlabsuffix<>'')) and
+                             get_or_create_indexed_labelsym(arrlabname,arrlabsuffix,arrlabisstring,arrlabidx,arrlabmember,srsymtable) then
+                            begin
+                              { taking the address counts as a use: a member
+                                that is never defined must be a hard error }
+                              arrlabmember.used:=true;
+                              result:=cloadnode.create(arrlabmember,srsymtable);
+                            end
+                          else
+                            result:=cerrornode.create;
+                        end;
+                    end
+                  else
+                    result:=cloadnode.create(srsym,srsym.owner)
                 end
               else if tlabelsym(srsym).arraylabel then
                 begin

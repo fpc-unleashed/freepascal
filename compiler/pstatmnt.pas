@@ -26,11 +26,15 @@ unit pstatmnt;
 interface
 
     uses
-      tokens,node;
+      tokens,node,symsym;
 
 
     function statement_block(starttoken : ttoken) : tnode;
     function statement_expr(var p1 : tnode) : boolean;
+
+    { builds an expression selecting the address of an indexed label
+      member at run time; nil for an index without a member }
+    function generate_arraylabel_addr(sentinel: tlabelsym; indexexpr: tnode): tnode;
 
     { parses exactly one statement - the headerless `sync <stmt>` body }
     function single_statement : tnode;
@@ -52,7 +56,7 @@ implementation
        { module - current_module.localsymtable for threadstatic registration }
        fmodule,
        { symtable }
-       symconst,symbase,symtype,symdef,symsym,symtable,defutil,defcmp,
+       symconst,symbase,symtype,symdef,symtable,defutil,defcmp,
        paramgr,
        { pass 1 }
        pass_1,htypechk,
@@ -4765,6 +4769,111 @@ implementation
           silently unreachable }
         sentinel.arraylabel_dispatched:=true;
         result:=casenode;
+      end;
+
+    { Runtime address counterpart of generate_arraylabel_goto: builds
+        case expr of
+          lo: tmp := @LB$lo;
+          ...
+          hi: tmp := @LB$hi;
+        else tmp := nil;
+      and yields tmp as the expression value. The caller in factor wraps
+      the result of @<factor> in an addrnode, so the block is returned
+      behind a derefnode which that addrnode cancels out. }
+    function generate_arraylabel_addr(sentinel: tlabelsym; indexexpr: tnode): tnode;
+      var
+        block      : tnode;
+        statements : tstatementnode;
+        resultvar  : ttempcreatenode;
+        casenode   : tcasenode;
+        i          : longint;
+        looplo,
+        loophi     : longint;
+        blockid    : longint;
+        labsym     : tsym;
+        labsymtable: TSymtable;
+        s          : TIDString;
+        idxlo,
+        idxhi      : TConstExprInt;
+        h          : int64;
+
+      function const_to_longint_clamped(const v: TConstExprInt): longint;
+        begin
+          h:=int64(v);
+          if h<low(longint) then
+            result:=low(longint)
+          else if h>high(longint) then
+            result:=high(longint)
+          else
+            result:=longint(h);
+        end;
+      begin
+        if length(sentinel.arraylabel_strings)>0 then
+          begin
+            { String array labels don't support variable index }
+            Message(type_e_ordinal_expr_expected);
+            indexexpr.free;
+            result:=cerrornode.create;
+            exit;
+          end;
+        if not assigned(indexexpr.resultdef) then
+          do_typecheckpass(indexexpr);
+        set_varstate(indexexpr,vs_read,[vsf_must_be_valid]);
+        if not is_ordinal(indexexpr.resultdef) then
+          begin
+            Message(type_e_ordinal_expr_expected);
+            indexexpr.free;
+            result:=cerrornode.create;
+            exit;
+          end;
+        { a runtime index needs a declared range to select from }
+        if sentinel.arraylabel_lo>sentinel.arraylabel_hi then
+          begin
+            Message(sym_e_label_not_found);
+            indexexpr.free;
+            result:=cerrornode.create;
+            exit;
+          end;
+        block:=internalstatements(statements);
+        resultvar:=ctempcreatenode.create(charpointertype,charpointertype.size,tt_persistent,true);
+        addstatement(statements,resultvar);
+        casenode:=ccasenode.create(indexexpr);
+        looplo:=sentinel.arraylabel_lo;
+        loophi:=sentinel.arraylabel_hi;
+        { restrict to values representable by the index expression type }
+        getrange(indexexpr.resultdef,idxlo,idxhi);
+        i:=const_to_longint_clamped(idxlo);
+        if i>looplo then
+          looplo:=i;
+        i:=const_to_longint_clamped(idxhi);
+        if i<loophi then
+          loophi:=i;
+        blockid:=0;
+        for i:=looplo to loophi do
+          begin
+            s:=sentinel.name+'$'+tostr(i);
+            if searchsym(s,labsym,labsymtable) and (labsym.typ=labelsym) then
+              begin
+                casenode.addlabel(blockid,i,i);
+                { the member address is materialized, so the member must be
+                  defined somewhere: count it as used to get a hard error
+                  for a missing definition }
+                tlabelsym(labsym).used:=true;
+                casenode.addblock(blockid,
+                  cassignmentnode.create(ctemprefnode.create(resultvar),
+                    ctypeconvnode.create_internal(
+                      caddrnode.create(cloadnode.create(labsym,labsymtable)),
+                      charpointertype)));
+                inc(blockid);
+              end;
+          end;
+        { an index with no member yields nil }
+        casenode.elseblock:=cassignmentnode.create(ctemprefnode.create(resultvar),
+          ctypeconvnode.create_internal(cnilnode.create,charpointertype));
+        addstatement(statements,casenode);
+        addstatement(statements,ctempdeletenode.create_normal_temp(resultvar));
+        addstatement(statements,ctemprefnode.create(resultvar));
+        result:=cderefnode.create(block);
       end;
 
     function generate_pointer_goto(pointerexpr: tnode): tnode;

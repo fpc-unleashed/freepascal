@@ -213,6 +213,88 @@ Once a variable-index `goto` is generated, the family is frozen: defining a labe
 
 With optimizations enabled the dispatch compiles to a single jump through an address table whenever the declared range is dense. Plain `case` statements fall back to a compare chain when they have only a handful of branches; the dispatch is exempt from that size heuristic, so a small family does not need to be padded with unused labels to get the table.
 
+## Label addresses and pointer goto
+
+`@` takes the address of a label, and `goto` accepts any pointer expression as its target. Together they open the low-level end of the feature: address tables, delta tables, hand-rolled dispatch.
+
+### Taking a label's address
+
+`@name` on a plain label yields the label's code address as a generic pointer:
+
+```pascal
+label retry, done;
+var p: pointer;
+
+p := @done;
+```
+
+Only labels of the current routine can be taken; `@` on a label of an enclosing routine is an error.
+
+On an indexed family the index is part of the name, so `@name[index]` addresses one member. The index follows the same rules as a label definition: any constant ordinal expression, or a constant string for string-keyed families:
+
+```pascal
+label op[0..3], action['start', 'stop'];
+var p, q: pointer;
+
+p := @op[2];
+q := @action['stop'];
+```
+
+A bare `@op` without an index is rejected with `Label "op" is an indexed label, an index is required: "op[...]"`.
+
+A runtime index also works: `@op[n]` with a variable `n` compiles to a hidden case selection over the declared range, the same lowering as a variable-index `goto`. It requires an explicit declaration with an ordinal range, and an index that matches no member yields `nil`:
+
+```pascal
+label op[0..3];
+var n: integer; p: pointer;
+
+n := 2;
+p := @op[n]; // runtime selection; nil when n is outside 0..3
+```
+
+A member whose address is taken must be defined somewhere in the routine; a taken-but-never-defined member is an error, since its address could not exist.
+
+### `goto` on a pointer expression
+
+`goto` takes a full pointer expression, arithmetic included:
+
+```pascal
+label start, finish;
+var p: pointer;
+
+p := @finish;
+goto p;
+```
+
+The jump is resolved against the labels of the current routine: the expression value is compared with each label address and control transfers to the match. A pointer that matches no label of the routine falls through to the statement after the `goto` - there is no verification that the value points at anything sensible. This is a deliberately low-level construct: a wild pointer, a label address from another routine, or a stale stored address will not be diagnosed.
+
+### Delta tables: computed goto
+
+Label addresses are ordinary pointers, so their differences are ordinary integers. That allows a compact hand-built dispatch: store per-opcode deltas relative to a base label once, then jump by adding the delta to the base:
+
+```pascal
+procedure exec(ir: byte);
+label op[0..3];
+var
+  base: pointer;
+  delta: array[0..3] of ptruint;
+  k: byte;
+begin
+  base := @op[0];
+  for k := 0 to 3 do
+    delta[k] := ptruint(@op[k]) - ptruint(base);
+
+  goto pointer(ptruint(base) + delta[ir]);
+
+  op[0]: writeln('load');  exit;
+  op[1]: writeln('store'); exit;
+  op[2]: writeln('add');   exit;
+  op[3]: writeln('halt');  exit;
+end;
+```
+
+The delta table can be built once and kept in a static array; a `word` per entry is enough for any realistic routine, which packs the table tighter than full pointers. For the common case a plain variable-index `goto op[ir]` generates the dispatch for you - the manual delta form is for when you want control over the table layout itself.
+
 ## Lazy labels
 
 In `{$mode unleashed}` a `goto` to an undeclared name creates the label on the spot - no `label` section needed:
