@@ -1,6 +1,6 @@
 {$mode unleashed}
 { test structural compatibility between positional and named tuples }
-program ttuples18;
+program tuple_structural_compat_01;
 
 function GetPositional: (Integer, Integer);
 begin

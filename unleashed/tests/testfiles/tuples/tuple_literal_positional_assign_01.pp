@@ -1,5 +1,5 @@
 {$mode unleashed}
-program ttuples3;
+program tuple_literal_positional_assign_01;
 
 uses
   SysUtils;

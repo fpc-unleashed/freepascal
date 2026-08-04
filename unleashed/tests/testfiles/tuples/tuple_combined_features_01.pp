@@ -1,5 +1,5 @@
 {$mode unleashed}
-program ttuplesE;
+program tuple_combined_features_01;
 
 uses
   SysUtils;

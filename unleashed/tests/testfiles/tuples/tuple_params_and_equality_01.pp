@@ -1,5 +1,5 @@
 {$mode unleashed}
-program ttuplesF;
+program tuple_params_and_equality_01;
 
 uses
   SysUtils;

@@ -1,6 +1,6 @@
 {$mode unleashed}
 { test wildcard _ in destructuring }
-program ttuples13;
+program tuple_wildcard_destructure_01;
 
 function Triple: (Integer, Integer, Integer);
 begin

@@ -1,6 +1,6 @@
 {$mode unleashed}
 { test constant-index access on tuples }
-program ttuples17;
+program tuple_const_index_access_01;
 
 var
   p: (Integer, String);

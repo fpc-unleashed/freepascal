@@ -1,6 +1,6 @@
 {$mode unleashed}
 { test parameter destructuring }
-program ttuples14;
+program tuple_param_destructure_02;
 
 procedure ShowXY((x, y): (Integer, Integer));
 begin

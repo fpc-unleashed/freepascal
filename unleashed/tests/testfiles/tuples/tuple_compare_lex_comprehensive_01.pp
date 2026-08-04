@@ -1,5 +1,5 @@
 {$mode unleashed}
-program ttuplesG;
+program tuple_compare_lex_comprehensive_01;
 
 uses
   SysUtils;

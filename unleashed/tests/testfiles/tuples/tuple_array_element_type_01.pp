@@ -1,5 +1,5 @@
 {$mode unleashed}
-program ttuples6;
+program tuple_array_element_type_01;
 
 uses
   SysUtils;

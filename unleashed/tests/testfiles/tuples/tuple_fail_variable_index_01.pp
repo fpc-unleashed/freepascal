@@ -1,7 +1,7 @@
 { %FAIL }
 {$mode unleashed}
 { test that variable tuple index is a compile error }
-program ttuples20;
+program tuple_fail_variable_index_01;
 
 var
   t: (Integer, Integer);

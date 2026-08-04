@@ -1,5 +1,5 @@
 {$mode unleashed}
-program ttuples7;
+program tuple_literal_in_array_literal_01;
 
 uses
   SysUtils;

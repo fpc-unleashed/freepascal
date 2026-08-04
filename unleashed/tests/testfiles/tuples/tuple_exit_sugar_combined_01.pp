@@ -1,5 +1,5 @@
 {$mode unleashed}
-program ttuples5;
+program tuple_exit_sugar_combined_01;
 
 uses
   SysUtils;

@@ -1,5 +1,5 @@
 {$mode unleashed}
-program ttuples9;
+program tuple_destructure_inline_returns_01;
 
 uses
   SysUtils;

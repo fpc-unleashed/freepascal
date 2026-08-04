@@ -1,5 +1,5 @@
 {$mode unleashed}
-program ttuples2;
+program tuple_named_return_01;
 
 uses
   SysUtils;

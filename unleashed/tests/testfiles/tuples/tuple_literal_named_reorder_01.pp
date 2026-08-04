@@ -1,5 +1,5 @@
 {$mode unleashed}
-program ttuples4;
+program tuple_literal_named_reorder_01;
 
 uses
   SysUtils;

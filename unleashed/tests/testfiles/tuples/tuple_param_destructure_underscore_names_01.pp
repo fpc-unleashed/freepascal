@@ -1,6 +1,6 @@
 {$mode unleashed}
 { test underscores in destructured parameter names (bug fix) }
-program ttuples19;
+program tuple_param_destructure_underscore_names_01;
 
 procedure ShowNames((first_name, last_name): (String, String));
 begin

@@ -1,6 +1,6 @@
 {$mode unleashed}
 { test WriteLn auto-expansion of tuples }
-program ttuples16;
+program tuple_writeln_expansion_01;
 
 var
   p: (Integer, String);

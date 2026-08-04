@@ -1,6 +1,6 @@
 {$mode unleashed}
 { test different-shape tuple comparison }
-program ttuples15;
+program tuple_compare_shape_mismatch_01;
 
 var
   a: (Integer, Integer);
