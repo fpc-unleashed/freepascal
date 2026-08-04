@@ -1,7 +1,7 @@
 { inline var with anonymous pointer type whose target name starts with `T`
   used to fail because the scanner pre-fetched `^T...` as a control-character
   literal before the parser switched to bt_var_type }
-program tb0729;
+program inline_vars_caret_type_after_colon_01;
 
 {$mode unleashed}
 

@@ -1,7 +1,7 @@
 { Aggregate initialisers for inline var: array / record literal
   routed through the typed-const parser. }
 {$mode unleashed}
-program tinlinevar4;
+program inline_vars_aggregate_init_01;
 
 type
   TPoint = record

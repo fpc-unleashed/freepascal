@@ -1,5 +1,5 @@
 {$mode unleashed}
-program tinlinevar1;
+program inline_vars_combined_forms_01;
 
 uses
   SysUtils;
