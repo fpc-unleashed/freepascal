@@ -1,6 +1,6 @@
 {$mode unleashed}
 { match as expression }
-program tmatch6;
+program match_as_expression_forms_01;
 
 procedure TestBasic;
 var
@@ -26,9 +26,7 @@ begin
   s := match x of
     1: 'one';
     2: 'two';
-  else
-    'unknown'
-  end;
+  else 'unknown';
   if s <> 'unknown' then Halt(2);
 end;
 

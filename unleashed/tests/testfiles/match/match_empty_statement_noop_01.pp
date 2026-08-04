@@ -1,7 +1,7 @@
 { empty `match end` as a statement compiles to a no-op, like `begin end` or
   `case X of end`; previously rejected with "Illegal expression" because the
   parser eagerly tried to parse a condition expression after `match` }
-program tb9005;
+program match_empty_statement_noop_01;
 
 {$mode unleashed}
 

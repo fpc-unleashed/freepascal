@@ -1,6 +1,6 @@
 {$mode unleashed}
 { match: comma-separated patterns (OR) }
-program tmatch5;
+program match_comma_patterns_02;
 
 procedure TestComma;
 var

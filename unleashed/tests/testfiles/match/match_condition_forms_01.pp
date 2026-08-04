@@ -1,6 +1,6 @@
 {$mode unleashed}
 { match without of: condition-based matching }
-program tmatch4;
+program match_condition_forms_01;
 
 procedure TestFirstMatch;
 var

@@ -1,6 +1,6 @@
 {$mode unleashed}
 { match statement: basic first-match with ordinal and string subjects }
-program tmatch1;
+program match_subject_basics_01;
 
 procedure TestOrdinal;
 var

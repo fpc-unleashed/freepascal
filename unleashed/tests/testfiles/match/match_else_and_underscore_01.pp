@@ -1,6 +1,6 @@
 {$mode unleashed}
 { match statement: else and _ catch-all }
-program tmatch2;
+program match_else_and_underscore_01;
 
 procedure TestElse;
 var

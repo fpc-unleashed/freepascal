@@ -1,6 +1,6 @@
 {$mode unleashed}
 { match statement: combined features demo }
-program tmatch8;
+program match_combined_features_01;
 
 function MakeCoords(a, b: Integer): (Integer, Integer);
 begin

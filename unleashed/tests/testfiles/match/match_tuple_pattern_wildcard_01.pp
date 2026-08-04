@@ -1,6 +1,6 @@
 {$mode unleashed}
 { match: wildcard _ in tuple patterns }
-program tmatch7;
+program match_tuple_pattern_wildcard_01;
 
 function MakePoint(a, b: Integer): (Integer, Integer);
 begin

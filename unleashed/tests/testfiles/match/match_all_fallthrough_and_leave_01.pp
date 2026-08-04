@@ -1,6 +1,6 @@
 {$mode unleashed}
 { match all: fallthrough mode and leave }
-program tmatch3;
+program match_all_fallthrough_and_leave_01;
 
 procedure TestFallthrough;
 var
