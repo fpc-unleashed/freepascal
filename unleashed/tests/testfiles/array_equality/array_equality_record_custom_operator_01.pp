@@ -1,4 +1,4 @@
-program Test;
+program array_equality_record_custom_operator_01;
 
 {$Mode ObjFPC}{$H+}
 {$modeswitch ArrayOperators}

@@ -1,4 +1,4 @@
-program Test;
+program array_equality_dynarray_constref_vs_literal_01;
 
 {$Mode ObjFPC}{$H+}
 {$modeswitch ArrayOperators}
@@ -11,7 +11,7 @@ begin
 end;
 
 begin
-  if is1([1,2]) then
+  if not is1([1]) then
     halt(1);
   WriteLn('ok');
 end.

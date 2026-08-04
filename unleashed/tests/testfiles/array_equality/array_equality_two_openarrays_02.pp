@@ -1,4 +1,4 @@
-program Test;
+program array_equality_two_openarrays_02;
 
 {$Mode ObjFPC}{$H+}
 {$modeswitch ArrayOperators}
@@ -10,7 +10,7 @@ begin
 end;
 
 begin
-  if not eq([1],[1]) then
+  if eq([1],[1,2]) then
     halt(1);
   WriteLn('ok');
 end.

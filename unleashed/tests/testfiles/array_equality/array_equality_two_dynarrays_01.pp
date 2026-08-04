@@ -1,17 +1,17 @@
-program Test;
+program array_equality_two_dynarrays_01;
 
 {$Mode ObjFPC}{$H+}
 {$modeswitch ArrayOperators}
 {$modeswitch ArrayEquality}
 
 type TIntArray = array of Integer;
-function is1(constref arr: TIntArray): Boolean;
+function eq(const lhs,rhs: TIntArray): Boolean;
 begin
-  Result := arr = [1];
+  Result := lhs=rhs;
 end;
 
 begin
-  if not is1([1]) then
+  if not eq([1],[1]) then
     halt(1);
   WriteLn('ok');
 end.

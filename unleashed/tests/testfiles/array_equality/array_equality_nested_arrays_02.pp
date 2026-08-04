@@ -1,4 +1,4 @@
-program Test;
+program array_equality_nested_arrays_02;
 
 {$Mode ObjFPC}{$H+}
 {$modeswitch ArrayOperators}

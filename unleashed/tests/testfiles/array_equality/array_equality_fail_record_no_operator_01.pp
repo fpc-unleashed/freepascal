@@ -1,5 +1,5 @@
 { %FAIL }
-program Test;
+program array_equality_fail_record_no_operator_01;
 
 {$Mode ObjFPC}{$H+}
 {$modeswitch ArrayOperators}

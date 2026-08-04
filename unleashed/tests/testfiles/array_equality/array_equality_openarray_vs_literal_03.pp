@@ -1,4 +1,4 @@
-program Test;
+program array_equality_openarray_vs_literal_03;
 
 {$Mode ObjFPC}{$H+}
 {$modeswitch ArrayOperators}
@@ -10,7 +10,7 @@ begin
 end;
 
 begin
-  if is1([]) then
+  if is1([1,2]) then
     halt(1);
   WriteLn('ok');
 end.

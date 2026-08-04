@@ -1,11 +1,10 @@
-program Test;
+program array_equality_two_openarrays_neq_01;
 
 {$Mode ObjFPC}{$H+}
 {$modeswitch ArrayOperators}
 {$modeswitch ArrayEquality}
 
-type TIntArray = array of Integer;
-function neq(const lhs,rhs: TIntArray): Boolean;
+function neq(const lhs,rhs: array of Integer): Boolean;
 begin
   Result := lhs<>rhs;
 end;

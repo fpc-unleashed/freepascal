@@ -1,11 +1,10 @@
-program Test;
+program array_equality_openarray_vs_empty_01;
 
 {$Mode ObjFPC}{$H+}
 {$modeswitch ArrayOperators}
 {$modeswitch ArrayEquality}
 
-type TIntArray = array of Integer;
-function head(const arr: TIntArray): PInteger;
+function head(constref arr: array of Integer): PInteger;
 begin
   if arr = [] then
     Result := nil

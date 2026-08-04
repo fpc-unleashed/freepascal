@@ -1,12 +1,13 @@
-program Test;
+program array_equality_dynarray_vs_empty_01;
 
 {$Mode ObjFPC}{$H+}
 {$modeswitch ArrayOperators}
 {$modeswitch ArrayEquality}
 
-function head(constref arr: array of Integer): PInteger;
+type TIntArray = array of Integer;
+function head(const arr: TIntArray): PInteger;
 begin
-  if [] = arr then
+  if arr = [] then
     Result := nil
   else Result := @arr[0];
 end;

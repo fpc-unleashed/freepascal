@@ -1,4 +1,4 @@
-program Test;
+program array_equality_openarray_neq_literal_01;
 
 {$Mode ObjFPC}{$H+}
 {$modeswitch ArrayOperators}
