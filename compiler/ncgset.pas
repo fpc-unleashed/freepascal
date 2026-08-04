@@ -1310,13 +1310,21 @@ implementation
                         if max_dist>4*labelcnt then
                           max_dist:=min(max_dist,2048);
 
-                        if jumptable_no_range then
-                          max_linear_list:=4
+                        if prefer_jumptable then
+                          { dense dispatch (goto label[expr]): a single
+                            indirect jump beats a compare chain, skip the
+                            target-specific bias towards linear lists }
+                          max_linear_list:=0
                         else
-                          max_linear_list:=2;
+                          begin
+                            if jumptable_no_range then
+                              max_linear_list:=4
+                            else
+                              max_linear_list:=2;
 
-                        { allow processor specific values }
-                        optimizevalues(max_linear_list,max_dist);
+                            { allow processor specific values }
+                            optimizevalues(max_linear_list,max_dist);
+                          end;
 
                         if (labelcnt<=max_linear_list) then
                           genlinearlist(labels)

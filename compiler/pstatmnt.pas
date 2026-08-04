@@ -4732,6 +4732,9 @@ implementation
           end;
         { Build case node }
         casenode:=ccasenode.create(caseexpr);
+        // the dispatch index is dense and unpredictable, one indirect jump
+        // beats a compare chain even for a handful of labels
+        casenode.prefer_jumptable:=true;
         looplo:=sentinel.arraylabel_lo;
         loophi:=sentinel.arraylabel_hi;
         { Restrict generated jump targets to values representable by the

@@ -211,6 +211,8 @@ Everything about the dispatch:
 
 Once a variable-index `goto` is generated, the family is frozen: defining a label outside the declared set after it (possible in `{$mode unleashed}` through lazy labels) reports `Error: Index 7 of label "state" is outside the range of an earlier "goto state[...]" with a variable index; declare the full range in the label declaration`. The already emitted dispatch could never reach the new target, so the compiler rejects it - declare the full range up front.
 
+With optimizations enabled the dispatch compiles to a single jump through an address table whenever the declared range is dense. Plain `case` statements fall back to a compare chain when they have only a handful of branches; the dispatch is exempt from that size heuristic, so a small family does not need to be padded with unused labels to get the table.
+
 ## Lazy labels
 
 In `{$mode unleashed}` a `goto` to an undeclared name creates the label on the spot - no `label` section needed:
