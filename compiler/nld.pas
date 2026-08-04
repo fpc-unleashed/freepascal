@@ -69,6 +69,7 @@ interface
           procedure set_mp(p:tnode);
           function  is_addr_param_load:boolean;virtual;
           function  dogetcopy : tnode;override;
+          procedure setupcopiedlabelsym;override;
           function  pass_1 : tnode;override;
           function  pass_typecheck:tnode;override;
           procedure mark_write;override;
@@ -325,29 +326,42 @@ implementation
     function tloadnode.dogetcopy : tnode;
       var
          n : tloadnode;
-         orglabel,
-         labelcopy : tlabelnode;
       begin
          n:=tloadnode(inherited dogetcopy);
          n.symtable:=symtable;
          n.symtableentry:=symtableentry;
          n.fprocdef:=fprocdef;
          n.loadnodeflags:=loadnodeflags;
-         if symtableentry.typ=labelsym then
-           begin
-             { see the comments for the tgotonode.labelsym field }
-             orglabel:=tlabelnode(tlabelsym(symtableentry).code);
-             labelcopy:=tlabelnode(orglabel.dogetcopy);
-             if not assigned(labelcopy.labsym) then
-               begin
-                 if not assigned(orglabel.labsym) then
-                   internalerror(2019091301);
-                 labelcopy.labsym:=clabelsym.create('$copiedlabelfrom$'+orglabel.labsym.RealName);
-                 labelcopy.labsym.code:=labelcopy;
-               end;
-             n.symtableentry:=labelcopy.labsym;
-           end;
+         { a load of a labelsym keeps the original sym here: whether the label
+           node itself is part of the copied tree is only known once the whole
+           copy is done, so the rebinding happens in setupcopiedlabelsym called
+           from the getcopy post-pass (see the comments for the
+           tgotonode.labelsym field) }
          result:=n;
+      end;
+
+
+    procedure tloadnode.setupcopiedlabelsym;
+      var
+         orglabel,
+         labelcopy : tlabelnode;
+      begin
+         if symtableentry.typ<>labelsym then
+           exit;
+         orglabel:=tlabelnode(tlabelsym(symtableentry).code);
+         if not assigned(orglabel) or not assigned(orglabel.copiedto) then
+           exit;
+         { the label node was copied along with this load: bind the load to
+           the copy through a fresh labelsym }
+         labelcopy:=orglabel.copiedto;
+         if not assigned(labelcopy.labsym) then
+           begin
+             if not assigned(orglabel.labsym) then
+               internalerror(2019091301);
+             labelcopy.labsym:=clabelsym.create('$copiedlabelfrom$'+orglabel.labsym.RealName);
+             labelcopy.labsym.code:=labelcopy;
+           end;
+         symtableentry:=labelcopy.labsym;
       end;
 
 

@@ -188,9 +188,12 @@ interface
                 problem here either for now.
               * a load node (its symtableentry field). Since the symtableentry
                 of loadnodes is always expected to be valid, we cannot do like
-                with the goto nodes. Instead, we will create a new labelsym
-                when performing a dogetcopy of such a load node and assign this
-                labelsym to the copied labelnode (and vice versa)
+                with the goto nodes. Instead, after the copy is done, we will
+                create a new labelsym for the copied labelnode and assign it
+                to the copied load node (and vice versa) - but only when the
+                labelnode was part of the copied tree; a load copied on its
+                own (e.g. an argument tree copied while inlining a call) keeps
+                referring to the original label
           }
           labelsym : tlabelsym;
           labelnode : tlabelnode;

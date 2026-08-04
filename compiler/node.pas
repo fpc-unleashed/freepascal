@@ -368,6 +368,10 @@ interface
          { does the real copying of a node }
          function dogetcopy : tnode;virtual;
 
+         { called on every node of a finished copy: rebinds a copied load of
+           a labelsym when its label node was copied too (see tloadnode) }
+         procedure setupcopiedlabelsym;virtual;
+
          procedure insertintolist(l : tnodelist);virtual;
          { writes a node for debugging purpose, shouldn't be called }
          { direct, because there is no test for nil, use printnode  }
@@ -1034,7 +1038,9 @@ implementation
         result:=fen_true;
         if (n.nodetype=goton) and assigned(tgotonode(n).labelnode) and
           assigned(tgotonode(n).labelnode.copiedto) then
-          tgotonode(n).labelnode:=tgotonode(n).labelnode.copiedto;
+          tgotonode(n).labelnode:=tgotonode(n).labelnode.copiedto
+        else if n.nodetype=loadn then
+          n.setupcopiedlabelsym;
       end;
 
 
@@ -1043,6 +1049,11 @@ implementation
         result:=dogetcopy;
         foreachnodestatic(pm_postprocess,result,@setuplabelnode,nil);
         foreachnodestatic(pm_postprocess,self,@cleanupcopiedto,nil);
+      end;
+
+
+    procedure tnode.setupcopiedlabelsym;
+      begin
       end;
 
 
