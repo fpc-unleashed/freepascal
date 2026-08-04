@@ -217,6 +217,10 @@ Two delimiter forms for literals spanning source lines without manual `+` or `Li
 
 Modify-and-assign for every operator, in three layers: the word-based operators `div=`, `mod=`, `and=`, `or=`, `xor=`, `shl=`, `shr=` (every mode, no switch); the C-style `+=`, `-=`, `*=`, `/=` (on automatically in unleashed, `{$coperators on}` elsewhere); and properties as targets, where `prop += x` and `inc(prop, n)` expand to getter-plus-setter calls that stock FPC rejects (unleashed-only).
 
+### [Array Equality](array-equality.md)
+
+`=` / `<>` between two arrays compares them element by element: equal means same length, same elements, in order - bounds and array kind (static, dynamic, open array, literal) do not matter, and the comparison stops at the first difference. Elements go through their own `=`, so nested arrays recurse and records need a custom operator. Modeswitch `arrayequality` (requires `arrayoperators`, both on in unleashed).
+
 ### [Indexed Labels and Lazy Labels](indexed-labels.md)
 
 Declare a family of labels keyed by ordinal ranges (`label state[0..4]`) or strings (`label action['start', 'stop']`) and jump to them by index - a runtime index compiles to a case dispatch, ideal for state machines and jump tables. In unleashed mode labels also no longer need declaring before use (`goto done;` works without a prior `label`). Available whenever `{$goto on}` is active; lazy labels are unleashed-only.
