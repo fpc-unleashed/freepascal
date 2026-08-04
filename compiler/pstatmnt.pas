@@ -4736,6 +4736,7 @@ implementation
           end;
         { Build case node }
         casenode:=ccasenode.create(caseexpr);
+        include(casenode.flags,nf_internal);
         // the dispatch index is dense and unpredictable, one indirect jump
         // beats a compare chain even for a handful of labels
         casenode.prefer_jumptable:=true;
@@ -4838,6 +4839,7 @@ implementation
         resultvar:=ctempcreatenode.create(charpointertype,charpointertype.size,tt_persistent,true);
         addstatement(statements,resultvar);
         casenode:=ccasenode.create(indexexpr);
+        include(casenode.flags,nf_internal);
         looplo:=sentinel.arraylabel_lo;
         loophi:=sentinel.arraylabel_hi;
         { restrict to values representable by the index expression type }

@@ -1356,6 +1356,10 @@ implementation
       var
         lv, hv, typcount: tconstexprint;
       begin
+        { compiler-generated dispatches (e.g. indexed label selection) carry
+          an else block by construction; do not warn about it }
+        if nf_internal in flags then
+          exit;
         { Check label type coverage for enumerations and small types }
         getrange(left.resultdef,lv,hv);
         { low/high value of c-style booleans are not suitable for calculating their "type count" }
