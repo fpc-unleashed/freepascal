@@ -1328,7 +1328,8 @@ implementation
             Add('    ___RUNTIME_PSEUDO_RELOC_LIST_END__ = .;');
             Add('    __RUNTIME_PSEUDO_RELOC_LIST_END__ = .;');
             Add('  }');
-            Add('  .pdata BLOCK(__section_alignment__) : { *(.pdata) }');
+            Add('  .pdata BLOCK(__section_alignment__) : { *(.pdata) *(.pdata.*) }');
+            Add('  .xdata BLOCK(__section_alignment__) : { *(.xdata) *(.xdata.*) }');
             Add('  .bss BLOCK(__section_alignment__) :');
             Add('  {');
             Add('    __bss_start__ = . ;');
