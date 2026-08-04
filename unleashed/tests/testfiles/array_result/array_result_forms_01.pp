@@ -1,7 +1,7 @@
 { unleashed: inline `array of X` / `packed array ...` / `bitpacked array ...`
   is accepted as a function result type and assigned-into / iterated like
   any other array }
-program tb9006;
+program array_result_forms_01;
 
 {$mode unleashed}
 
