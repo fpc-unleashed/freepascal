@@ -80,10 +80,13 @@ Threads in stock Pascal mean `TThread` subclasses, hand-managed critical section
 | **Inline Variables** | `var x := 42;` at the point of use, with type inference and block scope | [inline-vars.md](unleashed/docs/inline-vars.md) |
 | **Statement Expressions** | `var s := if x > 0 then 'pos' else 'neg';` - `if` / `case` / `try` yield values | [statement-expressions.md](unleashed/docs/statement-expressions.md) |
 | **`match`** | `match cmd of 'go': run; _: skip; end;` - first-match dispatch over strings, tuples, conditions | [match.md](unleashed/docs/match.md) |
+| **Indexed and Lazy Labels** | `label state[0..4]; goto state[n];` - runtime index compiles to a case dispatch; `goto done;` needs no declaration | [indexed-labels.md](unleashed/docs/indexed-labels.md) |
 | **Tuples** | `function pair: (integer, integer);` then `var (a, b) := pair;` | [tuples.md](unleashed/docs/tuples.md) |
 | **String Interpolation** | `writeln($'Hello {name}, pi = {pi:%.2f}');` | [string-interpolation.md](unleashed/docs/string-interpolation.md) |
 | **`for ... step`** | `for var i := 1 to 10 step 2 do ...` | [forstep.md](unleashed/docs/forstep.md) |
 | **Multi-Var Init** | `var a, b, c: integer = 42;` - one initializer, independent copies | [multi-var-init.md](unleashed/docs/multi-var-init.md) |
+| **Compound Assignment** | `i div= 2;`, `flags xor= $05;` in every mode; `+=` without `{$coperators on}`; properties as targets | [compound-assignment.md](unleashed/docs/compound-assignment.md) |
+| **Array Equality** | `if a = b then` compares arrays element by element - any kind, any bounds, nested included | [array-equality.md](unleashed/docs/array-equality.md) |
 | **`SwapValues()`** | `SwapValues(a, b);` - bitwise swap, no `uses`, no refcount churn | [swapvalues.md](unleashed/docs/swapvalues.md) |
 | **`Type()`** | `var tmp: Type(a[0]);` - static type of an expression, operand unevaluated | [type-intrinsic.md](unleashed/docs/type-intrinsic.md) |
 | **128-bit Integers** | `var x: UInt128 := 340282366920938463463374607431768211455;` | [int128.md](unleashed/docs/int128.md) |
@@ -130,10 +133,7 @@ Semantic adjustments and small syntax unlocks - full catalog in [tweaks.md](unle
 
 - **Preserved For-Loop Counter** - after `for i := 1 to N do ... break;` the counter keeps its value.
 - **`is not` / `not in`** - `if obj is not TFoo then`, `if x not in [a, b] then`.
-- **Compound Assignment** - `i div= 2;`, `flags xor= $05;` in every mode; `+=` and friends without `{$coperators on}`; both work on properties, as do `inc()` / `dec()`.
 - **Array Size Shorthand** - `array[10] of T` means `array[0..9] of T`.
-- **Array Equality** - `if a = b then` compares two arrays element by element.
-- **Indexed and Lazy Labels** - `label state[0..4]; goto state[n];` compiles to a case dispatch; `goto done;` needs no prior declaration.
 - **`goto`, Macros, C-Operators without Directives** - all implied by the mode.
 - **`DEBUG` / `RELEASE` Defines** - set automatically from `-g`: react to a debug build with `{$ifdef DEBUG}`, no `-dDEBUG` needed.
 
