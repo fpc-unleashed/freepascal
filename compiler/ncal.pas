@@ -5786,6 +5786,8 @@ implementation
            ((n.nodetype = loadn) and
             { can be nil in case of internally generated labels like $raiseaddr }
             assigned(tloadnode(n).symtable) and
+            { a procedure address is a constant, it cannot change }
+            (tloadnode(n).symtableentry.typ<>procsym) and
             { globals and fields of (possibly global) objects could always be changed in the callee }
             ((tloadnode(n).symtable.symtabletype in [globalsymtable,ObjectSymtable]) or
             { statics can only be modified by functions in the same unit }
