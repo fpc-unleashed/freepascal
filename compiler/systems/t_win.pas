@@ -1151,7 +1151,7 @@ implementation
            targetopts:='-b pei-aarch64-little';
 {$endif aarch64}
 {$ifdef x86_64}
-           targetopts:='-b pei-x86-64';
+           targetopts:='-b pei-x86-64 -m i386pep';
 {$endif x86_64}
 {$ifdef i386}
            targetopts:='-b pei-i386 -m i386pe';
