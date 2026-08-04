@@ -37,7 +37,7 @@ unit optcall;
 
     uses
       cclasses,
-      verbose,globals,
+      verbose,globals,globtype,
       defutil,defcmp,
       symconst,symtype,symdef,symsym,
       parabase,paramgr,
@@ -45,7 +45,15 @@ unit optcall;
       nutils,
       fmodule,
       pass_1,
-      nbas,ncal,nld;
+      nbas,ncal,nld,ncnv;
+
+    type
+      pinlinectx = ^tinlinectx;
+      tinlinectx = record
+        changed : boolean;
+        { the root of the tree being processed, for whole-routine scans }
+        root : ^tnode;
+      end;
 
     { this procedure removes the user code flag because it prevents optimizations }
     function removeusercodeflag(var n : tnode; arg : pointer) : foreachnoderesult;
@@ -123,6 +131,296 @@ unit optcall;
       end;
 
 
+    { strips value-preserving conversions off a procvar expression }
+    function strip_procvar_convs(n: tnode): tnode;
+      begin
+        while assigned(n) and
+              (n.nodetype=typeconvn) and
+              (ttypeconvnode(n).convtype in [tc_equal,tc_proc_2_procvar]) do
+          n:=ttypeconvnode(n).left;
+        result:=n;
+      end;
+
+
+    type
+      plocalscan = ^tlocalscan;
+      tlocalscan = record
+        { the scanned location: a local variable or a temp }
+        sym : tsym;
+        temp : ptempinfo;
+        reads,
+        writes,
+        assigns : longint;
+        source : tnode;
+        bad : boolean;
+      end;
+
+      { the chain of locations a resolution was chased through }
+      pdevirtchain = ^tdevirtchain;
+      tdevirtchain = record
+        count : longint;
+        syms : array[0..3] of tsym;
+        temps : array[0..3] of ptempinfo;
+      end;
+
+    { true when n (already stripped) loads the scanned location }
+    function is_scanned_location(n: tnode; scan: plocalscan): boolean;
+      begin
+        result:=
+          (assigned(scan^.sym) and
+           (n.nodetype=loadn) and
+           (tloadnode(n).symtableentry=scan^.sym)) or
+          (assigned(scan^.temp) and
+           (n.nodetype=temprefn) and
+           (ttemprefnode(n).tempinfo=scan^.temp));
+      end;
+
+    function scan_local_writes(var n: tnode; arg: pointer): foreachnoderesult;
+      var
+        scan : plocalscan;
+        hp : tnode;
+      begin
+        result:=fen_false;
+        scan:=plocalscan(arg);
+        case n.nodetype of
+          loadn,
+          temprefn:
+            if is_scanned_location(n,scan) then
+              begin
+                if n.flags*[nf_write,nf_modify]<>[] then
+                  inc(scan^.writes)
+                else
+                  inc(scan^.reads);
+              end;
+          assignn:
+            begin
+              hp:=strip_procvar_convs(tassignmentnode(n).left);
+              if is_scanned_location(hp,scan) then
+                begin
+                  inc(scan^.assigns);
+                  scan^.source:=tassignmentnode(n).right;
+                end;
+            end;
+          addrn:
+            begin
+              hp:=strip_procvar_convs(tunarynode(n).left);
+              if is_scanned_location(hp,scan) then
+                scan^.bad:=true;
+            end;
+          callparan:
+            begin
+              hp:=strip_procvar_convs(tcallparanode(n).left);
+              if is_scanned_location(hp,scan) and
+                 (not assigned(tcallparanode(n).parasym) or
+                  (tcallparanode(n).parasym.varspez in [vs_var,vs_out,vs_constref])) then
+                scan^.bad:=true;
+            end;
+          else
+            ;
+        end;
+      end;
+
+
+    { runs scan_local_writes for a location over the whole routine }
+    procedure run_location_scan(ctx: pinlinectx; sym: tsym; temp: ptempinfo; out scan: tlocalscan);
+      begin
+        scan.sym:=sym;
+        scan.temp:=temp;
+        scan.reads:=0;
+        scan.writes:=0;
+        scan.assigns:=0;
+        scan.source:=nil;
+        scan.bad:=false;
+        foreachnodestatic(pm_postprocess,ctx^.root^,@scan_local_writes,@scan);
+      end;
+
+
+    { returns the source of the location's single store, nil when there is
+      not exactly one or the location escapes }
+    function find_single_store(ctx: pinlinectx; sym: tsym; temp: ptempinfo): tnode;
+      var
+        scan : tlocalscan;
+      begin
+        result:=nil;
+        run_location_scan(ctx,sym,temp,scan);
+        if scan.bad or (scan.assigns<>1) or (scan.writes<>1) then
+          exit;
+        result:=scan.source;
+      end;
+
+
+    { replaces the scanned location's single store with a nothing node }
+    function kill_single_store(var n: tnode; arg: pointer): foreachnoderesult;
+      var
+        scan : plocalscan;
+        hp : tnode;
+      begin
+        result:=fen_false;
+        scan:=plocalscan(arg);
+        if n.nodetype<>assignn then
+          exit;
+        hp:=strip_procvar_convs(tassignmentnode(n).left);
+        if not is_scanned_location(hp,scan) or
+           might_have_sideeffects(tassignmentnode(n).right) then
+          exit;
+        hp:=cnothingnode.create;
+        firstpass(hp);
+        n.free;
+        n:=hp;
+        result:=fen_norecurse_true;
+      end;
+
+
+    { after a devirtualized call dropped its procvar expression, the stores
+      feeding the locations it was resolved through may have become dead;
+      remove those no longer read anywhere (nothing eliminates them later:
+      dead store elimination is not part of any -O level) }
+    procedure remove_dead_chain_stores(ctx: pinlinectx; const chain: tdevirtchain);
+      var
+        scan : tlocalscan;
+        i : longint;
+      begin
+        for i:=0 to chain.count-1 do
+          begin
+            run_location_scan(ctx,chain.syms[i],chain.temps[i],scan);
+            if scan.bad or (scan.assigns<>1) or (scan.writes<>1) or (scan.reads<>0) then
+              break;
+            if not foreachnodestatic(pm_postprocess,ctx^.root^,@kill_single_store,@scan) then
+              break;
+          end;
+      end;
+
+
+    { returns the routine a procvar expression provably always evaluates to:
+      either the address of a routine taken directly, or a load of a local
+      or temp whose only store in the whole routine is such an address;
+      the locations chased through are recorded in chain }
+    function resolve_procvar_target(n: tnode; ctx: pinlinectx; chain: pdevirtchain): tprocdef;
+      var
+        source : tnode;
+        sym : tsym;
+      begin
+        result:=nil;
+        n:=strip_procvar_convs(n);
+        case n.nodetype of
+          loadn:
+            begin
+              sym:=tloadnode(n).symtableentry;
+              case sym.typ of
+                procsym:
+                  result:=tloadnode(n).procdef;
+                localvarsym:
+                  begin
+                    if (chain^.count>high(chain^.syms)) or
+                       tabstractvarsym(sym).addr_taken or
+                       (vo_volatile in tabstractvarsym(sym).varoptions) or
+                       current_procinfo.has_nestedprocs or
+                       (pi_has_assembler_block in current_procinfo.flags) then
+                      exit;
+                    { a single store whose value always reaches the call: any
+                      path calling through the variable without passing the
+                      store reads an uninitialized procvar }
+                    source:=find_single_store(ctx,sym,nil);
+                    if assigned(source) then
+                      begin
+                        chain^.syms[chain^.count]:=sym;
+                        chain^.temps[chain^.count]:=nil;
+                        inc(chain^.count);
+                        result:=resolve_procvar_target(source,ctx,chain);
+                      end;
+                  end;
+                else
+                  ;
+              end;
+            end;
+          temprefn:
+            begin
+              if (chain^.count>high(chain^.temps)) or
+                 (ti_addr_taken in ttemprefnode(n).tempflags) or
+                 (pi_has_assembler_block in current_procinfo.flags) then
+                exit;
+              source:=find_single_store(ctx,nil,ttemprefnode(n).tempinfo);
+              if assigned(source) then
+                begin
+                  chain^.syms[chain^.count]:=nil;
+                  chain^.temps[chain^.count]:=ttemprefnode(n).tempinfo;
+                  inc(chain^.count);
+                  result:=resolve_procvar_target(source,ctx,chain);
+                end;
+            end;
+          else
+            ;
+        end;
+      end;
+
+
+    { rewrites a call through a procvar whose target is a compile-time
+      constant into a direct call to that routine }
+    procedure try_devirtualize(callnode: tcallnode; ctx: pinlinectx);
+      var
+        pv : tprocvardef;
+        pd : tprocdef;
+        para : tcallparanode;
+        chain : tdevirtchain;
+        i : longint;
+      begin
+        if assigned(callnode.methodpointer) or
+           assigned(callnode.varargsparas) then
+          exit;
+        pv:=tprocvardef(callnode.procdefinition);
+        { only plain procedure pointers: a method pointer or nested procvar
+          carries a context value along with the address }
+        if not pv.is_addressonly then
+          exit;
+        chain.count:=0;
+        pd:=resolve_procvar_target(callnode.right,ctx,@chain);
+        if not assigned(pd) or
+           (pd.typ<>procdef) or
+           is_nested_pd(pd) or
+           (po_anonymous in pd.procoptions) then
+          exit;
+        { must be call-identical, not merely assignment-compatible }
+        if (pd.proccalloption<>pv.proccalloption) or
+           (proc_to_procvar_equal(pd,pv,false)<>te_equal) or
+           (pd.paras.count<>pv.paras.count) then
+          exit;
+        { the parameter binding must remap one-to-one }
+        para:=tcallparanode(callnode.left);
+        while assigned(para) do
+          begin
+            if not assigned(para.parasym) then
+              exit;
+            i:=pv.paras.IndexOf(para.parasym);
+            if (i<0) or
+               (tparavarsym(pd.paras[i]).varspez<>para.parasym.varspez) or
+               ((vo_is_hidden_para in tparavarsym(pd.paras[i]).varoptions)<>
+                (vo_is_hidden_para in para.parasym.varoptions)) or
+               not equal_defs(tparavarsym(pd.paras[i]).vardef,para.parasym.vardef) then
+              exit;
+            para:=tcallparanode(para.right);
+          end;
+        para:=tcallparanode(callnode.left);
+        while assigned(para) do
+          begin
+            para.parasym:=tparavarsym(pd.paras[pv.paras.IndexOf(para.parasym)]);
+            para:=tcallparanode(para.right);
+          end;
+        { the resolved forms are pure loads, dropping them loses no effects }
+        callnode.right.free;
+        callnode.right:=nil;
+        remove_dead_chain_stores(ctx,chain);
+        callnode.procdefinition:=pd;
+        callnode.symtableprocentry:=tprocsym(pd.procsym);
+        callnode.symtableproc:=pd.procsym.owner;
+        pd.init_paraloc_info(callerside);
+        callnode.check_inlining;
+        { the call was firstpassed as an indirect one, which never needs a
+          function result temp; inlining does }
+        callnode.maybe_create_funcret_node;
+        ctx^.changed:=true;
+      end;
+
+
     function doinline(var _n: tnode; arg: pointer): foreachnoderesult;
       var
         n,
@@ -133,9 +431,16 @@ unit optcall;
         callnode: tcallnode;
       begin
         result:=fen_false;
-        if not(_n.nodetype=calln) or not(po_inline in tcallnode(_n).procdefinition.procoptions) then
+        if not(_n.nodetype=calln) then
           exit;
         callnode:=tcallnode(_n);
+        { a call through a procvar whose target address is known becomes a
+          direct call, which below may then be inlined }
+        if assigned(callnode.right) and
+           (callnode.procdefinition.typ=procvardef) then
+          try_devirtualize(callnode,pinlinectx(arg));
+        if not(po_inline in callnode.procdefinition.procoptions) then
+          exit;
 
         { assembler bodies are spliced in codegen, not here }
         if cnf_asm_inline in callnode.callnodeflags then
@@ -241,9 +546,14 @@ unit optcall;
             inlineblock.free;
             inlineblock:=nil;
             _n:=n;
+            { the replacement can itself be a call node (the inlined body was
+              a lone function call): the walk only descends into the children
+              of a replaced node, so process it here or it escapes the pass }
+            if _n.nodetype=calln then
+              result:=doinline(_n,arg);
           end;
 
-        PBoolean(arg)^:=true;
+        pinlinectx(arg)^.changed:=true;
 
 {$ifdef EXTDEBUG_INLINE}
         writeln;
@@ -255,14 +565,18 @@ unit optcall;
 
 
     procedure do_optinline(var rootnode: tnode;out changed: boolean);
+      var
+        ctx : tinlinectx;
       begin
-        changed:=false;
+        ctx.changed:=false;
+        ctx.root:=@rootnode;
 {$ifdef EXTDEBUG_INLINE}
         writeln('************************ Tree before inlining ******************************');
         printnode(rootnode);
         writeln('****************************************************************************');
 {$endif EXTDEBUG_INLINE}
-        foreachnodestatic(pm_postprocess, rootnode, @doinline, @changed);
+        foreachnodestatic(pm_postprocess, rootnode, @doinline, @ctx);
+        changed:=ctx.changed;
         if changed then
           begin
             doinlinesimplify(rootnode);

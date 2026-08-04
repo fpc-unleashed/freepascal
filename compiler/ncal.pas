@@ -83,7 +83,6 @@ interface
           function gen_block_context:tnode;
           procedure gen_hidden_parameters;
           function  funcret_can_be_reused:boolean;
-          procedure maybe_create_funcret_node;
           procedure bind_parasym;
           procedure add_init_statement(n:tnode);
           procedure add_done_statement(n:tnode);
@@ -134,6 +133,7 @@ interface
           procedure createlocaltemps(p:TObject;arg:pointer);
           function  optimize_funcret_assignment(inlineblock: tblocknode): tnode;
           procedure check_inlining;
+          procedure maybe_create_funcret_node;
           function doinlining: boolean;
           procedure order_parameters;
        protected
