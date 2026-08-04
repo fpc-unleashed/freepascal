@@ -1,6 +1,6 @@
 { %FAIL }
 { inc/dec on a non-ordinal property must report type_e_inc_dec_property_type }
-program tb9003;
+program inc_dec_property_non_ordinal_rejected_01;
 
 {$mode unleashed}
 

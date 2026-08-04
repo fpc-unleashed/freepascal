@@ -1,6 +1,6 @@
 { inc/dec on a class property: rewrite to setter(getter +/- delta)
   for non-indexed read+write property with procsym getter }
-program tb9002;
+program inc_dec_property_accessor_calls_01;
 
 {$mode unleashed}
 
