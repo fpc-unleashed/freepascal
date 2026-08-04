@@ -1,7 +1,6 @@
 program labels_enum_index_01;
 
 {$mode unleashed}
-{$goto on}
 
 type
   TMode = (mFast, mSlow, mIdle);

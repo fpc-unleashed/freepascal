@@ -3,7 +3,6 @@
 program compound_on_property_combined_01;
 
 {$mode unleashed}
-{$coperators on}
 
 type
   TFoo = class

@@ -1,7 +1,6 @@
 program labels_variable_index_01;
 
 {$mode unleashed}
-{$goto on}
 
 label
   state[0..2];

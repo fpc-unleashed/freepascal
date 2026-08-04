@@ -223,7 +223,7 @@ Modify-and-assign for every operator, in three layers: the word-based operators 
 
 ### [Indexed Labels and Lazy Labels](indexed-labels.md)
 
-Declare a family of labels keyed by ordinal ranges (`label state[0..4]`) or strings (`label action['start', 'stop']`) and jump to them by index - a runtime index compiles to a case dispatch, ideal for state machines and jump tables. In unleashed mode labels also no longer need declaring before use (`goto done;` works without a prior `label`). Available whenever `{$goto on}` is active; lazy labels are unleashed-only.
+Declare a family of labels keyed by ordinal ranges (`label state[0..4]`) or strings (`label action['start', 'stop']`) and jump to them by index - a runtime index compiles to a case dispatch, ideal for state machines and jump tables. In unleashed mode labels also no longer need declaring before use (`goto done;` works without a prior `label`). Available in every mode with goto support active (automatic in unleashed, `{$goto on}` / `-Sg` elsewhere); lazy labels are unleashed-only.
 
 ### [Tweaks](tweaks.md)
 

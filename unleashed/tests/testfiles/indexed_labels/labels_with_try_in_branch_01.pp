@@ -1,7 +1,6 @@
 program labels_with_try_in_branch_01;
 
 {$mode unleashed}
-{$goto on}
 
 uses SysUtils;
 

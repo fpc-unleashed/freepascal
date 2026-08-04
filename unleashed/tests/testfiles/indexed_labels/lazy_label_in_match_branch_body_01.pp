@@ -1,6 +1,5 @@
 program lazy_label_in_match_branch_body_01;
 {$mode unleashed}
-{$goto on}
 
 // lazy label declared as the only statement in a match branch body:
 // branch body calls statement() recursively, so the opt-in flag is

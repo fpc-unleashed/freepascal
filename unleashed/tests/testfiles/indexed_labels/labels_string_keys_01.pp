@@ -1,7 +1,6 @@
 program labels_string_keys_01;
 
 {$mode unleashed}
-{$goto on}
 
 label
   action['start', 'stop', 'reset'];

@@ -3,7 +3,6 @@ program labels_fail_addr_bare_01;
 // bare @ on an indexed label family: an index is required
 
 {$mode unleashed}
-{$goto on}
 
 procedure p;
 label

@@ -1,6 +1,5 @@
 program lazy_label_basic_after_fix_01;
 {$mode unleashed}
-{$goto on}
 
 // positive coverage: lazy label declaration still works for a label that
 // is REFERENCED via `goto` before the declaration appears in the source

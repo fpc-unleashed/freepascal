@@ -1,7 +1,6 @@
 program labels_numeric_range_01;
 
 {$mode unleashed}
-{$goto on}
 
 label
   state[0..3];

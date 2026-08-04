@@ -1,7 +1,6 @@
 program labels_inside_loop_01;
 
 {$mode unleashed}
-{$goto on}
 
 var
   trace: String = '';

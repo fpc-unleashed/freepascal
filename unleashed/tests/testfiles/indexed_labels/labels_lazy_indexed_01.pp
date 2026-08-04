@@ -1,7 +1,6 @@
 program labels_lazy_indexed_01;
 
 {$mode unleashed}
-{$goto on}
 
 var
   hits: Integer = 0;

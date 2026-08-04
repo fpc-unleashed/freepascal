@@ -2,7 +2,6 @@
 program labels_variable_index_dense_dispatch_01;
 
 {$mode unleashed}
-{$goto on}
 
 var
   resultV: integer = 0;

@@ -1,7 +1,6 @@
 program labels_addr_variable_index_01;
 
 {$mode unleashed}
-{$goto on}
 
 var
   resultV: integer = 0;

@@ -1,7 +1,6 @@
 program labels_addr_computed_goto_01;
 
 {$mode unleashed}
-{$goto on}
 
 var
   resultV: integer = 0;

@@ -1,7 +1,6 @@
 program labels_in_nested_proc_01;
 
 {$mode unleashed}
-{$goto on}
 
 var
   trace: String = '';
