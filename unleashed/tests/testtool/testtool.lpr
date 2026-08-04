@@ -538,7 +538,7 @@ begin
     var preTimedOut: Boolean;
     // codegen flags must match BuildCompileArgs, otherwise the main compile
     // recompiles the unit in-process and the ppu is never loaded back
-    RunCmd(GCompilerPath, ['-FE' + preDir, '-FU' + preDir, '-Twin64', '-Px86_64',
+    RunCmd(GCompilerPath, ['-FE' + preDir, '-FU' + preDir, '-T' + GTargetOS, '-P' + GTargetCPU,
            '-g-', '-CX', '-XX', '-Xs', preUnitSrc],
            GBaseDir, timeoutSec, preExit, preOut, preTimedOut);
     if preTimedOut or (preExit <> 0) then
