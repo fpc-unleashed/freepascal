@@ -3,7 +3,7 @@
 // `not in S` is only available in mode unleashed
 // in other modes the parser stops at `not` and emits a syntax error
 
-program tb0301;
+program not_in_fail_outside_unleashed_01;
 
 {$mode objfpc}
 

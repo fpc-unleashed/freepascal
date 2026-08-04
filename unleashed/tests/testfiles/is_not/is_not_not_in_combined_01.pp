@@ -2,7 +2,7 @@
 // `obj is not T` -> not (obj is T)
 // `x not in S`   -> not (x in S)
 
-program tb0730;
+program is_not_not_in_combined_01;
 
 {$mode unleashed}
 

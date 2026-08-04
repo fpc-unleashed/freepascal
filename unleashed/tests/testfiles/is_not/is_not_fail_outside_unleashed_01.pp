@@ -3,7 +3,7 @@
 // `is not T` is only available in mode unleashed
 // in other modes it parses as `obj is (not T)` which is invalid
 
-program tb0300;
+program is_not_fail_outside_unleashed_01;
 
 {$mode objfpc}
 
