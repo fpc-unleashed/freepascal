@@ -2507,7 +2507,7 @@ type_h_swapvalues_not_inplace=04141_H_SwapValues on "$1" is not an in-place swap
 #
 # Symtable
 #
-# 05103 is the last used one
+# 05104 is the last used one
 #
 % \section{Symbol handling}
 % This section lists all the messages that concern the handling of symbols.
@@ -2845,6 +2845,18 @@ sym_e_label_index_outside_dispatch=05103_E_Index $2 of label "$1" is outside the
 % so the already generated dispatch could never reach it. Declare the whole
 % range up front, e.g. \var{label foo[0..255]}, instead of relying on lazily
 % created labels to extend the family after the \var{goto}.
+sym_e_label_index_single_value=05104_E_Single value not allowed as label index spec; use a range "$1..$1", a value list of two or more values, or an ordinal type
+% A one-value index spec is ambiguous: next to \var{array[256] of T} the
+% declaration \var{label foo[256]} reads as "256 labels", while an index spec
+% is a set of values, so it would declare the single label \var{foo[256]}.
+% The compiler rejects the form instead of silently picking one meaning.
+% Write \var{label foo[256..256]} for the single label, or
+% \var{label foo[0..255]} (or a whole ordinal type, e.g. \var{label foo[byte]})
+% for the family. The check runs on the folded constant value, so named
+% constants and constant expressions like \var{label foo[IDX]} or
+% \var{label foo[255+1]} are rejected the same way. String keys are not
+% affected: \var{label foo['start']} stays valid, a string can never be a
+% count.
 %
 % \end{description}
 #

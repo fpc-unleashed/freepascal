@@ -821,6 +821,9 @@ implementation
         strval   : ansistring;
         p        : tnode;
         lv, hv   : TConstExprInt;
+        elemcount : longint;
+        singleval : boolean;
+        sv       : longint;
 
       function const_to_longint(const v: TConstExprInt; out i: longint): boolean;
         begin
@@ -949,7 +952,11 @@ implementation
                         }
                         sentinel.arraylabel_lo:=high(longint);
                         sentinel.arraylabel_hi:=low(longint);
+                        elemcount:=0;
+                        singleval:=false;
+                        sv:=0;
                         repeat
+                          inc(elemcount);
                           p:=expr(true);
                           { ensure constant expressions like 3-1 in ranges are folded }
                           if (p.nodetype=rangen) and not assigned(p.resultdef) then
@@ -997,6 +1004,8 @@ implementation
                                     sentinel.arraylabel_lo:=lo;
                                   if lo>sentinel.arraylabel_hi then
                                     sentinel.arraylabel_hi:=lo;
+                                  singleval:=true;
+                                  sv:=lo;
                                 end;
                             end;
                           p.free;
@@ -1006,6 +1015,10 @@ implementation
                           else
                             break;
                         until false;
+                        { a lone bare value is rejected: next to array[N] it reads
+                          as a count, but here it would mean a single index }
+                        if (elemcount=1) and singleval then
+                          Message1(sym_e_label_index_single_value,tostr(sv));
                         if sentinel.arraylabel_lo>sentinel.arraylabel_hi then
                           begin
                             sentinel.arraylabel_lo:=0;
