@@ -1,4 +1,4 @@
-program tloopvarpreserved1;
+program for_counter_combined_01;
 
 { unleashed mode: the for-loop counter keeps its last value after the loop
   exits, both for natural exit and for break }
