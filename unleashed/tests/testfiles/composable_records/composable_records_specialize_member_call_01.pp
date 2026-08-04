@@ -2,7 +2,7 @@
   record-typed expression must not AV. regression: compose_chain was only nil-
   initialised on the non-specialize branch of postfixoperators, so the later
   assigned(compose_chain) check could read garbage and try to walk it. }
-program tb9004;
+program composable_records_specialize_member_call_01;
 
 {$mode objfpc}{$h+}
 {$modeswitch advancedrecords}
