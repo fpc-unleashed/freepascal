@@ -3171,11 +3171,13 @@ implementation
         if not(po_inline in pd.procoptions) then
           exit;
         { the body of a routine from another unit can never show up later in
-          this compilation, so only wait for bodies of the current module }
+          this compilation, so only wait for bodies of the current module.
+          the unit test comes first: forwarddef is gone once a unit is
+          finished }
         if (pio_forceinline in pd.implprocoptions) and
+           findunitsymtable(pd.owner).iscurrentunit and
            pd.forwarddef and
-           not pd.has_inlininginfo and
-           findunitsymtable(pd.owner).iscurrentunit then
+           not pd.has_inlininginfo then
           begin
             info^.pending:=true;
             result:=fen_norecurse_true;
