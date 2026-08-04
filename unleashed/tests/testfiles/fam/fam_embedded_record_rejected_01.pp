@@ -1,6 +1,6 @@
 { %FAIL }
 
-program tflexarr_nested;
+program fam_embedded_record_rejected_01;
 
 { a FAM-record cannot be embedded in another record }
 

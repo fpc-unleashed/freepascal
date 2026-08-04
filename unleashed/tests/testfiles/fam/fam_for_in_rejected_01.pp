@@ -1,6 +1,6 @@
 { %FAIL }
 
-program tflexarr_forin;
+program fam_for_in_rejected_01;
 
 { for-in cannot iterate a FAM (no termination condition) }
 

@@ -1,6 +1,6 @@
 { %FAIL }
 
-program tflexarr_two_fams;
+program fam_two_fams_rejected_01;
 
 { a record cannot have two flexible array members }
 

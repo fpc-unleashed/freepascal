@@ -1,4 +1,4 @@
-program tflexarr_rangecheck;
+program fam_no_range_check_01;
 
 { a flexible array member is not range-checked at compile time or at
   runtime, so accesses far past the declared "size" must work under {$R+} }

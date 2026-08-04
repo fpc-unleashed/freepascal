@@ -1,6 +1,6 @@
 { %FAIL }
 
-program tflexarr_no_modeswitch;
+program fam_no_modeswitch_rejected_01;
 
 { outside the m_flexible_arrays modeswitch, `array[]` is rejected }
 

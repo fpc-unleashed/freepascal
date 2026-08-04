@@ -1,6 +1,6 @@
 { %FAIL }
 
-program tflexarr_in_variant;
+program fam_in_variant_part_rejected_01;
 
 { FAM is not allowed inside a variant part of a record }
 

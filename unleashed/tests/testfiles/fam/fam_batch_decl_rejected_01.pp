@@ -1,6 +1,6 @@
 { %FAIL }
 
-program tflexarr_two_in_batch;
+program fam_batch_decl_rejected_01;
 
 { a single declaration batch cannot create two FAMs in one record }
 

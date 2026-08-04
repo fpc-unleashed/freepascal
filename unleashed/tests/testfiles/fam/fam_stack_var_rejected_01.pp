@@ -1,6 +1,6 @@
 { %FAIL }
 
-program tflexarr_local;
+program fam_stack_var_rejected_01;
 
 { a FAM-record variable cannot be allocated on the stack }
 

@@ -1,6 +1,6 @@
 { %FAIL }
 
-program tflexarr_class_var;
+program fam_class_var_rejected_01;
 
 { FAM cannot be a class var inside a record (no static allocation possible) }
 

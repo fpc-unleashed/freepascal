@@ -1,6 +1,6 @@
 { %FAIL }
 
-program tflexarr_in_class;
+program fam_in_class_rejected_02;
 
 { FAM is restricted to plain records, not allowed in class }
 

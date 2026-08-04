@@ -1,6 +1,6 @@
 { %FAIL }
 
-program tflexarr_byval;
+program fam_byval_param_rejected_01;
 
 { a FAM-record cannot be passed as a value parameter }
 

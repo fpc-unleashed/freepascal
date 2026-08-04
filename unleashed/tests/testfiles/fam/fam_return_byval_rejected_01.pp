@@ -1,6 +1,6 @@
 { %FAIL }
 
-program tflexarr_return;
+program fam_return_byval_rejected_01;
 
 { a function cannot return a FAM-record by value }
 

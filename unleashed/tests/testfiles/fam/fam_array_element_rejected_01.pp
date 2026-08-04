@@ -1,6 +1,6 @@
 { %FAIL }
 
-program tflexarr_array_of;
+program fam_array_element_rejected_01;
 
 { a FAM-record cannot be the element type of an array }
 

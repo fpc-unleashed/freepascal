@@ -1,4 +1,4 @@
-program tflexarr_pointer_ok;
+program fam_pointer_uses_ok_01;
 
 { pointer to a FAM-record can be used as a field, parameter, return
   type, or array element; only the bare FAM-record itself is restricted }

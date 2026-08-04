@@ -1,6 +1,6 @@
 { %FAIL }
 
-program tflexarr_in_object;
+program fam_in_object_rejected_01;
 
 { FAM is restricted to plain records, not allowed in object }
 

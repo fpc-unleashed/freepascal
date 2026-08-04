@@ -1,4 +1,4 @@
-program tflexarr_basic;
+program fam_end_to_end_01;
 
 { flexible array members work end-to-end: allocation, access, free }
 
