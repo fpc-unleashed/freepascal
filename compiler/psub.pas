@@ -2756,45 +2756,58 @@ implementation
 
 
     { prepend `localvar := Default(typeof(localvar))` for every tlocalvarsym
-      in pd.localst, plus the function result when it is a hidden parameter.
+      in pd.localst and pd.blocklocalsymtables, plus the function result when
+      it is a hidden parameter.
       File types (and compounds containing them) are skipped: Default()
       rejects them and the RTL entry code already initialises file
       variables to their proper non-zero closed state. }
     procedure inject_zeroinit_locals(pd:tprocdef;var code:tnode);
       var
-        i : longint;
-        sym : tsym;
-        lvs : tlocalvarsym;
         blk : tblocknode;
         laststmt : tstatementnode;
         had_any : boolean;
         zeronode : tnode;
+        blk_i : longint;
+
+      procedure zeroinit_symtable(st:TSymtable);
+        var
+          i : longint;
+          sym : tsym;
+          lvs : tlocalvarsym;
+        begin
+          for i:=0 to st.symlist.count-1 do
+            begin
+              sym:=tsym(st.symlist[i]);
+              if sym.typ<>localvarsym then
+                continue;
+              lvs:=tlocalvarsym(sym);
+              if (lvs.vardef.typ=filedef) or
+                 ((lvs.vardef.typ in [arraydef,recorddef,objectdef]) and
+                  not is_valid_for_default(lvs.vardef)) then
+                continue;
+              if not had_any then
+                begin
+                  blk:=internalstatements(laststmt);
+                  had_any:=true;
+                end;
+              zeronode:=cinlinenode.create(in_default_x,false,
+                ctypenode.create(lvs.vardef));
+              addstatement(laststmt,
+                cassignmentnode.create(
+                  cloadnode.create(lvs,lvs.owner),
+                  zeronode));
+            end;
+        end;
+
       begin
         had_any:=false;
         blk:=nil;
         laststmt:=nil;
-        for i:=0 to pd.localst.symlist.count-1 do
-          begin
-            sym:=tsym(pd.localst.symlist[i]);
-            if sym.typ<>localvarsym then
-              continue;
-            lvs:=tlocalvarsym(sym);
-            if (lvs.vardef.typ=filedef) or
-               ((lvs.vardef.typ in [arraydef,recorddef,objectdef]) and
-                not is_valid_for_default(lvs.vardef)) then
-              continue;
-            if not had_any then
-              begin
-                blk:=internalstatements(laststmt);
-                had_any:=true;
-              end;
-            zeronode:=cinlinenode.create(in_default_x,false,
-              ctypenode.create(lvs.vardef));
-            addstatement(laststmt,
-              cassignmentnode.create(
-                cloadnode.create(lvs,lvs.owner),
-                zeronode));
-          end;
+        zeroinit_symtable(pd.localst);
+        { block-scoped inline vars live in separate symtables }
+        if assigned(pd.blocklocalsymtables) then
+          for blk_i:=0 to pd.blocklocalsymtables.count-1 do
+            zeroinit_symtable(TSymtable(pd.blocklocalsymtables[blk_i]));
         { a result returned via a hidden parameter lives in parast, not
           localst; zero it explicitly, the caller may hand over a buffer
           still holding the destination's previous value }
