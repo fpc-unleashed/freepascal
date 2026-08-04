@@ -608,6 +608,14 @@ implementation
                   if not Assigned(LabelSym) then
                     InternalError(2018121131);
 
+                  { a goto without labelnode (dispatch branch to an undefined
+                    member) falls through to the end of the case }
+                  if not Assigned(TCGGotoNode(Block).labelnode) then
+                    begin
+                      _Label := endlabel;
+                      Exit;
+                    end;
+
                   _Label := TCGLabelNode(TCGGotoNode(Block).labelnode).getasmlabel;
                   if Assigned(_Label) then
                     { Keep tabs on the fact that an actual 'goto' was used }

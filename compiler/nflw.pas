@@ -2658,7 +2658,11 @@ implementation
             else
               begin
                 if not allow_undefined_target then
-                  CGMessage1(cg_e_goto_label_not_found,labelsym.realname);
+                  CGMessage1(cg_e_goto_label_not_found,labelsym.realname)
+                else
+                  { generated dispatch branch to a member that was never
+                    defined: control falls through past the goto }
+                  result:=cnothingnode.create;
               end;
           end;
 
