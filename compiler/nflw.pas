@@ -258,6 +258,10 @@ interface
           function simplify(forinline:boolean): tnode;override;
        protected
           procedure adjust_estimated_stack_size; virtual;
+          { targets outlining the finally code into a separate exception
+            filter run its firstpass here, before the current procedure
+            decides whether it needs an implicit finally frame }
+          procedure firstpass_finalizer; virtual;
        public
           function dogetcopy: tnode;override;
        end;
@@ -3017,6 +3021,7 @@ implementation
         firstpass(left);
 
         firstpass(right);
+        firstpass_finalizer;
         if assigned(third) then
           firstpass(third);
 
@@ -3063,6 +3068,11 @@ implementation
     procedure ttryfinallynode.adjust_estimated_stack_size;
       begin
         inc(current_procinfo.estimatedtempsize,rec_jmp_buf.size);
+      end;
+
+
+    procedure ttryfinallynode.firstpass_finalizer;
+      begin
       end;
 
 
