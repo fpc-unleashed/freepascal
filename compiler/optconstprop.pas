@@ -55,10 +55,10 @@ unit optconstprop;
   implementation
 
     uses
-      globtype,cdynset,globals,
+      globtype,constexp,cdynset,globals,
       pass_1,procinfo,compinnr,
       symsym, symconst,
-      nutils, nbas, ncnv, nld, nflw, ncal, ninl,
+      nutils, nbas, ncnv, ncon, nld, nflw, ncal, ninl,
       optbase, optutils;
 
     function check_written(var n: tnode; arg: pointer): foreachnoderesult;
@@ -196,9 +196,29 @@ unit optconstprop;
           begin
             result:=replaceBasicAssign(tifnode(n).left, arg, tree_modified);
 
+            { fold the condition now: if it becomes a constant, the dead
+              branch must not see the propagated value, it may contain
+              expressions which are only valid when the branch is entered
+              (e.g. an array access guarded by an in-range check) }
+            if tree_modified then
+              begin
+                exclude(tifnode(n).left.transientflags,tnf_pass1_done);
+                do_firstpass(tifnode(n).left);
+              end;
+
             if result then
               begin
-                if assigned(tifnode(n).t1) then
+                if is_constboolnode(tifnode(n).left) then
+                  begin
+                    { propagate only into the live branch, the dead one is
+                      removed by the upcoming simplify }
+                    if tordconstnode(tifnode(n).left).value<>0 then
+                      result:=replaceBasicAssign(tifnode(n).right, arg, tree_modified2)
+                    else if assigned(tifnode(n).t1) then
+                      result:=replaceBasicAssign(tifnode(n).t1, arg, tree_modified2);
+                    tree_modified:=tree_modified or tree_modified2;
+                  end
+                else if assigned(tifnode(n).t1) then
                   begin
                     { we can propagate the constant in both branches of an if statement
                       because even if the the branch writes to it, the else branch gets the
