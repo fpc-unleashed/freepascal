@@ -1,4 +1,4 @@
-{%FAIL}
+{ %FAIL }
 { test multi-var init: must fail without modeswitch }
 {$mode objfpc}
 
