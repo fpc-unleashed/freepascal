@@ -1,4 +1,4 @@
-{ %OPT=-Sew -vw }
+{ %OPT="-Sew -vw" }
 { test with-list shadow warning: distinct field names must not warn }
 {$mode unleashed}
 

@@ -1,6 +1,6 @@
 { scoped-with: `with var NAME : TYPE := EXPR do` ends the var's scope at the
   end of the with-body, so the same name can be reused in a sibling with }
-program tb9003;
+program with_form_d_sibling_reuse_01;
 
 {$mode unleashed}
 

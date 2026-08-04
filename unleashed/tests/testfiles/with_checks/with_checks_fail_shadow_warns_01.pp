@@ -1,5 +1,4 @@
-{ %OPT=-Sew -vw }
-{ %FAIL }
+{ %FAIL %OPT="-Sew -vw" }
 { test with-list shadow warning: field hidden by later entry must warn }
 {$mode unleashed}
 
