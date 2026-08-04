@@ -1,6 +1,6 @@
 { compound assignment on a class property: getter+setter rewrite,
   bitwise/word-based ops, fieldvarsym short-circuit }
-program tb9001;
+program compound_on_property_combined_01;
 
 {$mode unleashed}
 {$coperators on}

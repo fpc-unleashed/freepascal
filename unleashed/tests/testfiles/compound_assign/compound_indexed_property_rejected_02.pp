@@ -1,7 +1,7 @@
 { %FAIL }
 { compound assignment and inc/dec on indexed/parametrized properties must
   report type_e_property_modify_indexed }
-program tb9002;
+program compound_indexed_property_rejected_02;
 
 {$mode unleashed}
 
