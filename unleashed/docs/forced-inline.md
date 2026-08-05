@@ -2,6 +2,8 @@
 
 In `{$mode unleashed}` the `inline` directive means what it says: every direct call to the routine is expanded inline. There are no size heuristics deciding otherwise and no silent fallback - when a call cannot be expanded, the compiler says so with a warning and only then emits a regular call. Stock `inline` (all other modes) stays what it always was: a suggestion the compiler is free to ignore.
 
+The model is three states, not four: `inline` means expand it, `noinline` means never expand it, and no directive leaves the decision to the optimizer ([`-OoAUTOINLINE`](optimizations.md#-ooautoinline) at `-O3`). There is deliberately no separate `forceinline` directive: once `inline` itself is a command, a second, stronger spelling would only bring back the ambiguity - a plain `inline` that again promises nothing. And an impossible expansion is not worth a build break: the warning names the routine and the reason, the program builds and runs correctly, so the escalation a `forceinline`-with-error would offer buys nothing over reading the log.
+
 No dedicated modeswitch and no new keyword - the behavior is tied to `{$mode unleashed}` itself.
 
 ## Syntax
@@ -35,11 +37,11 @@ Three ways out, from the widest to the narrowest:
 
 | Way | Scope | Effect |
 | --- | ----- | ------ |
-| `{$inline off}` | from that point until `{$inline on}` (or end of unit) | routines declared while it is off fall back to the stock hint: nothing is expanded and nothing is diagnosed |
+| `{$inline off}` | from that point until `{$inline on}` (or end of unit) | at a declaration: the routine falls back to the stock hint; at a call: nothing is expanded there, forced or not |
 | `noinline` | one routine | the routine is never inlined; mutually exclusive with `inline` |
 | drop `inline` | one routine | back to an ordinary routine |
 
-`{$inline off}` is the switch to reach for when debugging: with the expansions gone, breakpoints and stack traces line up with the source again. It is read at the point of the **declaration**, so it selects the regime per routine:
+`{$inline off}` is the switch to reach for when debugging: with the expansions gone, breakpoints and stack traces line up with the source again. It is read at two points, each with its own effect. At the point of the **declaration** it selects the regime per routine:
 
 ```pas
 {$inline off}
@@ -56,6 +58,19 @@ end;
 ```
 
 The degraded routines behave exactly like stock `inline`, which also means the forced-regime diagnostics go away: a recursive routine declared under `{$inline off}` compiles without the "will not be inlined" warning, because nothing was promised.
+
+At a **call site** it stops every expansion parsed while it is off - including calls to routines declared forced elsewhere, silently. Wrap the code being stepped through and every call in it stays a real call:
+
+```pas
+{$inline off}
+procedure stepping_here;
+begin
+  x := late(3);   // late is forced above - this call stays a real call
+end;
+{$inline on}
+```
+
+The region also switches [`-OoAUTOINLINE`](optimizations.md#-ooautoinline) off: bodies parsed while it is off are not auto-marked, calls parsed while it is off do not expand auto-marked routines either.
 
 `-Si` is a different matter: `{$mode unleashed}` enables inline support itself, so the mode line re-enables what `-Si-` on the command line switched off. Use `{$inline off}` in the source, not the command-line switch.
 
@@ -133,15 +148,21 @@ Each expansion gets its own copy of the body with local labels (`@@loop`, ...) r
 
 ## Taking the address
 
-`@Routine` and assigning to a procvar are allowed. The standalone body is still emitted, and indirect calls through the pointer are ordinary calls - forced inlining covers direct calls only:
+`@Routine` and assigning to a procvar are allowed; the standalone body is still emitted. A call through the procvar stays indirect only as long as the compiler cannot prove where it points: when the value provably is the address of one routine - a local procvar with a single store, or the address spliced in by inlining a wrapper - the call is [devirtualized](optimizations.md#procvar-devirtualization) into a direct call first and then expands like any direct call:
 
 ```pas
 var
-  p: TIntFn;
+  g: TIntFn;        // global
+
+procedure run;
+var
+  p: TIntFn;        // local, stored once
 begin
-  x := Twice(5);  // expanded inline - no call instruction
+  x := Twice(5);    // expanded inline - no call instruction
   p := @Twice;
-  x := p(7);      // ordinary indirect call through the pointer
+  x := p(7);        // devirtualized into a direct call, then expanded too
+  g := @Twice;
+  x := g(9);        // a global procvar stays an ordinary indirect call
 end;
 ```
 
@@ -211,8 +232,8 @@ begin
   writeln('total(4) = ', total(4));
   writeln('fact(10) = ', fact(10));
 
-  // taking the address is legal - the standalone body still exists and the
-  // indirect call is an ordinary call
+  // taking the address is legal - the standalone body still exists; a global
+  // procvar stays an ordinary indirect call (a local one would devirtualize)
   p := @square;
   writeln('p(9) = ', p(9));
 

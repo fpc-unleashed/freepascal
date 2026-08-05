@@ -117,7 +117,7 @@ Threads in stock Pascal mean `TThread` subclasses, hand-managed critical section
 | **Strip RTTI** | `{$modeswitch striprtti}` empties type-name strings; `expose` / `--rttiexpose=` whitelist | [strip-rtti.md](unleashed/docs/strip-rtti.md) |
 | **Custom Binary Metadata** | `fpc --fpcsignature="" --linkerversion=14.39 --osversion=Win11` | [binary-metadata.md](unleashed/docs/binary-metadata.md) |
 | **File Embedding** | `{$embedbytes preset 'default.bin'}` bakes a file into the binary | [embed.md](unleashed/docs/embed.md) |
-| **Forced Inlining** | `inline` means inline: every call expands, no size heuristics, free definition order; a call that cannot be expanded warns and falls back to a regular call | [forced-inline.md](unleashed/docs/forced-inline.md) |
+| **Forced Inlining** | `inline` means inline: every call expands, no size heuristics, free definition order; a call that cannot be expanded warns and falls back to a regular call; opt out with `noinline` per routine or `$inline off` per region | [forced-inline.md](unleashed/docs/forced-inline.md) |
 
 ### Strings and literals
 
@@ -143,6 +143,7 @@ Semantic adjustments and small syntax unlocks - full catalog in [tweaks.md](unle
 |---|---|---|
 | **`-OoMEMINLINE`** | on from `-O2`: `FillChar(hdr, sizeof(hdr), 0)` with a constant count up to 64 bytes becomes direct stores, no RTL call | [optimizations.md](unleashed/docs/optimizations.md) |
 | **`-OoAUTOINLINE`** | on from `-O3`: small routines are inlined without an `inline` directive, judged by the shape of the body | [optimizations.md](unleashed/docs/optimizations.md) |
+| **Procvar Devirtualization** | a call through a procvar that provably holds one routine's address becomes a direct call at any `-O` level, then inlines like any direct call | [optimizations.md](unleashed/docs/optimizations.md) |
 
 ## Detailed documentation
 
