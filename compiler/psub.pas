@@ -2202,7 +2202,7 @@ implementation
             { Can we inline this procedure? }
             if checknodeinlining(procdef) then
               begin
-                Message1(cg_d_autoinlining,procdef.GetTypeName);
+                Message1(cg_h_autoinlining,procdef.GetTypeName);
                 include(procdef.procoptions,po_inline);
                 CreateInlineInfo;
               end;

@@ -417,6 +417,7 @@ unit optcall;
         { the call was firstpassed as an indirect one, which never needs a
           function result temp; inlining does }
         callnode.maybe_create_funcret_node;
+        CGMessagePos1(callnode.fileinfo,cg_h_devirtualized_call,pd.GetTypeName);
         ctx^.changed:=true;
       end;
 

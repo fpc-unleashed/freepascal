@@ -2862,7 +2862,7 @@ sym_e_label_index_single_value=05104_E_Single value not allowed as label index s
 #
 # Codegenerator
 #
-# 06066 is the last used one
+# 06067 is the last used one
 #
 % \section{Code generator messages}
 % This section lists all messages that can be displayed if the code
@@ -3004,7 +3004,7 @@ cg_e_goto_across_procedures_with_exceptions_not_allowed=06053_E_Leaving procedur
 % which use automated types like ansistrings or class constructors are affected by this too.
 cg_e_mod_only_defined_for_pos_quotient=06054_E_In ISO mode, the mod operator is defined only for positive quotient
 % In ISO pascal, only positive values are allowed for the quotient: \var{n mod m} is only valid if \var{m>0}.
-cg_d_autoinlining=06055_DL_Auto inlining: $1
+cg_h_autoinlining=06055_H_Auto inlining: $1
 % Due to auto inlining turned on, the compiler auto inlines this subroutine.
 cg_e_function_not_support_by_selected_instruction_set=06056_E_The function used, is not supported by the selected instruction set: $1
 % Some functions cannot be implemented efficiently for certain instruction sets, one example is fused multiply/add.
@@ -3043,6 +3043,9 @@ cg_w_forceinline_not_inlined=06066_W_Call to subroutine "$1" marked as "inline" 
 % The call could not be expanded inline (for example the routine body is
 % mutually recursive, or not available in this compilation), a regular
 % call is emitted instead.
+cg_h_devirtualized_call=06067_H_Devirtualized call: $1
+% A call through a procedure variable whose target is known at compile time
+% was turned into a direct call to that routine.
 %
 % \end{description}
 # EndOfTeX
