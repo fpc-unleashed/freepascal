@@ -449,7 +449,10 @@ unit optcall;
 
         if not(callnode.doinlining) then
           begin
-            if not(po_compilerproc in callnode.procdefinition.procoptions) then
+            { a definition-side diagnostic already named the reason once;
+              repeating it at every call site is just noise }
+            if not(po_compilerproc in callnode.procdefinition.procoptions) and
+               not(pio_inline_not_possible in tprocdef(callnode.procdefinition).implprocoptions) then
               Message1(cg_n_no_inline,tprocdef(callnode.procdefinition).customprocname([pno_proctypeoption, pno_paranames,pno_ownername, pno_noclassmarker, pno_prettynames]));
             exit;
           end;
