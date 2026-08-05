@@ -1251,6 +1251,12 @@ unit scandir;
         current_scanner.skipspace;
         { Support also the ON and OFF as switch }
         hs:=current_scanner.readid;
+        { allow a trailing + or - on the switch name }
+        if current_scanner.c in ['+','-'] then
+          begin
+            hs:=hs+current_scanner.c;
+            current_scanner.readchar;
+          end;
         if (hs='ON') then
           recordpendingoptimizerswitches(level2optimizerswitches)
         else if (hs='OFF') then

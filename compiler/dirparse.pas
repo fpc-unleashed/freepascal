@@ -125,13 +125,24 @@ implementation
           tok:=GetToken(s,',');
           if tok='' then
            break;
+          doset:=true;
+          { a trailing + or - sets or clears the switch }
+          case tok[length(tok)] of
+            '+':
+              delete(tok,length(tok),1);
+            '-':
+              begin
+                delete(tok,length(tok),1);
+                doset:=false;
+              end;
+            else
+              ;
+          end;
           if Copy(tok,1,2)='NO' then
             begin
               delete(tok,1,2);
               doset:=false;
-            end
-          else
-            doset:=true;
+            end;
           found:=false;
           for opt:=low(toptimizerswitch) to high(toptimizerswitch) do
             begin
