@@ -950,9 +950,18 @@ const
                    if v.overflow or
                       (not(m_int128 in current_settings.modeswitches) and not v.representable64) then
                      begin
-                       Message(parser_e_arithmetic_operation_overflow);
-                       { Recover }
-                       t:=genintconstnode(0)
+                       if forinline and not(cs_check_overflow in localswitches) and
+                          is_integer(ld) and is_integer(rd) and not v.overflow then
+                         { the operation wraps around at run time, fold to the
+                           wrapped value; without a 128 bit overflow the low
+                           64 bits of v are still valid }
+                         t:=create_simplified_ord_const(v.uvalue,resultdef,forinline,false)
+                       else
+                         begin
+                           Message(parser_e_arithmetic_operation_overflow);
+                           { Recover }
+                           t:=genintconstnode(0)
+                         end
                      end
                    else if is_constpointernode(left) or is_constpointernode(right) then
                      t := cpointerconstnode.create(qword(v),resultdef)
@@ -968,9 +977,15 @@ const
                    if v.overflow or
                       (not(m_int128 in current_settings.modeswitches) and not v.representable64) then
                      begin
-                       Message(parser_e_arithmetic_operation_overflow);
-                       { Recover }
-                       t:=genintconstnode(0)
+                       if forinline and not(cs_check_overflow in localswitches) and
+                          is_integer(ld) and is_integer(rd) and not v.overflow then
+                         t:=create_simplified_ord_const(v.uvalue,resultdef,forinline,false)
+                       else
+                         begin
+                           Message(parser_e_arithmetic_operation_overflow);
+                           { Recover }
+                           t:=genintconstnode(0)
+                         end
                      end
                    else if (lt=pointerconstn) then
                      { pointer-pointer results in an integer }
@@ -996,9 +1011,15 @@ const
                    if v.overflow or
                       (not(m_int128 in current_settings.modeswitches) and not v.representable64) then
                      begin
-                       message(parser_e_arithmetic_operation_overflow);
-                       { Recover }
-                       t:=genintconstnode(0)
+                       if forinline and not(cs_check_overflow in localswitches) and
+                          is_integer(ld) and is_integer(rd) and not v.overflow then
+                         t:=create_simplified_ord_const(v.uvalue,resultdef,forinline,false)
+                       else
+                         begin
+                           message(parser_e_arithmetic_operation_overflow);
+                           { Recover }
+                           t:=genintconstnode(0)
+                         end
                      end
                    else
                      t := create_simplified_ord_const(v,resultdef,forinline,cs_check_overflow in localswitches)
