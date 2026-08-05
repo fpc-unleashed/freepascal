@@ -5249,6 +5249,10 @@ implementation
         para : tcallparanode;
         forceinline : boolean;
       begin
+        { `$inline off` at the call site disables every expansion, forced
+          ones included: the escape hatch to get real calls for debugging }
+        if not(cs_do_inline in localswitches) then
+          exit;
         forceinline:=(procdefinition.typ=procdef) and
           (pio_forceinline in tprocdef(procdefinition).implprocoptions);
         { inlined assembler routines cannot go through tree inlining (their
