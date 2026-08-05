@@ -192,11 +192,15 @@ implementation
        {$endif}
        ;
 
-    function checknodeinlining(procdef: tprocdef): boolean;
+    { report=false is for speculative attempts (auto-inlining): the user never
+      asked for inlining there, so failing quietly is the only sane outcome }
+    function checknodeinlining(procdef: tprocdef; report: boolean = true): boolean;
 
       procedure _no_inline(const reason: TMsgStr);
         begin
           include(procdef.implprocoptions,pio_inline_not_possible);
+          if not report then
+            exit;
           if pio_forceinline in procdef.implprocoptions then
             Message1(parser_w_forceinline_not_possible,reason)
           else
@@ -2193,14 +2197,18 @@ implementation
            not(po_noinline in procdef.procoptions) and
            { no inlining yet? }
            not(procdef.has_inlininginfo) and not(has_nestedprocs) and
+            { exceptfilter covers outlined SEH funclets ($fin$/except): internal
+              glue never called through user code, not inlining material }
             not(procdef.proctypeoption in [potype_proginit,potype_unitinit,potype_unitfinalize,potype_constructor,
-                                           potype_destructor,potype_class_constructor,potype_class_destructor]) and
+                                           potype_destructor,potype_class_constructor,potype_class_destructor,
+                                           potype_exceptfilter]) and
             ((procdef.procoptions*[po_exports,po_external,po_interrupt,po_virtualmethod,po_iocheck])=[]) and
             (not(procdef.proccalloption in [pocall_safecall])) and
             heuristics_favors_autoinlining(code) then
           begin
-            { Can we inline this procedure? }
-            if checknodeinlining(procdef) then
+            { Can we inline this procedure? Speculative, so no diagnostics on
+              failure - the user never marked this routine as inline }
+            if checknodeinlining(procdef,false) then
               begin
                 Message1(cg_h_autoinlining,procdef.GetTypeName);
                 include(procdef.procoptions,po_inline);
