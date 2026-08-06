@@ -2517,6 +2517,18 @@ const
          { allow operator overloading }
          hp:=self;
 
+         { a statement-expression block whose branches were all bare
+           constructors takes the type of a set operand }
+         if ((left.resultdef.typ=setdef) and (right.nodetype=blockn)) or
+            ((right.resultdef.typ=setdef) and (left.nodetype=blockn)) then
+           if not isbinaryoverloaded(hp,[ocf_check_only]) then
+             begin
+               if left.resultdef.typ=setdef then
+                 try_retype_stmt_expr_block_to_set(right,left.resultdef)
+               else
+                 try_retype_stmt_expr_block_to_set(left,right.resultdef);
+             end;
+
          if is_array_constructor(left.resultdef) or is_array_constructor(right.resultdef) then
            begin
              { check whether there is a suitable operator for the array constructor

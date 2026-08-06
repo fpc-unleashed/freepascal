@@ -1840,6 +1840,16 @@ implementation
                       begin
                         doconv:=tc_arrayconstructor_2_set;
                         eq:=te_convert_l1;
+                      end
+                     { a statement-expression block whose branches were all
+                       bare constructors carries a dynarray def but can be
+                       retyped to a set at conversion time }
+                     else if (fromtreetype=blockn) and
+                             is_dynamic_array(def_from) and
+                             is_ordinal(tarraydef(def_from).elementdef) then
+                      begin
+                        doconv:=tc_arrayconstructor_2_set;
+                        eq:=te_convert_l3;
                       end;
                    end;
                  else

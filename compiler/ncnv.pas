@@ -315,6 +315,11 @@ interface
     procedure arrayconstructor_to_set(var p : tnode);inline;
     function arrayconstructor_to_set(p:tnode;freep:boolean):tnode;
     function arrayconstructor_can_be_set(p:tnode):boolean;
+    { retype a lowered statement-expression block whose branches were all
+      bare constructors so its result temp becomes the given set type;
+      returns false and leaves the block alone when the shape does not
+      match or any branch lacks its raw constructor }
+    function try_retype_stmt_expr_block_to_set(p:tnode;def:tdef):boolean;
     procedure insert_varargstypeconv(var p : tnode; iscvarargs: boolean);
 
     function maybe_global_proc_to_nested(var fromnode: tnode; todef: tdef): boolean;
@@ -338,6 +343,103 @@ implementation
     type
       ttypeconvnodetype = (tct_implicit,tct_explicit,tct_internal);
 
+      pstmtexprretypeinfo = ^tstmtexprretypeinfo;
+      tstmtexprretypeinfo = record
+        tempinfo : ptempinfo;
+        allbacked : boolean;
+        count : longint;
+        patch : boolean;
+      end;
+
+    function retype_stmt_expr_cb(var n: tnode; arg: pointer): foreachnoderesult;
+      var
+        info : pstmtexprretypeinfo;
+        asg : tassignmentnode;
+        hn : tnode;
+      begin
+        result:=fen_true;
+        info:=pstmtexprretypeinfo(arg);
+        if (n.nodetype=assignn) and
+           (tassignmentnode(n).left.nodetype=temprefn) and
+           (ttemprefnode(tassignmentnode(n).left).tempinfo=info^.tempinfo) then
+          begin
+            asg:=tassignmentnode(n);
+            if not info^.patch then
+              begin
+                inc(info^.count);
+                if not assigned(asg.arrayconstructor_backup) then
+                  info^.allbacked:=false;
+              end
+            else
+              begin
+                { put the raw constructor back and redo the assignment
+                  against the retyped temp }
+                asg.right.free;
+                asg.right:=asg.arrayconstructor_backup;
+                asg.arrayconstructor_backup:=nil;
+                asg.resultdef:=nil;
+                asg.left.resultdef:=nil;
+                hn:=n;
+                typecheckpass(hn);
+                n:=hn;
+                result:=fen_norecurse_true;
+              end;
+          end;
+      end;
+
+    function try_retype_stmt_expr_block_to_set(p:tnode;def:tdef):boolean;
+      var
+        info : tstmtexprretypeinfo;
+        laststmt : tstatementnode;
+        tempnode : ttempcreatenode;
+        hn,blockstmts : tnode;
+      begin
+        result:=false;
+        if (def.typ<>setdef) or (p.nodetype<>blockn) then
+          exit;
+        { a block that already converts on its own (e.g. through a user
+          assignment operator) keeps its meaning. a block carrying a bare
+          constructor def never converts - the set conversion expects the
+          constructor node itself - so it is always retyped }
+        if assigned(p.resultdef) and
+           not is_array_constructor(p.resultdef) and
+           (compare_defs(p.resultdef,def,nothingn)<>te_incompatible) then
+          exit;
+        { the lowering of a statement expression ends with a reference to
+          the result temp }
+        if not assigned(tblocknode(p).left) then
+          exit;
+        laststmt:=tstatementnode(tblocknode(p).left);
+        while assigned(laststmt.right) do
+          laststmt:=tstatementnode(laststmt.right);
+        if not assigned(laststmt.left) or (laststmt.left.nodetype<>temprefn) then
+          exit;
+        info.tempinfo:=ttemprefnode(laststmt.left).tempinfo;
+        tempnode:=info.tempinfo^.owner;
+        if not assigned(tempnode) then
+          exit;
+        { every assignment into the temp must still carry its raw
+          constructor }
+        info.allbacked:=true;
+        info.count:=0;
+        info.patch:=false;
+        blockstmts:=p;
+        foreachnodestatic(pm_preprocess,blockstmts,@retype_stmt_expr_cb,@info);
+        if (info.count=0) or not info.allbacked then
+          exit;
+        { retarget the temp and redo the branch assignments }
+        info.tempinfo^.typedef:=def;
+        tempnode.size:=def.size;
+        info.patch:=true;
+        foreachnodestatic(pm_preprocess,blockstmts,@retype_stmt_expr_cb,@info);
+        laststmt.left.resultdef:=nil;
+        hn:=laststmt.left;
+        typecheckpass(hn);
+        laststmt.left:=hn;
+        p.resultdef:=def;
+        result:=true;
+      end;
+
     procedure do_inserttypeconv(var p: tnode;def: tdef; convtype: ttypeconvnodetype);
 
       begin
@@ -347,6 +449,11 @@ implementation
            if codegenerror then
             exit;
          end;
+
+        { a statement-expression block whose branches were all bare
+          constructors takes the type of a set-typed consumer }
+        if (def.typ=setdef) and (p.nodetype=blockn) and (convtype=tct_implicit) then
+          try_retype_stmt_expr_block_to_set(p,def);
 
         { don't insert superfluous type conversions, but
           in case of bitpacked accesses, the original type must
@@ -1794,6 +1901,23 @@ implementation
         hp : tnode;
       begin
         result:=nil;
+        { a statement-expression block routed here takes the set type by
+          retyping its result temp; when that is not possible report the
+          mismatch instead of crashing below }
+        if left.nodetype=blockn then
+          begin
+            if try_retype_stmt_expr_block_to_set(left,resultdef) then
+              begin
+                result:=left;
+                left:=nil;
+              end
+            else
+              begin
+                CGMessage2(type_e_incompatible_types,left.resultdef.typename,resultdef.typename);
+                result:=cerrornode.create;
+              end;
+            exit;
+          end;
         if left.nodetype<>arrayconstructorn then
          internalerror(5546);
         { remove typeconv node }

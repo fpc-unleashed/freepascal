@@ -98,9 +98,15 @@ interface
          public
           assignmentnodeflags : TAssignmentNodeFlags;
           assigntype : tassigntype;
+          { raw copy of a bare array-constructor right side assigned into a
+            statement-expression temp; lets a set-typed consumer retype the
+            temp and redo the assignment. transient: not stored to ppu and
+            not cloned by getcopy }
+          arrayconstructor_backup : tnode;
           constructor create(l,r : tnode);virtual;
           { no checks for validity of assignment }
           constructor create_internal(l,r : tnode);virtual;
+          destructor destroy;override;
           constructor ppuload(t:tnodetype;ppufile:tcompilerppufile);override;
           procedure ppuwrite(ppufile:tcompilerppufile);override;
           function dogetcopy : tnode;override;
@@ -675,6 +681,13 @@ implementation
       end;
 
 
+    destructor tassignmentnode.destroy;
+      begin
+        arrayconstructor_backup.free;
+        inherited destroy;
+      end;
+
+
     constructor tassignmentnode.ppuload(t:tnodetype;ppufile:tcompilerppufile);
       begin
         inherited ppuload(t,ppufile);
@@ -743,6 +756,15 @@ implementation
 
         left.mark_write;
 
+        { a bare constructor assigned into a statement-expression temp may
+          later be redone against a set-typed consumer; keep the raw copy
+          before the conversion to the temp's array type consumes it }
+        if (m_statement_expressions in current_settings.modeswitches) and
+           (left.nodetype=temprefn) and
+           (right.nodetype=arrayconstructorn) and
+           not assigned(arrayconstructor_backup) then
+          arrayconstructor_backup:=right.getcopy;
+
         { PI. This is needed to return correct resultdef of add nodes for ansistrings
           rawbytestring return needs to be replaced by left.resultdef }
         oldassignmentnode:=aktassignmentnode;
@@ -800,8 +822,11 @@ implementation
               converted node (that array is 2^31 or 2^63 bytes large) }
             exit;
 
-        { assigning nil or [] to a dynamic array clears the array }
+        { assigning nil or [] to a dynamic array clears the array. skipped
+          when a raw constructor backup is held: the assignment node must
+          survive so a set-typed consumer can still retype it }
         if is_dynamic_array(left.resultdef) and
+            not assigned(arrayconstructor_backup) and
             (
               (right.nodetype=niln) or
               (
