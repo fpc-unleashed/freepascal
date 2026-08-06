@@ -100,10 +100,13 @@ Constructs the inliner can never expand are diagnosed on the routine itself (`Wa
 | `nested exit` | `exit(ParentRoutine)` from a nested routine (a subset of the nested-procedures case) |
 | `global goto` | a *non-local* goto (iso/mac mode); a normal local goto/label is fine |
 | `by-value open array modified in the body` | the parameter is inlined as a reference to the caller's data, so writes would escape the value-copy semantics |
+| `access to local from nested scope` | a nested routine reads this routine's locals; the more specific spelling of the nested-procedures case |
+| `called C-style varargs functions` | the body calls a `cdecl` routine taking C-style `varargs` |
+| `get_frame` | the body reads its own frame pointer via `get_frame()`, and there is no frame of its own once inlined |
 
 Problems visible only at a call site are diagnosed there (`Warning: Call to subroutine "X" marked as "inline" was not inlined: <reason>`), again with a regular call as the fallback:
 
-- **Mutual recursion** - expanding either body pulls in the other one again, so the expansion is cut off when the depth limit is reached (`the expansion depth limit was reached`). Mark at most one side of a mutually recursive pair as inline to avoid the partial expansion.
+- **Mutual recursion** - expanding either body pulls in the other one again, so the expansion is cut off when the depth limit is reached (`the expansion depth limit was reached (mutually recursive inline routines)`). Mark at most one side of a mutually recursive pair as inline to avoid the partial expansion.
 - **The body is not available in this compilation** - a `forward` declaration whose implementation never appears, or a routine from a unit whose implementation is not compiled yet (mutually dependent units). Within one unit the definition order is free - a caller parsed before the body simply waits for it.
 - The call references private symbols from another unit, or a parameter contains a construct the inliner cannot substitute (rare).
 
