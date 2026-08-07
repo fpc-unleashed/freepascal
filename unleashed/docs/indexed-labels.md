@@ -76,13 +76,15 @@ The last two rows show that one family is either ordinal-keyed or string-keyed -
 ```pascal
 label state[0..4];
 
-goto state[2];
+begin
+  goto state[2];
 
-state[0]: writeln('zero');
-state[1]: writeln('one');
-state[2]: writeln('two');
-state[3]: writeln('three');
-state[4]: writeln('four');
+  state[0]: writeln('zero');
+  state[1]: writeln('one');
+  state[2]: writeln('two');
+  state[3]: writeln('three');
+  state[4]: writeln('four');
+end;
 ```
 
 `label state[0..4]` declares five labels addressed as `state[0]` .. `state[4]`. As with plain labels, control falls through from one label to the next unless you jump away - the program above prints `two`, `three`, `four`.
@@ -121,8 +123,10 @@ const
 label edge[0..3-1];            // 0..2
 label step[0..2, LAST];        // 0..2 plus 7
 
-goto step[BASE-1];             // direct jump to step[2], zero overhead
-step[LAST]: writeln('lucky');  // defines step[7]
+begin
+  goto step[BASE-1];             // direct jump to step[2], zero overhead
+  step[LAST]: writeln('lucky');  // defines step[7]
+end;
 ```
 
 ## Ordinal index types
@@ -134,11 +138,13 @@ type TMode = (mFast, mSlow, mIdle);
 
 label handler[mFast..mIdle];
 
-goto handler[mode]; // mode: TMode, runtime dispatch
+begin
+  goto handler[mode]; // mode: TMode, runtime dispatch
 
-handler[mFast]: ...
-handler[mSlow]: ...
-handler[mIdle]: ...
+  handler[mFast]: ...
+  handler[mSlow]: ...
+  handler[mIdle]: ...
+end;
 ```
 
 ```pascal
@@ -157,11 +163,13 @@ goto sign[n];       // negative indices dispatch like any other
 ```pascal
 label action['start', 'stop', 'reset'];
 
-goto action['start'];
+begin
+  goto action['start'];
 
-action['start']: writeln('starting');
-action['stop']:  writeln('stopping');
-action['reset']: writeln('resetting');
+  action['start']: writeln('starting');
+  action['stop']:  writeln('stopping');
+  action['reset']: writeln('resetting');
+end;
 ```
 
 String keys are case-insensitive on both sides: `goto action['START']` jumps to `action['start']`, and `action['sTaRt']:` defines the same label as `action['start']:`. Only constant strings work - a string key is resolved entirely at compile time, and a `goto` with a string variable reports `Ordinal expression expected`.
@@ -311,10 +319,12 @@ end;
 Constant-index gotos are lazy too; the first reference auto-declares the indexed family:
 
 ```pascal
-goto step[1]; // auto-declares the indexed label family
+begin
+  goto step[1]; // auto-declares the indexed label family
 
-step[0]: writeln('zero');
-step[1]: writeln('one');
+  step[0]: writeln('zero');
+  step[1]: writeln('one');
+end;
 ```
 
 ### Lazy labels and declared families
