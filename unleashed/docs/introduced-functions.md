@@ -18,6 +18,10 @@ For each entry the table gives the signature in compact form, a one-line descrip
 | `BitAlignOf()` | `BitAlignOf(T)` / `BitAlignOf(T.field): SizeInt` | intrinsic | `{$modeswitch composablerecords}` (default in `unleashed`) | [composable-records.md](composable-records.md) |
 | `BitSizeOf()` (extended) | `BitSizeOf(T)` / `BitSizeOf(T.field): SizeInt` | intrinsic | always available; new behavior under `composablerecords` | [composable-records.md](composable-records.md) |
 | `SwapValues()` | `procedure SwapValues(var a, b: T)` | intrinsic | `{$mode unleashed}` | [swapvalues.md](swapvalues.md) |
+| `PreInc()` | `PreInc(var x[, n]): T` | intrinsic | `{$modeswitch prepostincdec}` (default in `unleashed`) | this page |
+| `PostInc()` | `PostInc(var x[, n]): T` | intrinsic | `{$modeswitch prepostincdec}` (default in `unleashed`) | this page |
+| `PreDec()` | `PreDec(var x[, n]): T` | intrinsic | `{$modeswitch prepostincdec}` (default in `unleashed`) | this page |
+| `PostDec()` | `PostDec(var x[, n]): T` | intrinsic | `{$modeswitch prepostincdec}` (default in `unleashed`) | this page |
 | `GetMemAligned()` | `function GetMemAligned(size, alignment: PtrUInt): Pointer` | RTL `system` | always available | [composable-records.md](composable-records.md) |
 | `AllocMemAligned()` | `function AllocMemAligned(size, alignment: PtrUInt): Pointer` | RTL `system` | always available | [composable-records.md](composable-records.md) |
 | `ReAllocMemAligned()` | `function ReAllocMemAligned(var p: Pointer; new_size, alignment: PtrUInt): Pointer` | RTL `system` | always available | [composable-records.md](composable-records.md) |
@@ -49,6 +53,26 @@ Stock FPC already ships `BitSizeOf()`, returning the storage bits a field actual
 
 Builtin that swaps two same-typed assignable variables with a bitwise move, no `uses` required. For managed types (string, dynamic array, interface, `Variant`) it swaps only the reference words, with no `incr_ref` / `decr_ref` calls; ordinals and pointer-sized operands lower to a register swap, larger types to a raw byte exchange. An operand with a side-effecting address is evaluated once. Pattern-detected in `factor_read_id` in `{$mode unleashed}`, but only when no `SwapValues()` symbol is in scope, so a user-declared `SwapValues()` keeps resolving normally and shadows the builtin.
 
+### `PreInc()` / `PostInc()` / `PreDec()` / `PostDec()`
+
+Pre/post increment and decrement as value-returning builtins. All four update the operand like `inc()` / `dec()` and additionally yield a value: the `Pre` pair returns the value after the update, the `Post` pair the value read before it.
+
+```pascal
+var i := 10;
+a := PostInc(i);      // a = 10, i = 11
+a := PreInc(i);       // a = 12, i = 12
+a := PostDec(i, 3);   // a = 12, i = 9
+a := PreDec(i, 4);    // a = 5,  i = 5
+```
+
+The optional second parameter is the step, exactly as in `inc()` / `dec()`; it may be negative. The accepted operand types match `inc()` / `dec()`: integers, enums, chars, currency, and pointers (the step counts elements, not bytes). Records with a `class operator Inc` / `Dec` work too: the operator supplies the new value and the old or new one is returned accordingly.
+
+A side-effecting operand address is evaluated once, so `PostInc(a[f()])` calls `f()` a single time. Properties go through the same getter/setter rewrite as `inc()` on a property: the getter and the setter each run exactly once per call. In statement position the value is simply discarded, so `PostInc(x);` behaves like `inc(x)`.
+
+The updates are not atomic, same as `inc()` / `dec()`. For a thread-safe counter use `AtomicIncrement()` (returns the new value, like `PreInc()`) or `InterlockedExchangeAdd()` (returns the old one, like `PostInc()`).
+
+Pattern-detected in the parser under the `prepostincdec` modeswitch (default-on in `{$mode unleashed}`), but only when no symbol of that name is in scope, so a user-declared `PreInc()` etc. keeps resolving normally and shadows the builtin.
+
 ### `GetMemAligned()` / `AllocMemAligned()` / `ReAllocMemAligned()` / `FreeMemAligned()`
 
 Aligned heap allocator added to the `system` unit. The allocation carries a small preamble with the unaligned base pointer and the requested size, so the free path can recover the original block without bookkeeping on the caller side.
@@ -66,7 +90,7 @@ Implementation lives in `rtl/inc/alignmem.inc`, included from `rtl/inc/system.in
 
 ## Demo
 
-Exercises the layout intrinsics, the aligned allocator, and `SwapValues()` - none of which needs a `uses` clause:
+Exercises the layout intrinsics, the aligned allocator, `SwapValues()`, and the pre/post inc/dec builtins - none of which needs a `uses` clause:
 
 ```pascal
 program introduced_demo;
@@ -104,6 +128,12 @@ begin
   var a := 1; var b := 2;
   SwapValues(a, b);
   writeln($'after swap: a={a} b={b}');
+
+  // pre/post inc/dec return a value
+  var i := 10;
+  writeln($'PostInc(i) = {PostInc(i)}, i is now {i}');
+  writeln($'PreInc(i, 5) = {PreInc(i, 5)}');
+  writeln($'PostDec(i) = {PostDec(i)}, PreDec(i) = {PreDec(i)}');
   {$ifdef WINDOWS}readln;{$endif}
 end.
 ```
@@ -116,4 +146,7 @@ OffsetOf(TPacket, payload) = 8
 AlignOf(TPacket) = 4, AlignOf(double) = 8
 GetMemAligned(256, 64) aligned: TRUE
 after swap: a=2 b=1
+PostInc(i) = 10, i is now 11
+PreInc(i, 5) = 16
+PostDec(i) = 16, PreDec(i) = 14
 ```

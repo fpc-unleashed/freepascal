@@ -88,6 +88,7 @@ Threads in stock Pascal mean `TThread` subclasses, hand-managed critical section
 | **Compound Assignment** | `i div= 2;`, `flags xor= $05;` in every mode; `+=` without `{$coperators on}`; properties as targets | [compound-assignment.md](unleashed/docs/compound-assignment.md) |
 | **Array Equality** | `if a = b then` compares arrays element by element - any kind, any bounds, nested included | [array-equality.md](unleashed/docs/array-equality.md) |
 | **`SwapValues()`** | `SwapValues(a, b);` - bitwise swap, no `uses`, no refcount churn | [swapvalues.md](unleashed/docs/swapvalues.md) |
+| **`PreInc()` / `PostInc()` / `PreDec()` / `PostDec()`** | `var old := PostInc(i);` - inc/dec yielding the value after (`Pre`) or before (`Post`) the update | [introduced-functions.md](unleashed/docs/introduced-functions.md) |
 | **`Type()`** | `var tmp: Type(a[0]);` - static type of an expression, operand unevaluated | [type-intrinsic.md](unleashed/docs/type-intrinsic.md) |
 | **128-bit Integers** | `var x: UInt128 := 340282366920938463463374607431768211455;` | [int128.md](unleashed/docs/int128.md) |
 
