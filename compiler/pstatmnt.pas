@@ -179,13 +179,35 @@ implementation
           result:=olddef;
       end;
 
+    { parses the single-statement body of a control-flow construct; an
+      inline declaration there is rejected - the symbol would go out of
+      scope as soon as the statement ends, so it could never be read }
+    function control_body_statement : tnode;
+      begin
+        if ((current_scanner.token in [_VAR,_CONST]) and
+            (m_inline_var in current_settings.modeswitches)) or
+           ((current_scanner.token=_ID) and
+            (((current_scanner.idtoken=_STATIC) and
+              (m_inline_static in current_settings.modeswitches)) or
+             ((current_scanner.idtoken=_THREADSTATIC) and
+              (m_thread_static in current_settings.modeswitches)))) then
+          begin
+            Message(parser_e_inline_decl_control_body);
+            consume_all_until(_SEMICOLON);
+            result:=cerrornode.create;
+            exit;
+          end;
+        result:=statement;
+      end;
+
+
     function if_statement(is_expr:boolean=false) : tnode;
       function statementorexpr : tnode; inline;
         begin
           if is_expr then
             result:=expr(true)
           else
-            result:=statement;
+            result:=control_body_statement;
         end;
 
       var
@@ -268,7 +290,7 @@ implementation
                resultdef:=branch_type(resultdef,result.resultdef);
             end
           else
-            result:=statement;
+            result:=control_body_statement;
         end;
 
         function requires_else(casenode : tcasenode) : boolean; inline;
@@ -740,12 +762,12 @@ implementation
               consume(_COLON);
               if branch_catchall then
                 begin
-                  addstatement(stmts,statement);
+                  addstatement(stmts,control_body_statement);
                   if not(current_scanner.token in [_END]) then
                     consume(_SEMICOLON);
                   break;
                 end;
-              addstatement(stmts,cifnode.create(cond,statement,nil));
+              addstatement(stmts,cifnode.create(cond,control_body_statement,nil));
               if not(current_scanner.token in [_ELSE,_OTHERWISE,_END]) then
                 consume(_SEMICOLON);
             until current_scanner.token in [_ELSE,_OTHERWISE,_END];
@@ -781,7 +803,7 @@ implementation
                   resultdef:=branch_type(resultdef,stmt.resultdef);
                 end
               else
-                stmt:=statement;
+                stmt:=control_body_statement;
               if branch_catchall then
                 begin
                   has_catchall:=true;
@@ -904,7 +926,7 @@ implementation
          consume(_WHILE);
          p_e:=comp_expr([ef_accept_equal]);
          consume(_DO);
-         p_a:=statement;
+         p_a:=control_body_statement;
          result:=cwhilerepeatnode.create(p_e,p_a,true,false);
       end;
 
@@ -1344,7 +1366,7 @@ implementation
              set_varstate(hloopvar,vs_read,[vsf_must_be_valid]);
 
              { ... now the instruction block }
-             hblock:=statement;
+             hblock:=control_body_statement;
 
              { variable is not used for loop counter anymore }
              if assigned(loopvarsym) then
@@ -1401,7 +1423,7 @@ implementation
               set_varstate(hloopvar,vs_written,[]);
               set_varstate(hloopvar,vs_read,[vsf_must_be_valid]);
 
-              hloopbody:=statement;
+              hloopbody:=control_body_statement;
               if assigned(loopvarsym) then
                 exclude(loopvarsym.varoptions,vo_is_loop_counter);
               result:=create_for_in_loop(hloopvar,hloopbody,expr);
@@ -1646,7 +1668,7 @@ implementation
                set_varstate(hloopvar,vs_written,[]);
                set_varstate(hloopvar,vs_read,[vsf_must_be_valid]);
 
-               hblock:=statement;
+               hblock:=control_body_statement;
 
                exclude(loopvs.varoptions,vo_is_loop_counter);
 
@@ -1892,7 +1914,7 @@ implementation
                   hfrom.free;
                   if try_to_consume(_DO) then
                     begin
-                      hbody:=statement;
+                      hbody:=control_body_statement;
                       hbody.free;
                     end;
                   threadcount.free;
@@ -2074,7 +2096,7 @@ implementation
               iloadnode:=cloadnode.create(isym,isym.owner);
               typecheckpass(iloadnode);
 
-              hbody:=statement;
+              hbody:=control_body_statement;
               exclude(isym.varoptions,vo_is_loop_counter);
               parfor_validate_body(hbody,parcancel);
 
@@ -2895,7 +2917,7 @@ implementation
                begin
                  consume(_DO);
                  if current_scanner.token<>_SEMICOLON then
-                   result:=statement
+                   result:=control_body_statement
                  else
                    result:=cnothingnode.create;
                end;
@@ -3130,7 +3152,7 @@ implementation
               begin
                 consume(_DO);
                 if current_scanner.token<>_SEMICOLON then
-                  p:=statement
+                  p:=control_body_statement
                 else
                   p:=cnothingnode.create;
               end;
@@ -3470,7 +3492,7 @@ implementation
                      if is_expr then
                        hp:=connode.create(nil,readexpr)
                      else
-                       hp:=connode.create(nil,statement);
+                       hp:=connode.create(nil,control_body_statement);
                      if ot.typ=errordef then
                        begin
                           hp.free;

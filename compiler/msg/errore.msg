@@ -498,7 +498,7 @@ scan_e_improperly_indented_multiline_string=02120_E_Incorrectly indented multi-l
 #
 # Parser
 #
-# 03444 is the last used one
+# 03445 is the last used one
 #
 % \section{Parser messages}
 % This section lists all parser messages. The parser takes care of the
@@ -1993,6 +1993,11 @@ parser_e_auto_property_init_context=03425_E_Property initializer requires an acc
 % A \var{= value} initializer only applies to a bare property that synthesizes a
 % backing field. It is not allowed with an explicit read/write, on an indexed
 % property, or in a record.
+parser_e_inline_decl_control_body=03445_E_Inline variable declaration cannot be the only statement of a control-flow body - the variable would go out of scope immediately
+% A variable declared as the whole body of \var{if}, \var{for},
+% \var{while}, \var{with}, a \var{case} branch or an \var{on} handler
+% goes out of scope as soon as that statement ends, so it can never be
+% read. Wrap the body in \var{begin..end} to give the variable a scope.
 parser_w_unaligned_useless=03375_W_Unaligned is useless here.
 parser_w_aligned_useless=03376_W_Aligned is useless here.
 % Use of aligned(EXPR) or unaligned(EXPR) only has an effect if EXPR is a dereference.
@@ -2001,7 +2006,7 @@ parser_w_aligned_useless=03376_W_Aligned is useless here.
 %
 # Type Checking
 #
-# 03431 is the last used parser one
+# 03445 is the last used parser one
 #
 # 04141 is the last used one
 #
