@@ -1131,7 +1131,7 @@ This feature is strictly additive:
 
 ## Implementation status
 
-Shipped working parts (regression tests live under `unleashed/tests/testfiles/composable_records/`, run by the [test runner](../tests/README.md)):
+Shipped working parts (regression tests live under `unleashed/tests/testfiles/composable_records/`, run by the test runner in `unleashed/tests/`):
 
 - modeswitch `composablerecords`, on by default in `{$mode unleashed}`, off by default elsewhere
 - `union ... end;` keyword, multi-union per record, regular fields and other unions interleaved, legacy `case TYPE of` still accepted
