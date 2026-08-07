@@ -24,6 +24,7 @@ One line enables everything:
 | `match` | first-match pattern matching |
 | `multivarinit` | one initializer for several variables |
 | `outvar` | inline out-variable `f(var x)` and discard `f(_)` |
+| `prepostincdec` | `PreInc()` / `PostInc()` / `PreDec()` / `PostDec()` value-returning inc/dec |
 | `forstep` | `step N` clause in `for` loops |
 | `autoproperties` | accessor-less properties with a synthesized backing field |
 | `parallelfor` | `for parallel` worker-pool loops |
@@ -171,7 +172,7 @@ In `{$mode unleashed}` `inline` means inline: every direct call expands, with no
 
 ### [Introduced Functions, Procedures and Intrinsics](introduced-functions.md)
 
-A reference table of identifiers Unleashed adds that user code can call without an extra `uses`: the composable-records layout intrinsics (`OffsetOf()`, `BitOffsetOf()`, `AlignOf()`, `BitAlignOf()`, extended `BitSizeOf()`), and the aligned heap allocator in the `system` unit (`GetMemAligned()`, `AllocMemAligned()`, `ReAllocMemAligned()`, `FreeMemAligned()`) - the runtime half of `record align 64` cache-line layouts.
+A reference table of identifiers Unleashed adds that user code can call without an extra `uses`: the composable-records layout intrinsics (`OffsetOf()`, `BitOffsetOf()`, `AlignOf()`, `BitAlignOf()`, extended `BitSizeOf()`), the value-returning inc/dec builtins (`PreInc()`, `PostInc()`, `PreDec()`, `PostDec()` - the `Pre` pair yields the value after the update, the `Post` pair the one before it; modeswitch `prepostincdec`), and the aligned heap allocator in the `system` unit (`GetMemAligned()`, `AllocMemAligned()`, `ReAllocMemAligned()`, `FreeMemAligned()`) - the runtime half of `record align 64` cache-line layouts.
 
 ---
 

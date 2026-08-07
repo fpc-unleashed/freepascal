@@ -197,6 +197,10 @@ type
 { More internal functions }
      in_isconstvalue_x    = 1000,
      in_swapvalues        = 1001,
+     in_preinc_x          = 1002,
+     in_postinc_x         = 1003,
+     in_predec_x          = 1004,
+     in_postdec_x         = 1005,
 
 { atomic intrinsics }
      in_atomic_inc       = 1100,

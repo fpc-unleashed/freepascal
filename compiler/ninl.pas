@@ -133,6 +133,7 @@ interface
           function handle_insert:tnode;
           function handle_delete:tnode;
           function handle_concat:tnode;
+          function handle_prepost_incdec:tnode;
           function first_swapvalues:tnode;
        end;
        tinlinenodeclass = class of tinlinenode;
@@ -3824,6 +3825,12 @@ implementation
                     end;
                 end;
 
+              in_preinc_x,
+              in_postinc_x,
+              in_predec_x,
+              in_postdec_x:
+                result:=handle_prepost_incdec;
+
               in_swapvalues:
                 begin
                   resultdef:=voidtype;
@@ -4650,6 +4657,13 @@ implementation
               result:=first_IncDec;
             end;
 
+          in_preinc_x,
+          in_postinc_x,
+          in_predec_x,
+          in_postdec_x:
+            { always lowered during typecheck }
+            internalerror(2026080701);
+
           in_swapvalues:
             result:=first_swapvalues;
 
@@ -5283,6 +5297,134 @@ implementation
             then
              { convert to simple add (JM) }
              result:=getaddsub_for_incdec
+       end;
+
+
+     { lower PreInc/PostInc/PreDec/PostDec into statements around a plain
+       inc/dec node, yielding the value after (pre) or before (post) the
+       update. the operand address is computed once; the inner inc/dec node
+       supplies the type checks, operator overloads, pointer arithmetic and
+       the range/overflow lowering of a regular Inc/Dec }
+     function tinlinenode.handle_prepost_incdec: tnode;
+       var
+         xpara,dpara : tcallparanode;
+         xnode,delta,xread,xwrite,incparas : tnode;
+         ptrtmp,valtmp : ttempcreatenode;
+         newstatement : tstatementnode;
+         newblock : tblocknode;
+         incnr : tinlinenumber;
+         ispost,complexop : boolean;
+
+       { see first_swapvalues: a write into a refcounted string element must
+         go through the pointer temp so the unique call runs when the address
+         is taken, before any read or write through it }
+       function is_refcounted_string_elem(p: tnode): boolean;
+         begin
+           result:=false;
+           while assigned(p) do
+             case p.nodetype of
+               vecn:
+                 begin
+                   result:=is_ansistring(tbinarynode(p).left.resultdef) or
+                     is_wide_or_unicode_string(tbinarynode(p).left.resultdef);
+                   exit;
+                 end;
+               typeconvn,
+               subscriptn,
+               derefn:
+                 p:=tunarynode(p).left;
+               else
+                 exit;
+             end;
+         end;
+
+       begin
+         result:=nil;
+         if not assigned(left) or (left.nodetype<>callparan) then
+           internalerror(2026080702);
+         xpara:=tcallparanode(left);
+         xnode:=xpara.left;
+         resultdef:=xnode.resultdef;
+         { generic body or type parameter: only the result type matters here,
+           the lowering happens when the specialized body is checked }
+         if (df_generic in current_procinfo.procdef.defoptions) or
+            is_typeparam(xnode.resultdef) then
+           exit;
+         if not valid_for_var(xnode,true) then
+           begin
+             result:=cerrornode.create;
+             exit;
+           end;
+         set_varstate(xnode,vs_readwritten,[vsf_must_be_valid]);
+         { value gets changed -> must be unique }
+         set_unique(xnode);
+         delta:=nil;
+         if assigned(xpara.right) then
+           begin
+             dpara:=tcallparanode(xpara.right);
+             if assigned(dpara.right) then
+               internalerror(2026080703);
+             delta:=dpara.left;
+             dpara.left:=nil;
+           end;
+         xpara.left:=nil;
+         ispost:=(inlinenumber=in_postinc_x) or (inlinenumber=in_postdec_x);
+         if (inlinenumber=in_preinc_x) or (inlinenumber=in_postinc_x) then
+           incnr:=in_inc_x
+         else
+           incnr:=in_dec_x;
+
+         newblock:=internalstatements(newstatement);
+         { a side-effecting operand computes its address once; a simple one is
+           referenced directly so a local folds into plain load/store }
+         if (node_complexity(xnode)>3) or is_refcounted_string_elem(xnode) then
+           begin
+             ptrtmp:=ctempcreatenode.create(voidpointertype,voidpointertype.size,tt_persistent,true);
+             addstatement(newstatement,ptrtmp);
+             addstatement(newstatement,cassignmentnode.create(ctemprefnode.create(ptrtmp),
+               caddrnode.create_internal(xnode)));
+             xread:=cderefnode.create(ctemprefnode.create(ptrtmp));
+             inserttypeconv_internal(xread,resultdef);
+             xwrite:=cderefnode.create(ctemprefnode.create(ptrtmp));
+             inserttypeconv_internal(xwrite,resultdef);
+           end
+         else
+           begin
+             ptrtmp:=nil;
+             xread:=xnode.getcopy;
+             xwrite:=xnode;
+           end;
+
+         valtmp:=nil;
+         if ispost then
+           begin
+             { capture the value before the update }
+             valtmp:=ctempcreatenode.create(resultdef,resultdef.size,tt_persistent,true);
+             addstatement(newstatement,valtmp);
+             addstatement(newstatement,cassignmentnode.create(ctemprefnode.create(valtmp),xread));
+           end;
+
+         if assigned(delta) then
+           incparas:=ccallparanode.create(xwrite,ccallparanode.create(delta,nil))
+         else
+           incparas:=ccallparanode.create(xwrite,nil);
+         addstatement(newstatement,cinlinenode.create(incnr,false,incparas));
+
+         if assigned(ptrtmp) and ispost then
+           addstatement(newstatement,ctempdeletenode.create_normal_temp(ptrtmp));
+         if ispost then
+           begin
+             addstatement(newstatement,ctempdeletenode.create_normal_temp(valtmp));
+             addstatement(newstatement,ctemprefnode.create(valtmp));
+           end
+         else
+           begin
+             if assigned(ptrtmp) then
+               addstatement(newstatement,ctempdeletenode.create_normal_temp(ptrtmp));
+             { yield the updated value }
+             addstatement(newstatement,xread);
+           end;
+         result:=newblock;
        end;
 
 
