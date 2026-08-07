@@ -106,9 +106,14 @@ implementation
        pbase,pstatmnt,pinline,ptype,pgenutil,psub,procdefutil,procinfo,cpuinfo
        ;
 
+    type
+      { what value, if any, an inc/dec property rewrite yields }
+      tincdecpropvalue = (ipv_none,ipv_pre,ipv_post);
+
     function sub_expr(pred_level:Toperator_precedence;flags:texprflags;factornode:tnode):tnode;forward;
     function exit_tuple_body(out block:tnode;out single_expr:tnode):boolean;forward;
-    function try_inc_dec_property_rewrite(getter_call:tcallnode;delta:tnode;is_dec:boolean):tnode;forward;
+    function try_inc_dec_property_rewrite(getter_call:tcallnode;delta:tnode;is_dec:boolean;valuekind:tincdecpropvalue):tnode;forward;
+    function inline_prepost_incdec(innr:tinlinenumber):tnode;forward;
 
     var
        { true, if the inherited call is anonymous }
@@ -942,7 +947,7 @@ implementation
               if (m_unleashed in current_settings.modeswitches) and
                  (nf_isproperty in p1.flags) and
                  (p1.nodetype=calln) then
-                statement_syssym:=try_inc_dec_property_rewrite(tcallnode(p1),p2,l=in_dec_x);
+                statement_syssym:=try_inc_dec_property_rewrite(tcallnode(p1),p2,l=in_dec_x,ipv_none);
               if not assigned(statement_syssym) then
                 begin
                   if assigned(p2) then
@@ -1666,8 +1671,10 @@ implementation
     { unleashed-mode rewrite of `inc(prop, n)` / `dec(prop, n)` into a setter
       call carrying `getter + n` (or `getter - n`). Returns nil if the input
       isn't a procsym-getter call to a non-indexed read+write property; the
-      caller falls back to the standard inline path in that case }
-    function try_inc_dec_property_rewrite(getter_call: tcallnode; delta: tnode; is_dec: boolean): tnode;
+      caller falls back to the standard inline path in that case.
+      with valuekind ipv_pre/ipv_post the rewrite also yields a value through
+      a temp: the updated one (pre) or the one read before the update (post) }
+    function try_inc_dec_property_rewrite(getter_call: tcallnode; delta: tnode; is_dec: boolean; valuekind: tincdecpropvalue): tnode;
       var
         propsym : tpropertysym;
         owner_st : TSymtable;
@@ -1680,6 +1687,10 @@ implementation
         callflags : tcallnodeflags;
         membercall : boolean;
         setter_node : tnode;
+        valtmp : ttempcreatenode;
+        newstatement : tstatementnode;
+        newblock : tblocknode;
+        setter_arg : tnode;
       begin
         result:=nil;
         propsym:=nil;
@@ -1746,27 +1757,96 @@ implementation
           op:=addn;
         if not assigned(delta) then
           delta:=cordconstnode.create(1,sinttype,true);
+        newblock:=nil;
+        valtmp:=nil;
+        if valuekind<>ipv_none then
+          begin
+            newblock:=internalstatements(newstatement);
+            valtmp:=ctempcreatenode.create(propsym.propdef,propsym.propdef.size,tt_persistent,true);
+            addstatement(newstatement,valtmp);
+          end;
+        if valuekind=ipv_post then
+          { capture the getter value before the update; the arithmetic below
+            then runs on the temp instead of a second getter call }
+          addstatement(newstatement,cassignmentnode.create(ctemprefnode.create(valtmp),getter_call));
         { addn does not accept enum + int directly. For enum properties cast
           the getter result to an ordinal type, do the arithmetic, then cast
           the sum back to the enum type for the setter call. Pointer and
           plain ordinal property types take the native addn path. }
+        if valuekind=ipv_post then
+          combined:=ctemprefnode.create(valtmp)
+        else
+          combined:=getter_call;
         if propsym.propdef.typ=enumdef then
           begin
-            combined:=ctypeconvnode.create_internal(getter_call,sinttype);
+            combined:=ctypeconvnode.create_internal(combined,sinttype);
             combined:=caddnode.create(op,combined,delta);
             combined:=ctypeconvnode.create_internal(combined,propsym.propdef);
           end
         else
-          combined:=caddnode.create(op,getter_call,delta);
+          combined:=caddnode.create(op,combined,delta);
+        if valuekind=ipv_pre then
+          begin
+            { the setter writes the already-updated temp, which is also the
+              yielded value }
+            addstatement(newstatement,cassignmentnode.create(ctemprefnode.create(valtmp),combined));
+            setter_arg:=ctemprefnode.create(valtmp);
+          end
+        else
+          setter_arg:=combined;
         callflags:=[];
         membercall:=maybe_load_methodpointer(getter_call.symtableproc,instance);
         if membercall then
           include(callflags,cnf_member_call);
         setter_node:=ccallnode.create(nil,setter_proc,getter_call.symtableproc,instance,callflags,nil);
         addsymref(setter_proc);
-        tcallnode(setter_node).left:=ccallparanode.create(combined,tcallnode(setter_node).left);
+        tcallnode(setter_node).left:=ccallparanode.create(setter_arg,tcallnode(setter_node).left);
         include(setter_node.flags,nf_isproperty);
-        result:=setter_node;
+        if valuekind=ipv_none then
+          result:=setter_node
+        else
+          begin
+            addstatement(newstatement,setter_node);
+            addstatement(newstatement,ctempdeletenode.create_normal_temp(valtmp));
+            addstatement(newstatement,ctemprefnode.create(valtmp));
+            result:=newblock;
+          end;
+      end;
+
+
+    { parse `PreInc(x[, n])` / `PostInc` / `PreDec` / `PostDec`; the parser
+      only reaches this when no user symbol of that name is in scope. the
+      identifier itself is not yet consumed }
+    function inline_prepost_incdec(innr: tinlinenumber): tnode;
+      var
+        p1,p2 : tnode;
+        is_dec : boolean;
+        valuekind : tincdecpropvalue;
+      begin
+        consume(_ID);
+        consume(_LKLAMMER);
+        p1:=comp_expr([ef_accept_equal]);
+        if try_to_consume(_COMMA) then
+          p2:=comp_expr([ef_accept_equal])
+        else
+          p2:=nil;
+        consume(_RKLAMMER);
+        is_dec:=(innr=in_predec_x) or (innr=in_postdec_x);
+        if (innr=in_postinc_x) or (innr=in_postdec_x) then
+          valuekind:=ipv_post
+        else
+          valuekind:=ipv_pre;
+        { a procsym-getter property goes through the getter+setter rewrite }
+        if (nf_isproperty in p1.flags) and
+           (p1.nodetype=calln) then
+          begin
+            result:=try_inc_dec_property_rewrite(tcallnode(p1),p2,is_dec,valuekind);
+            if assigned(result) then
+              exit;
+          end;
+        if assigned(p2) then
+          p2:=ccallparanode.create(p2,nil);
+        result:=cinlinenode.create(innr,false,ccallparanode.create(p1,p2));
       end;
 
 
@@ -5257,6 +5337,32 @@ implementation
                if not assigned(srsym) then
                  begin
                    p1:=inline_swapvalues;
+                   again:=false;
+                   exit;
+                 end;
+             end;
+
+           { pre/post inc/dec builtins returning a value. only intercept when
+             no symbol of that name is in scope, so a user-declared PreInc etc
+             keeps resolving normally }
+           if (current_scanner.token=_ID) and
+              (m_prepost_incdec in current_settings.modeswitches) and
+              ((current_scanner.pattern='PREINC') or
+               (current_scanner.pattern='POSTINC') or
+               (current_scanner.pattern='PREDEC') or
+               (current_scanner.pattern='POSTDEC')) then
+             begin
+               searchsym(current_scanner.pattern,srsym,srsymtable);
+               if not assigned(srsym) then
+                 begin
+                   if current_scanner.pattern='PREINC' then
+                     p1:=inline_prepost_incdec(in_preinc_x)
+                   else if current_scanner.pattern='POSTINC' then
+                     p1:=inline_prepost_incdec(in_postinc_x)
+                   else if current_scanner.pattern='PREDEC' then
+                     p1:=inline_prepost_incdec(in_predec_x)
+                   else
+                     p1:=inline_prepost_incdec(in_postdec_x);
                    again:=false;
                    exit;
                  end;
