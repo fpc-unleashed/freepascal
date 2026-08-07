@@ -80,12 +80,12 @@ type
 
   TPacket = record
     magic: longword;
-    embed TCoord;                 // lo, hi flatten in
+    embed TCoord; // lo, hi flatten in
     payload: array[0..3] of byte;
   end;
 
 const
-  OFF_HI = OffsetOf(TPacket.hi);          // composition-aware, hops the embed
+  OFF_HI = OffsetOf(TPacket.hi); // composition-aware, hops the embed
   OFF_PAYLOAD = OffsetOf(TPacket, payload);
   AL_PACKET = AlignOf(TPacket);
   AL_DOUBLE = AlignOf(double);

@@ -30,11 +30,11 @@ A trailing `+` or `-` on the switch name sets or clears it; the `NO` prefix clea
 A block fill or a block copy of a handful of bytes spends most of its time in the RTL routine's size dispatch, not in the stores. With a constant count the size is known while the tree is still being built, so the call is replaced by the stores it would end up performing.
 
 ```pascal
-type TFrame = record kind: byte; len, crc: dword; end;   // 12 bytes
+type TFrame = record kind: byte; len, crc: dword; end; // 12 bytes
 
 var frame: TFrame;
 
-FillChar(frame, sizeof(frame), 0);   // two 8-byte stores, no call
+FillChar(frame, sizeof(frame), 0); // two 8-byte stores, no call
 ```
 
 ### What qualifies
@@ -68,7 +68,7 @@ The address is computed once. A plain variable (global, local or parameter, but 
 A constant fill value is replicated across 64 bits at compile time, so every store gets an immediate. A runtime value is evaluated once into a temp and spread over the 64 bits with a single multiply; narrower stores truncate that temp:
 
 ```pascal
-FillChar(buf, 16, b);   // t := b * $0101010101010101, then two 8-byte stores of t
+FillChar(buf, 16, b); // t := b * $0101010101010101, then two 8-byte stores of t
 ```
 
 `FillWord()` / `FillDWord()` use the matching multiplier, `FillQWord()` needs none.
@@ -79,7 +79,7 @@ The RTL `Move()` handles overlapping source and destination. The expansion has t
 
 ```pascal
 for var i := 0 to 15 do buf[i] := i;
-Move(buf[0], buf[4], 12);   // 00 01 02 03 00 01 02 03 04 05 06 07 08 09 0A 0B
+Move(buf[0], buf[4], 12); // 00 01 02 03 00 01 02 03 04 05 06 07 08 09 0A 0B
 ```
 
 ## `-OoAUTOINLINE`
@@ -163,7 +163,7 @@ begin
   result := f(x);
 end;
 
-var g := apply(@doubler, 6);   // -O3: g is assigned the constant 12, no calls
+var g := apply(@doubler, 6); // -O3: g is assigned the constant 12, no calls
 ```
 
 ### What stays indirect

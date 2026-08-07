@@ -68,7 +68,7 @@ A bare `[...]` on the right of an inferred `var` builds a **dynamic array** (`ar
 | `nil` | `Pointer` |
 
 ```pascal
-var ints := [1, 2, 1_000_000];       // array of LongInt
+var ints := [1, 2, 1_000_000];        // array of LongInt
 var names := ['ada', 'bob', 'carol']; // array of AnsiString
 var flags := [true, false];           // array of Boolean
 var empty := [];                      // array of AnsiString (hint)

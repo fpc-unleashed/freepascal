@@ -19,7 +19,7 @@ Each accessor-less property gets a backing field named `F` + the property name. 
 ```pascal
 constructor TPerson.Create(anId: integer);
 begin
-  Fid := anId;                   // backing field reachable from methods
+  Fid := anId; // backing field reachable from methods
 end;
 ```
 

@@ -14,16 +14,16 @@ Modeswitch: `lock`, enabled by default in `{$mode unleashed}`. Elsewhere:
 ## Grammar
 
 ```pascal
-lock do <stmt>;                                  // per-callsite hidden lock
-lock(v) do <stmt>;                               // per-variable hidden lock
-lock(v1, v2, ...) do <stmt>;                     // multi-lock, ordered
-lock(myCS) do <stmt>;                            // explicit TRTLCriticalSection
+lock do <stmt>;                                      // per-callsite hidden lock
+lock(v) do <stmt>;                                   // per-variable hidden lock
+lock(v1, v2, ...) do <stmt>;                         // multi-lock, ordered
+lock(myCS) do <stmt>;                                // explicit TRTLCriticalSection
 
-trylock do <stmt> else <stmt>;                   // single attempt
+trylock do <stmt> else <stmt>;                       // single attempt
 trylock(v) do <stmt> else <stmt>;
 trylock(v1, v2, ...) do <stmt> else <stmt>;
 trylock(myCS) do <stmt> else <stmt>;
-trylock ... wait <int64-expr> do <stmt> else <stmt>;   // bounded wait (ms)
+trylock ... wait <int64-expr> do <stmt> else <stmt>; // bounded wait (ms)
 ```
 
 The verb split is the whole point: **`lock` blocks until acquired and cannot fail** - no `wait`, no `else`. **`trylock` may miss** - one immediate attempt by default, a bounded wait with `wait N` - **and the `else` branch is mandatory**, spelling out what happens instead of the body. The `else` branch runs *without* the lock held.

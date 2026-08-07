@@ -85,11 +85,11 @@ begin
   writeln($'name = {name:%-10s}|');      // name = Alice     |
 
   // type-driven masks
-  writeln($'pi = {pi:0.00}');            // pi = 3.14
-  writeln($'today = {EncodeDate(2026, 5, 4):yyyy-mm-dd}');   // today = 2026-05-04
-  writeln($'n hex = {n:x4}');            // n hex = 00FF
-  writeln($'n pad = {n:00000}');         // n pad = 00255
-  writeln($'big = {1234567:#,##0}');     // big = 1,234,567
+  writeln($'pi = {pi:0.00}');                              // pi = 3.14
+  writeln($'today = {EncodeDate(2026, 5, 4):yyyy-mm-dd}'); // today = 2026-05-04
+  writeln($'n hex = {n:x4}');                              // n hex = 00FF
+  writeln($'n pad = {n:00000}');                           // n pad = 00255
+  writeln($'big = {1234567:#,##0}');                       // big = 1,234,567
 end.
 ```
 

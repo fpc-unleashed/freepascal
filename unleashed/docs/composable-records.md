@@ -117,7 +117,7 @@ type
   end;
 
   TPoint = record
-    v: TVec;            // named field - access through `p.v.x`, no flatten
+    v: TVec; // named field - access through `p.v.x`, no flatten
     z: single;
   end;
 
@@ -175,7 +175,7 @@ type
   TFoo = record
     a: integer;
     union
-      record b, c: byte; end;       // variant 1 - anonymous record (flattened: foo.b, foo.c)
+      record b, c: byte; end;        // variant 1 - anonymous record (flattened: foo.b, foo.c)
       z: word;                       // variant 2 - single field
       ctrl: record k: byte; end;     // variant 3 - named subfield (foo.ctrl.k)
       embed TBar;                    // variant 4 - anonymous embed of TBar
@@ -306,7 +306,7 @@ Append `align <constexpr>` to bump the union's record-level alignment, bypassing
 type
   TFalseShareGuard = record
     counterA: int64;
-    union align 64 size 64       // 64-byte aligned + 64-byte padded
+    union align 64 size 64 // 64-byte aligned + 64-byte padded
       v: int64;
     end;
     counterB: int64;
@@ -437,7 +437,7 @@ Stock Pascal already lets you write an anonymous enum as a field type:
 ```pascal
 type
   TFoo = record
-    kind: (kA, kB, kC);   // anonymous enum - works in any mode
+    kind: (kA, kB, kC); // anonymous enum - works in any mode
   end;
 ```
 
@@ -452,7 +452,7 @@ Under `composablerecords`, the constants of an anonymous enum field stay scoped 
 ```pascal
 type
   TFirst  = record kind: (kA, kB, kC); end;
-  TSecond = record kind: (kA, kB, kC); end;     // same names, no clash
+  TSecond = record kind: (kA, kB, kC); end; // same names, no clash
 
 var
   a: TFirst;
@@ -485,7 +485,7 @@ type
 ```pascal
 type
   TBad = record
-    kind: (k0 = 0, k_huge = 300) of Byte;         // Error: Enum value 300 does not fit in storage type "Byte" (range up to 255)
+    kind: (k0 = 0, k_huge = 300) of Byte; // Error: Enum value 300 does not fit in storage type "Byte" (range up to 255)
   end;
 ```
 
@@ -511,11 +511,11 @@ This is the modern replacement for the Pascal-tagged `case TAG: TYPE of`:
 ```pascal
 type
   TPacket = record
-    kind: (kAudio, kVideo, kCtrl);   // discriminator - record-scoped enum
+    kind: (kAudio, kVideo, kCtrl);                          // discriminator - record-scoped enum
     union
-      record codec, channels: byte; sample_rate: word; end;       // ~ kAudio
-      record codec_video: byte; width, height: word; end;          // ~ kVideo
-      ctrl: record cmd, status: word; end;                          // ~ kCtrl
+      record codec, channels: byte; sample_rate: word; end; // ~ kAudio
+      record codec_video: byte; width, height: word; end;   // ~ kVideo
+      ctrl: record cmd, status: word; end;                  // ~ kCtrl
     end;
     crc: longword;
   end;
@@ -574,7 +574,7 @@ A composed record can be generic and use a type parameter as a named subfield:
 ```pascal
 type
   generic TBox<T> = record
-    item: T;           // named field - access via `b.item.field`
+    item: T; // named field - access via `b.item.field`
     weight: single;
   end;
 
@@ -776,7 +776,7 @@ The stock FPC `BitSizeOf()` intrinsic reports the actual storage bits a field oc
 ```pascal
 type
   TBitfield = packed record
-    flags: integer bitsize 3;     // wide type narrowed to 3 bits
+    flags: integer bitsize 3; // wide type narrowed to 3 bits
     next:  byte;
   end;
 ```
@@ -786,7 +786,7 @@ type
 ```pascal
 type
   TR = record
-    a: integer size 32;     // slot padded to 32 bytes
+    a: integer size 32; // slot padded to 32 bytes
     b: byte;
   end;
 
@@ -1398,8 +1398,8 @@ Each record def carries a lazy list of composition entries:
 
 ```pascal
 tcomposition_kind = (
-  ck_anon_embed,      // `TBase;`
-  ck_inline_record    // `record fields end;` solo
+  ck_anon_embed,            // `TBase;`
+  ck_inline_record          // `record fields end;` solo
 );
 tcomposition_entry = record
   carrier      : tobject;   // points to the carrier tfieldvarsym

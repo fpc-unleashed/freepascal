@@ -65,7 +65,7 @@ type TGrid = array[0..1, 0..1] of integer;
 var ga: TGrid = ((1, 2), (3, 4));
 var gb: TGrid = ((1, 2), (3, 4));
 
-if ga = gb then ...                 // true: 2x2 elements pairwise equal
+if ga = gb then ... // true: 2x2 elements pairwise equal
 ```
 
 ```pascal
@@ -73,7 +73,7 @@ type TIntArray = array of integer;
 
 function eq(const lhs, rhs: array of TIntArray): boolean;
 begin
-  result := lhs = rhs;              // open arrays of dynamic arrays
+  result := lhs = rhs; // open arrays of dynamic arrays
 end;
 
 eq([[1, 2], [3, 4]], [[1, 2], [3, 4]]) // true

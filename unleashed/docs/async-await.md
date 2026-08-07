@@ -19,7 +19,7 @@ A future is an opaque handle to a pending result. It is reference-counted, so it
 ```pascal
 function startFetch: future of string;
 begin
-  result := async fetchName;     // the future outlives this function
+  result := async fetchName; // the future outlives this function
 end;
 ```
 
@@ -46,7 +46,7 @@ var w := async begin
   counter := counter+41;
 end;
 await w;
-writeln(counter+1);              // 42
+writeln(counter+1); // 42
 ```
 
 Inside a method the block has the method's full class context, like an anonymous function: `Self` and strict private members (including auto-property backing fields) resolve as usual.
@@ -67,7 +67,7 @@ await w;                         // statement, just joins
 Joining is repeatable: the result is cached in the future and the event re-armed, so multiple `await`s on one future all succeed and only the first actually waits:
 
 ```pascal
-var n := await sum + 1;          // second await: reads the cached value, no wait
+var n := await sum + 1; // second await: reads the cached value, no wait
 ```
 
 ## Controlling the worker
@@ -112,7 +112,7 @@ Each nested `async begin` sees its own `Cancelled`. The call form runs an ordina
 Spawn without keeping the future and the work still runs - the worker holds the only reference and the future frees itself when the thread is done:
 
 ```pascal
-async logToFile('done');         // runs on a worker, nobody waits
+async logToFile('done'); // runs on a worker, nobody waits
 async begin
   flushCaches;
 end;
@@ -156,7 +156,7 @@ end;
 try
   await bad;
 except
-  on e: Exception do writeln(e.Message);   // boom
+  on e: Exception do writeln(e.Message); // boom
 end;
 ```
 
