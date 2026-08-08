@@ -102,16 +102,38 @@ implementation
         result:=arr;
       end;
 
+    { symtable an inline declaration inserts into: the innermost stack
+      entry that can hold variables. `with` fieldset and `on E` exception
+      symtables are lookup-only views pushed over it, so a declaration
+      in a statement list nested under them (e.g. `with r do try`) skips
+      them and lands in the enclosing scope }
+    function inline_decl_symtable: TSymtable;
+      var
+        stackitem: psymtablestackitem;
+      begin
+        stackitem:=symtablestack.stack;
+        while assigned(stackitem) and
+              (stackitem^.symtable.symtabletype in [withsymtable,exceptsymtable]) do
+          stackitem:=stackitem^.next;
+        if assigned(stackitem) then
+          result:=stackitem^.symtable
+        else
+          result:=symtablestack.top;
+      end;
+
     { block scopes at main-program level (program body, unit init) hold
       static vars like every other main-program variable, so a closure can
       capture them directly - a parent-frame access from a nested routine
       into the main frame cannot be expressed (IE 2020050302). Block scopes
       inside routines hold ordinary locals }
     function inline_var_sym_is_local: boolean;
+      var
+        st: TSymtable;
       begin
-        result:=(symtablestack.top.symtabletype=localsymtable) or
-                ((symtablestack.top.symtabletype=blocksymtable) and
-                 (symtablestack.top.symtablelevel>=normal_function_level));
+        st:=inline_decl_symtable;
+        result:=(st.symtabletype=localsymtable) or
+                ((st.symtabletype=blocksymtable) and
+                 (st.symtablelevel>=normal_function_level));
       end;
 
     { create the sym for an inline var declaration. sibling main-body block
@@ -126,7 +148,7 @@ implementation
         else
           begin
             result:=cstaticvarsym.create(n,vs_value,def,[]);
-            if symtablestack.top.symtabletype=blocksymtable then
+            if inline_decl_symtable.symtabletype=blocksymtable then
               tstaticvarsym(result).set_mangledname(
                 make_mangledname('U',current_procinfo.procdef.localst,
                   n+'$blk'+tostr(current_tokenpos.line)+'_'+tostr(current_tokenpos.column)));
@@ -1575,7 +1597,7 @@ implementation
               set_varstate(hloopvar, vs_written, []);
               set_varstate(hloopvar, vs_read, [vsf_must_be_valid]);
 
-              hloopbody := statement;
+              hloopbody := control_body_statement;
               exclude(loopvs.varoptions, vo_is_loop_counter);
               result := create_for_in_loop(hloopvar, hloopbody, expr);
 
@@ -1800,7 +1822,7 @@ implementation
               set_varstate(orig_hloopvar, vs_written, []);
               set_varstate(orig_hloopvar, vs_read, [vsf_must_be_valid]);
 
-              hbody := statement;
+              hbody := control_body_statement;
               exclude(itempvs.varoptions, vo_is_loop_counter);
 
               // wrap body: prepend field assignments, then original body
@@ -2441,7 +2463,7 @@ implementation
            begin
              consume(_VAR);
 
-             if not (symtablestack.top.symtabletype in [localsymtable,staticsymtable,blocksymtable]) then
+             if not (inline_decl_symtable.symtabletype in [localsymtable,staticsymtable,blocksymtable]) then
                begin
                  Message(parser_e_syntax_error);
                  result := cerrornode.create;
@@ -3976,6 +3998,7 @@ implementation
         free_guarded    : tnode;
         chain_block     : tblocknode;
         chain_stat      : tstatementnode;
+        declst          : TSymtable;
       begin
         result := nil;
         consume(_VAR);
@@ -3983,7 +4006,8 @@ implementation
         { Inline var is only meaningful inside a routine body (localsymtable,
           a block-scope symtable) or in the main program block (staticsymtable
           at main_program_level). }
-        if not (symtablestack.top.symtabletype in [localsymtable,staticsymtable,blocksymtable]) then
+        declst := inline_decl_symtable;
+        if not (declst.symtabletype in [localsymtable,staticsymtable,blocksymtable]) then
           begin
             Message(parser_e_syntax_error);
             result := cerrornode.create;
@@ -4053,7 +4077,7 @@ implementation
                   continue;
                 destruct_var := create_inline_var_sym(names[j], fieldsyms[j].vardef);
                 destruct_var.register_sym;
-                symtablestack.top.insertsym(destruct_var);
+                declst.insertsym(destruct_var);
                 destruct_var.varstate := vs_initialised;
                 if destruct_var.typ = staticvarsym then
                   cnodeutils.insertbssdata(tstaticvarsym(destruct_var));
@@ -4081,7 +4105,7 @@ implementation
           repeat
             vs := create_inline_var_sym(current_scanner.orgpattern, generrordef);
             vs.register_sym;
-            symtablestack.top.insertsym(vs);
+            declst.insertsym(vs);
             sc.add(vs);
             consume(_ID);
           until not try_to_consume(_COMMA);
@@ -4136,7 +4160,7 @@ implementation
                       tcsym := cstaticvarsym.create('$inlinetc_'+tsym(sc[0]).realname,
                                                     vs_const, hdef, []);
                       include(tcsym.symoptions, sp_internal);
-                      symtablestack.top.insertsym(tcsym);
+                      declst.insertsym(tcsym);
                       read_typed_const(current_asmdata.asmlists[al_typedconsts],
                                        tcsym, false, false);
                       tabstractnormalvarsym(sc[0]).varstate := vs_initialised;
@@ -4374,10 +4398,12 @@ implementation
         old_block_type : tblock_type;
         varspez : tvarspez;
         asmtype : tasmlisttype;
+        declst : TSymtable;
       begin
         result:=nil;
         consume(_CONST);
-        if not (symtablestack.top.symtabletype in [localsymtable,staticsymtable,blocksymtable]) then
+        declst:=inline_decl_symtable;
+        if not (declst.symtabletype in [localsymtable,staticsymtable,blocksymtable]) then
           begin
             Message(parser_e_syntax_error);
             result:=cerrornode.create;
@@ -4400,7 +4426,7 @@ implementation
             if assigned(csym) then
               begin
                 csym.register_sym;
-                symtablestack.top.insertsym(csym);
+                declst.insertsym(csym);
                 result:=cnothingnode.create;
               end
             else
@@ -4424,7 +4450,7 @@ implementation
                 asmtype:=al_typedconsts;
               end;
             vsym:=cstaticvarsym.create(orgname,varspez,hdef,[]);
-            symtablestack.top.insertsym(vsym);
+            declst.insertsym(vsym);
             vsym.register_sym;
             consume(_EQ);
             { parse_tail=false: the statement loop owns the semicolon }
@@ -4467,6 +4493,7 @@ implementation
         filepos        : tfileposinfo;
         kw_label       : ansistring;
         guard_prefix   : ansistring;
+        declst         : TSymtable;
       begin
         if is_threadvar then
           begin
@@ -4572,10 +4599,11 @@ implementation
             end;
           storetokenpos := current_tokenpos;
           current_tokenpos := filepos;
+          declst := inline_decl_symtable;
           sym := cstaticvarsym.create(name,vs_value,hdef,[]);
-          sym.visibility := symtablestack.top.currentvisibility;
+          sym.visibility := declst.currentvisibility;
           sym.varstate := vs_initialised;
-          symtablestack.top.insertsym(sym);
+          declst.insertsym(sym);
           if is_threadvar then
             begin
               { sym lives in the function's localst for proper scoping;
@@ -4645,7 +4673,7 @@ implementation
                   include(guardsym.symoptions,sp_internal);
                   include(guardsym.varoptions,vo_is_internal);
                   include(guardsym.varoptions,vo_is_typed_const);
-                  symtablestack.top.insertsym(guardsym);
+                  declst.insertsym(guardsym);
                   if is_threadvar then
                     begin
                       include(guardsym.varoptions,vo_is_thread_var);
