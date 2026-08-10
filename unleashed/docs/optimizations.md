@@ -1,15 +1,25 @@
 # Optimizer
 
-Two optimizer switches on top of what stock `-O` levels do: `-OoMEMINLINE` turns small constant-size `FillChar()` / `Move()` calls into direct stores, and `-OoAUTOINLINE` inlines small routines that carry no `inline` directive. Neither needs a mode, a modeswitch or a source change - only an optimization level. A third optimization needs not even that: a call through a procvar whose target is provably one specific routine becomes a direct call at every level - see [Procvar Devirtualization](#procvar-devirtualization).
+Three optimizations on top of what stock `-O` levels do. Two of them are optimizer switches, the third is always on:
 
-| Switch | On from | Effect |
-|---|---|---|
-| `-OoMEMINLINE` | `-O2` | `FillChar()`, `FillByte()`, `FillWord()`, `FillDWord()`, `FillQWord()` and `Move()` with a constant count of at most 64 bytes expand into direct stores instead of an RTL call |
-| `-OoAUTOINLINE` | `-O3` | small routines are marked for inlining without an `inline` directive |
+| Optimization | Where it acts | On from | Effect |
+|---|---|---|---|
+| `-OoMEMINLINE` | any mode | `-O2` | `FillChar()`, `FillByte()`, `FillWord()`, `FillDWord()`, `FillQWord()` and `Move()` with a constant count of at most 64 bytes expand into direct stores instead of an RTL call |
+| `-OoAUTOINLINE` | `{$mode unleashed}` units | `-O3` | small routines are marked for inlining without an `inline` directive |
+| [Procvar Devirtualization](#procvar-devirtualization) | `{$mode unleashed}` units | every level, `-O-` included | a call through a procvar that provably holds the address of one routine is rewritten into a direct call to that routine |
 
-`-OoAUTOINLINE` exists in stock Free Pascal too, but is off at every level there: its heuristic priced any control flow as infinitely complex, so a routine holding a single `if` never qualified no matter how the threshold was set. The heuristic here judges the shape of the body instead, which is what makes the switch worth enabling by default.
+`-OoMEMINLINE` works in every mode. It needs no modeswitch and no source change, only the optimization level.
 
-Both are ordinary optimizer switches, so all the usual ways to address them work:
+The other two act on units compiled in `{$mode unleashed}` and do nothing anywhere else. In an `objfpc`, `delphi` or `fpc` unit no routine is ever auto-marked and no procvar call is ever rewritten. `-O3` does not change that, and neither does `-OoAUTOINLINE` spelled out on the command line.
+
+The mode that counts is the mode of the unit being compiled. The two optimizations read it at different moments, so they behave differently across unit boundaries:
+
+- `-OoAUTOINLINE` marks a **routine**. The decision happens when the unit declaring the routine is compiled, and the mark travels in that unit's `.ppu` like an `inline` directive would. So a routine auto-marked in an unleashed unit is expanded at call sites in other units too, whatever mode those units are written in. Compile the same unit in `objfpc` and there is no mark, so there is nothing to expand anywhere.
+- Devirtualization rewrites a **call site**. The decision happens when the unit holding the call is compiled. A call written in an `objfpc` unit stays indirect even when the target routine comes from an unleashed unit. A call written in an unleashed unit is rewritten even when the target lives in an `objfpc` unit.
+
+`-OoAUTOINLINE` exists in stock Free Pascal too, but no `-O` level turns it on there. Its stock heuristic prices any control flow as infinitely complex, so a routine holding a single `if` never qualified, no matter how the threshold was set. The heuristic here judges the shape of the body instead, which is what makes the switch worth enabling by default.
+
+The two switches are ordinary optimizer switches, so all the usual ways to address them work:
 
 ```
 fpc -O2 -OoNOMEMINLINE unit.pas
@@ -23,11 +33,11 @@ fpc -O3 -Ooautoinline- unit.pas
 {$optimization autoinline+}
 ```
 
-A trailing `+` or `-` on the switch name sets or clears it; the `NO` prefix clears it - the spellings are interchangeable. The directive is read per routine: routines declared while the switch is off compile without the optimization, the ones after turning it back on get it again.
+A trailing `+` on the switch name sets it, a trailing `-` clears it, and the `NO` prefix clears it too. The spellings are interchangeable. The directive is read per routine: a routine declared while the switch is off compiles without the optimization, a routine declared after turning it back on gets it again.
 
 ## `-OoMEMINLINE`
 
-A block fill or a block copy of a handful of bytes spends most of its time in the RTL routine's size dispatch, not in the stores. With a constant count the size is known while the tree is still being built, so the call is replaced by the stores it would end up performing.
+A block fill or a block copy of a handful of bytes spends most of its time in the RTL routine's size dispatch, not in the stores. With a constant count the size is known at compile time, so the call is replaced by the stores it would end up performing.
 
 ```pascal
 type TFrame = record kind: byte; len, crc: dword; end; // 12 bytes
@@ -43,14 +53,16 @@ FillChar(frame, sizeof(frame), 0); // two 8-byte stores, no call
 |---|---|
 | the routine | `FillChar()`, `FillByte()`, `FillWord()`, `FillDWord()`, `FillQWord()` or `Move()` from the `system` unit |
 | the count | a constant, at least one element and at most 64 bytes in total: 64 for `FillChar()` / `FillByte()` / `Move()`, 32 words, 16 dwords, 8 qwords. Integer conversions around the constant are seen through |
-| the operands | destination (and source, for `Move()`) must have an address. The one case that fails in practice is a constant actual spliced in by an inline expansion, which has no address until the RTL call materializes it |
+| the operands | destination (and source, for `Move()`) must have an address |
 | the target | the stores are unaligned, so targets that require naturally aligned accesses (ARM, MIPS, SPARC, RISC-V, m68k and the like) keep the call |
 
 A non-constant count, a count over the cap and a zero count all stay a regular call.
 
+One operand has no address in practice: a constant actual spliced into the body by an inline expansion. Such a constant only gets an address when the RTL call materializes it, so that call is kept too.
+
 ### The store pattern
 
-The bytes are covered with naturally sized stores; a size that is not a multiple of the widest store gets a final store overlapping the previous one, which beats a tail of narrower stores.
+The bytes are covered with naturally sized stores. A size that is not a multiple of the widest store gets a final store overlapping the previous one, which beats a tail of narrower stores.
 
 | Total bytes | Stores |
 |---|---|
@@ -61,7 +73,7 @@ The bytes are covered with naturally sized stores; a size that is not a multiple
 
 So 12 bytes are two 8-byte stores overlapping in the middle, and 64 bytes are eight of them with no overlap.
 
-The address is computed once. A plain variable (global, local or parameter, but not a threadvar) has its address folded into every store; anything else - a field of a dereferenced pointer, an indexed element, a function result - gets one pointer temp, assigned once, exactly like the call would have evaluated its argument once.
+The address of the operand is computed once. A plain variable (global, local or parameter, but not a threadvar) has its address folded into every store. Any other operand gets one pointer temp: a field of a dereferenced pointer, an indexed element, a function result. The temp is assigned once, exactly like the call would have evaluated its argument once.
 
 ### Fill values
 
@@ -84,9 +96,9 @@ Move(buf[0], buf[4], 12); // 00 01 02 03 00 01 02 03 04 05 06 07 08 09 0A 0B
 
 ## `-OoAUTOINLINE`
 
-At `-O3` a routine that never says `inline` is still inlined when its body is small and simple enough. There is no directive and no source change - a getter, a clamp, a two-line wrapper stops costing a call.
+At `-O3` a routine in a `{$mode unleashed}` unit is inlined even though it never says `inline`, provided its body is small and simple enough. There is no directive and no source change: a getter, a clamp or a two-line wrapper stops costing a call. Routines in any other mode are never auto-marked, even with the switch given explicitly.
 
-The decision is made once per routine, when its code is generated, and it is reported as a hint at the routine's declaration, so the compiler log tells which routines stopped being real calls:
+The decision is made once per routine, when its code is generated. It is reported as a hint at the routine's declaration, so the compiler log lists which routines stopped being real calls:
 
 ```
 demo.pp(12,1) Hint: Auto inlining: clampToByte(LongInt):System.Byte;
@@ -105,7 +117,7 @@ The body must fit a node budget and consist only of node kinds worth duplicating
 | allowed shapes | expressions, assignments, `if`, `case`, `exit`, `raise`, calls, temporaries, type conversions |
 | allowed intrinsics | `inc()`, `dec()`, `succ()`, `pred()`, `ord()`, `chr()`, `length()`, `assigned()`, `abs()`, `sqr()`, `sizeof()`, `typeof()`, `lo()`, `hi()`, the `rol` / `ror` family, `include()`, `exclude()`, `aligned()`, `unaligned()`, `volatile()` |
 
-A body holding one call is admitted on purpose: wrappers, overloads that only supply a default argument and guard helpers that raise are exactly the routines worth folding away. The budget is halved for them because each splice duplicates that call's parameter setup as well - without the tighter cap a compiler self-build grows 23% instead of 4%.
+A body holding one call is admitted on purpose. Wrappers, overloads that only supply a default argument, and guard helpers that raise are exactly the routines worth folding away. Their budget is halved because each splice duplicates that call's parameter setup as well; without the tighter cap a compiler self-build grows 23% instead of 4%.
 
 ### What does not qualify
 
@@ -120,30 +132,38 @@ A body holding one call is admitted on purpose: wrappers, overloads that only su
 | forwarding an own by-reference parameter | the body passes one of its own parameters on as `var` / `out` / `constref` or to an untyped parameter |
 | the body is too big | over the node budget |
 
-On top of that the routine must not already be `inline` or `noinline`, must not declare nested routines, and the usual suspects never enter: constructors, destructors, class constructors and destructors, unit initialization and finalization, the program body, `virtual`, `external`, `exports`, `interrupt`, `iocheck` and `safecall` routines.
+Three more rules on top of the table. The routine must not already be `inline` or `noinline`. It must not declare nested routines. And the usual suspects never enter: constructors, destructors, class constructors and destructors, unit initialization and finalization, the program body, and `virtual`, `external`, `exports`, `interrupt`, `iocheck` and `safecall` routines.
 
 ### It is not the forced regime
 
-`-OoAUTOINLINE` marks the routine the way an `inline` directive in a stock mode would: the call sites still go through the inliner's own size budget, which shrinks with expansion depth, so a deeply nested chain of auto-inlined calls stops expanding at some point without saying anything. This is the opposite of what an explicit `inline` does in `{$mode unleashed}` - see [Forced Inlining](forced-inline.md), where every direct call expands and a failure is a warning.
+This is not [Forced Inlining](forced-inline.md). The forced regime is entered by one thing alone: the `inline` modifier written by hand on the declaration. No heuristic ever promotes a routine into it.
 
-`{$inline off}` turns auto-inlining off too: a routine whose body is parsed while the switch is off is never auto-marked, and no call parsed while it is off expands anything - see [Forced Inlining - Turning it off](forced-inline.md#turning-it-off). To address only the automatic marking and leave explicit `inline` routines alone, use `{$optimization autoinline-}` / `-OoNOAUTOINLINE`; to keep one routine out, mark it `noinline`.
+`-OoAUTOINLINE` marks the routine the way an `inline` directive in a stock mode would, and the mark stays a stock-grade hint. Every call site still goes through the inliner's own size budget, and that budget shrinks with expansion depth, so a deeply nested chain of auto-inlined calls stops expanding at some point, silently. Auto inlining never bloats a build the way a forced chain can: small bodies enter, budgeted call sites expand. A hand-written `inline` in `{$mode unleashed}` is the opposite: every direct call expands, and a failure is a warning.
+
+Three ways to keep something out:
+
+- `{$optimization autoinline-}` / `-OoNOAUTOINLINE` stops the automatic marking and leaves explicit `inline` routines alone.
+- `noinline` keeps one routine out.
+- `{$inline off}` turns off auto-inlining together with every other expansion: a routine whose body is parsed while it is off is never auto-marked, and a call parsed while it is off does not expand anything. See [Forced Inlining - Turning it off](forced-inline.md#turning-it-off).
 
 ## Procvar Devirtualization
 
-A call through a procedure variable that provably holds the address of one specific routine is rewritten into a direct call. No switch, no mode and no optimization level required - the rewrite runs at every level, `-O-` included, and reports a hint at the call site:
+A call through a procedure variable that provably holds the address of one specific routine is rewritten into a direct call. There is no switch and no optimization level to set: the rewrite acts on call sites written in `{$mode unleashed}` units, at every level from `-O-` up, and reports a hint at the call site:
 
 ```
 demo.pp(21,26) Hint: Devirtualized call: doubler(LongInt):System.LongInt;
 ```
 
-Once the call is direct, the target's inline regime applies like at any other call site: a routine in the [forced regime](forced-inline.md) expands, a small routine is picked up by `-OoAUTOINLINE` at `-O3`, and a `noinline` routine stays a - now direct - call.
+This is not inlining. The call stays a call and the target keeps its standalone body. Only the indirection goes away: `call rax` becomes `call doubler`.
+
+What happens afterwards is the target's own inline regime, exactly as at any other direct call site: a routine in the [forced regime](forced-inline.md) expands, a small routine is picked up by `-OoAUTOINLINE` at `-O3`, and a routine that is neither stays a real call. So at `-O-` a wrapper without an `inline` directive is devirtualized and nothing more.
 
 ### What resolves
 
 Two shapes, chased through at most 4 locations:
 
-- **The address itself.** `@routine` (behind any value-preserving casts) reaching the call: written in place as `TFn(@doubler)(6)`, or spliced into a wrapper's body by the inliner when the wrapper's procvar parameter received `@routine` at the wrapper's own call site.
-- **A local with a single store.** A local variable or a compiler temporary whose only store in the whole routine is such an address. The store itself is removed when nothing else reads the location.
+- **The address itself.** `@routine`, behind any value-preserving casts, reaching the call. Written in place it looks like `TFn(@doubler)(6)`. It also appears when the inliner splices a wrapper's body: the wrapper's procvar parameter received `@routine` at the wrapper's own call site, and after the splice that address stands right at the inner call.
+- **A local with a single store.** A local variable or a compiler temporary whose only store in the whole routine is such an address. The store itself is removed when nothing else reads the location; see [Debugging](#debugging).
 
 ```pascal
 procedure run;
@@ -155,7 +175,7 @@ begin
 end;
 ```
 
-The wrapper case is where it adds up. Once `apply` is inlined (forced or auto), its parameter load becomes the address constant, the inner call devirtualizes, `doubler` inlines in turn, and the chain folds to its result:
+The wrapper case is where it adds up. Once `apply()` is inlined, forced or auto, its parameter load becomes the address constant. The inner call then devirtualizes, `doubler()` inlines in turn, and the chain folds to its result:
 
 ```pascal
 function apply(f: TFn; x: longint): longint;
@@ -176,8 +196,28 @@ var g := apply(@doubler, 6); // -O3: g is assigned the constant 12, no calls
 | the enclosing routine declares nested routines or contains an `asm` block | they can write locals invisibly |
 | a method procvar (`of object`) or a nested procvar | carries a self/frame value along with the address |
 | a target with a different calling convention | the rewrite requires a call-identical signature |
+| the call site is written in a mode other than `{$mode unleashed}` | the rewrite is mode-gated, see the table at the top |
+| the call site sits in an `{$inline off}` region | see below |
 
-Debugging is unaffected: devirtualization never removes the routine or the call, it only changes how the call is made - a breakpoint inside the target still hits. To also keep the target out of inline expansion, mark it `noinline`.
+### Debugging
+
+The routine and the call both survive the rewrite, so a breakpoint inside the target hits as it did before and the frame shows up in a stack trace.
+
+The procvar itself is a different matter. Once the call reads the address directly, a local whose only job was to carry that address has a store nobody reads, and that store is removed, so a watch on such a variable shows whatever its stack slot happened to hold. Nothing else picks those stores up later: dead store elimination is not part of any `-O` level.
+
+`{$inline off}` turns the rewrite off along with the expansions, which is how to step through a region with everything in place: the call goes back to being indirect and the store is emitted again.
+
+```pascal
+{$inline off}
+procedure stepping_here;
+begin
+  var p := @doubler;   // stored, and a watch on p shows the address
+  writeln(p(5));       // stays an indirect call
+end;
+{$inline on}
+```
+
+To keep only the target out of inline expansion while its call sites still devirtualize, mark it `noinline`.
 
 ## Demo
 
@@ -290,4 +330,4 @@ optimizations_demo.pp(33,1) Hint: Auto inlining: clampToByte(LongInt):System.Byt
 optimizations_demo.pp(50,38) Hint: Devirtualized call: clampToByte(LongInt):System.Byte;
 ```
 
-None of this changes what the program prints - built with `-O1` it produces the identical lines (and needs about 34000 us for the loop; the devirtualization hint still appears, the auto-inlining one does not). What changes is the code behind them: `-OoNOMEMINLINE` puts three `FillChar()` calls and one `Move()` call back into the assembly, and `-OoNOAUTOINLINE` puts back the calls to `clampToByte()`, one of them inside the counting loop.
+None of this changes what the program prints. Built with `-O1` it produces the identical lines, needs about 34000 us for the loop, still shows the devirtualization hint, and drops the auto-inlining one. What changes is the code behind the lines: `-OoNOMEMINLINE` puts three `FillChar()` calls and one `Move()` call back into the assembly, and `-OoNOAUTOINLINE` puts back the calls to `clampToByte()`, one of them inside the counting loop.
