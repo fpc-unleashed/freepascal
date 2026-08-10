@@ -498,7 +498,7 @@ scan_e_improperly_indented_multiline_string=02120_E_Incorrectly indented multi-l
 #
 # Parser
 #
-# 03446 is the last used one
+# 03451 is the last used one
 #
 % \section{Parser messages}
 % This section lists all parser messages. The parser takes care of the
@@ -2005,12 +2005,16 @@ parser_w_forceinline_not_possible=03446_W_Routine marked as "inline" will not be
 % The routine body uses a construct the inliner cannot expand (recursion,
 % nested routines, a variant array parameter, ...), so every call emits a
 % regular call instead.
+parser_e_outvar_seed_out_param=03451_E_A seed value is not allowed at an "out" parameter, the callee never reads it
+% An inline declaration with a seed (\var{f(var x := e)}) only makes sense at
+% a \var{var} parameter. An \var{out} parameter discards its argument's value
+% on entry, so the seed could never be observed.
 %
 % \end{description}
 %
 # Type Checking
 #
-# 03446 is the last used parser one
+# 03451 is the last used parser one
 #
 # 04141 is the last used one
 #

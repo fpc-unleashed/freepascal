@@ -244,7 +244,7 @@ interface
        tcallparaflag = (
           cpf_is_colon_para,
           cpf_varargs_para,      { belongs this para to varargs }
-          cpf_outvar_decl        { left is an inline out-var/discard decl, bound to the out parameter type }
+          cpf_outvar_decl        { left is an inline out-var/discard decl, bound to the matched out/var parameter type }
        );
        tcallparaflags = set of tcallparaflag;
 
@@ -270,6 +270,9 @@ interface
           fparacopyback: tnode;
           callparaflags : tcallparaflags;
           parasym       : tparavarsym;
+          { seed expression of an inline out-var (`var x := e`), consumed
+            when the declaration binds to a var parameter }
+          outvarseed    : tnode;
           { The original order of the parameters prior to the "order_parameters"
             call, or -1 if not yet configured }
           originalindex: Integer;
@@ -1003,6 +1006,8 @@ implementation
          fparainit := nil;
          fparacopyback.free;
          fparacopyback := nil;
+         outvarseed.free;
+         outvarseed := nil;
          inherited destroy;
       end;
 
@@ -1063,6 +1068,8 @@ implementation
          n.fparainit:=initcopy;
          if assigned(fparacopyback) then
            n.fparacopyback:=fparacopyback.getcopy;
+         if assigned(outvarseed) then
+           n.outvarseed:=outvarseed.getcopy;
          result:=n;
       end;
 
@@ -4343,6 +4350,33 @@ implementation
                  cnodeutils.insertbssdata(tstaticvarsym(outvarsym));
                pt.left.resultdef:=nil;
                typecheckpass(pt.left);
+               { an out parameter discards its argument's value on entry, so a
+                 seed there could never be observed }
+               if (currpara.varspez=vs_out) and assigned(pt.outvarseed) then
+                 begin
+                   CGMessagePos(pt.outvarseed.fileinfo,parser_e_outvar_seed_out_param);
+                   pt.outvarseed.free;
+                   pt.outvarseed:=nil;
+                 end;
+               { a var parameter reads its argument: give the fresh variable a
+                 defined value before the call - the seed when given, Default(T)
+                 otherwise (file types keep their RTL init) }
+               if currpara.varspez=vs_var then
+                 begin
+                   if assigned(pt.outvarseed) then
+                     begin
+                       add_init_statement(cassignmentnode.create(
+                         pt.left.getcopy,pt.outvarseed));
+                       pt.outvarseed:=nil;
+                     end
+                   else if not((outvarsym.vardef.typ=filedef) or
+                      ((outvarsym.vardef.typ in [arraydef,recorddef,objectdef]) and
+                       not is_valid_for_default(outvarsym.vardef))) then
+                     add_init_statement(cassignmentnode.create(
+                       pt.left.getcopy,
+                       cinlinenode.create(in_default_x,false,
+                         ctypenode.create(outvarsym.vardef))));
+                 end;
                exclude(pt.callparaflags,cpf_outvar_decl);
              end;
            oldppt:=pcallparanode(@pt.right);

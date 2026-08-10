@@ -189,17 +189,18 @@ implementation
 
 
     { Parse an inline out-variable or discard at a call-argument position:
-        foo(var x)   -> declares block-scoped `x`, type inferred from the out parameter
-        foo(_)       -> discard, a hidden local stands in for the out parameter
+        foo(var x)      -> declares block-scoped `x`, type inferred from the out/var parameter
+        foo(var x := e) -> same, seeded with `e`; only meaningful at a var parameter
+        foo(_)          -> discard, a hidden local stands in for the out/var parameter
       The variable is created with a placeholder type (generrordef); bind_parasym
-      fixes it up to the matched out parameter's type after overload resolution.
+      fixes it up to the matched parameter's type after overload resolution.
       The callparanode is flagged cpf_outvar_decl so candidate matching accepts it
-      only at an out parameter and binding knows to set its type. }
+      only at an out or var parameter and binding knows to set its type. }
     function parse_outvar_para(prev:tnode; discard:boolean) : tnode;
       var
          vs       : tabstractnormalvarsym;
          sym_name : string;
-         ld       : tnode;
+         ld,seed  : tnode;
          cp       : tcallparanode;
       begin
          if discard then
@@ -229,6 +230,20 @@ implementation
              sym_name:=current_scanner.orgpattern;
            end;
 
+         seed:=nil;
+         if not discard then
+           begin
+             consume(_ID);
+             if current_scanner.token=_ASSIGNMENT then
+               begin
+                 consume(_ASSIGNMENT);
+                 seed:=comp_expr([ef_accept_equal]);
+               end;
+           end;
+
+         { the symbol is created after the seed is parsed, so a seed naming
+           the declared variable resolves in the outer scope instead of
+           hitting the placeholder-typed variable being declared }
          if symtablestack.top.symtabletype=staticsymtable then
            vs:=cstaticvarsym.create(sym_name,vs_value,generrordef,[])
          else
@@ -236,12 +251,10 @@ implementation
          vs.register_sym;
          symtablestack.top.insertsym(vs);
 
-         if not discard then
-           consume(_ID);
-
          ld:=cloadnode.create(vs,vs.owner);
          cp:=ccallparanode.create(ld,prev);
          include(cp.callparaflags,cpf_outvar_decl);
+         cp.outvarseed:=seed;
          result:=cp;
       end;
 
