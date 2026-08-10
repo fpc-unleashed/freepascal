@@ -2192,6 +2192,8 @@ implementation
 
         { automatic inlining? }
         if (cs_opt_autoinline in current_settings.optimizerswitches) and
+           { only units in unleashed mode take part }
+           (m_unleashed in current_settings.modeswitches) and
            { `$inline off` around the body opts the routine out }
            (cs_do_inline in code.localswitches) and
            not(po_noinline in procdef.procoptions) and

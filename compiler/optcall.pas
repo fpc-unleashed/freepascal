@@ -436,9 +436,13 @@ unit optcall;
           exit;
         callnode:=tcallnode(_n);
         { a call through a procvar whose target address is known becomes a
-          direct call, which below may then be inlined }
+          direct call, which below may then be inlined; only call sites in
+          unleashed units are rewritten, and `$inline off` keeps the call
+          indirect so the procvar keeps its value for a debugger }
         if assigned(callnode.right) and
-           (callnode.procdefinition.typ=procvardef) then
+           (callnode.procdefinition.typ=procvardef) and
+           (m_unleashed in current_settings.modeswitches) and
+           (cs_do_inline in callnode.localswitches) then
           try_devirtualize(callnode,pinlinectx(arg));
         if not(po_inline in callnode.procdefinition.procoptions) then
           exit;

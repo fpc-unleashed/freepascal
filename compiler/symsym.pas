@@ -2308,7 +2308,8 @@ implementation
               so we cannot know if it will be auto inlined, so make all symbols of it
               global if asked }
             (not(po_noinline in current_procinfo.procdef.procoptions) and
-             (cs_opt_autoinline in current_settings.optimizerswitches)))
+             (cs_opt_autoinline in current_settings.optimizerswitches) and
+             (m_unleashed in current_settings.modeswitches)))
           ) or
           (vo_is_public in varoptions);
       end;
