@@ -237,3 +237,13 @@ Small semantic adjustments that make standard constructs behave the way most peo
 ### [Optimizer Switches](optimizations.md)
 
 Three optimizations on top of what stock `-O` levels do. `-OoMEMINLINE` (on from `-O2`, any mode) expands `FillChar()` / `FillByte()` / `FillWord()` / `FillDWord()` / `FillQWord()` / `Move()` calls with a constant count of at most 64 bytes into direct stores. A runtime fill value is replicated with one multiply, and every chunk is loaded before the first store, so an overlapping `Move()` still behaves like the RTL one. `-OoAUTOINLINE` (on from `-O3`, `{$mode unleashed}` units only) inlines routines that carry no `inline` directive, judging the shape of the body (expressions, branches, exits, at most one call) against a node budget rather than a complexity score; the mark is a stock-grade hint whose call sites go through the inliner's size budget, not the forced regime of a hand-written `inline`. Both switches can be turned off per routine with `{$optimization NOMEMINLINE}` / `{$optimization NOAUTOINLINE}`. Procvar Devirtualization (every level including `-O-`, `{$mode unleashed}` call sites only) turns a call through a procvar that provably holds one routine's address into a direct call; an `{$inline off}` region stops it.
+
+---
+
+## Experimental and Undocumented
+
+Not everything in the compiler was built for daily use. A few things came out of experiments, do exactly one narrow thing, and never earned a page of their own. They are listed here rather than explained: if you need one, you already know what you are looking at, and if the hint below does not ring a bell, you do not need it. Treat them as unsupported - no guarantees on the exact spelling, the exact behaviour, or on them being here next release.
+
+| Feature | Shape | Hint |
+|---|---|---|
+| `$entrypoint` | `{$entrypoint routine_name}` | Points the program at the routine execution starts from. That is the whole of it - nothing is generated, wrapped or rearranged around the name. Programs and libraries, outside any routine; the name has to resolve to a real routine or the compile stops. |
