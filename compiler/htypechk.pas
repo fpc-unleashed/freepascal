@@ -3332,13 +3332,20 @@ implementation
                    end;
                end;
 
-              { inline out-var / discard argument: matches an out parameter of
-                any type and nothing else; type is bound after this candidate wins }
+              { inline out-var / discard argument: matches an out or var
+                parameter of any type and nothing else; type is bound after
+                this candidate wins. A seeded declaration (`var x := e`)
+                ranks an out parameter below any var match - out would discard
+                the seed, so binding rejects it with a dedicated error when
+                such a candidate still wins }
               if cpf_outvar_decl in pt.callparaflags then
                 begin
                   check_valid_var:=false;
-                  if assigned(currpara) and (currpara.varspez=vs_out) then
-                    eq:=te_exact;
+                  if assigned(currpara) and (currpara.varspez in [vs_var,vs_out]) then
+                    if (currpara.varspez=vs_out) and assigned(pt.outvarseed) then
+                      eq:=te_convert_l1
+                    else
+                      eq:=te_exact;
                 end
               else
               { varargs are always equal, but not exact }
