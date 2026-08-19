@@ -1,6 +1,6 @@
 # Out-Variables
 
-Declare a variable inline at an `out`- or `var`-argument position, or discard the output, instead of pre-declaring a throwaway local for every output. `var x` at the argument binds the output to a fresh variable; `var x := e` seeds it with an initial value; `_` throws it away.
+Declare a variable inline at an `out`- or `var`-argument position, or discard the output, instead of pre-declaring a throwaway local for every output. `var x` at the argument binds the output to a fresh variable; `var x: T` gives it an explicit type; `var x := e` seeds it with an initial value; `_` throws it away.
 
 ```pascal
 function TryParse(s: string; out value: integer): boolean; ...
@@ -11,6 +11,8 @@ if TryParse('42', var n) then       // n declared here, type inferred
 
 AddTo(var total, 5);                // var parameter: total starts at 0
 AddTo(var seeded := 100, 5);        // or at an explicit seed value
+
+FillDWord(var raw: dword, 1, $FF);  // untyped parameter: the annotation supplies the type
 
 GetCursorPos(_); // value not wanted: discard it
 ```
@@ -29,9 +31,30 @@ writeln(fn);                        // Ada
 writeln(ln);                        // Lovelace
 ```
 
-No type annotation is written or allowed - the type is always inferred from the parameter. The variable behaves like any local from then on: assignable, addressable, captured by closures, finalized at scope end.
+The type annotation is optional - a bare `var x` always infers the type from the parameter. The variable behaves like any local from then on: assignable, addressable, captured by closures, finalized at scope end.
 
 `_` is a valid Pascal identifier, so `var _` is not special: it declares a variable literally named `_`, exactly as `var x` declares `x`.
+
+## `var x: T` - explicit type
+
+The declaration can name its type instead of inferring it. An annotated declaration binds only to a parameter of exactly the type `T` (type aliases count as the same type); an assignment-compatible but different type does not match. It combines with a seed: `var x: T := e`.
+
+The annotation buys two things:
+
+- **Untyped parameters.** `procedure grab(var buf)` has no type to infer from, so a bare `var x` is rejected there. The annotation supplies the type; the callee sees a fresh variable of exactly that size:
+
+```pascal
+procedure grab(var buf); ...
+
+grab(var n: integer);        // fresh integer, zeroed, passed as the untyped argument
+grab(var m: integer := 123); // same, starting at 123
+```
+
+- **Overload disambiguation.** A bare `var x` matches an `out`/`var` parameter of any type, which makes overloads differing only in that type ambiguous; the annotation pins the candidate (example below).
+
+At a typed parameter the annotation is otherwise redundant: `AddTo(var x: integer, 5)` and `AddTo(var x, 5)` declare the same variable. Zero-init and seeds at `var` parameters work identically in both forms.
+
+The annotation accepts any type a regular `var` declaration accepts, anonymous forms included (`var buf: array[0..3] of byte`). The discard `_` takes no annotation.
 
 ## `_` - discard
 
@@ -111,6 +134,16 @@ procedure byConst(const x: integer);
 byConst(var y); // rejected - an input, not an output
 ```
 
+An **untyped** `var` or `out` parameter accepts only an annotated declaration - a bare `var x` has no type to infer, and the discard's hidden temp has none to take:
+
+```pascal
+procedure grab(var buf);
+
+grab(var y);          // Error: Cannot infer a type from an untyped parameter, use an explicit type: "var x: type"
+grab(_);              // Error: Cannot discard at an untyped parameter, there is no type for the hidden variable
+grab(var y: integer); // OK - the annotation supplies the type
+```
+
 ## Type inference happens after overload resolution
 
 `var x` / `_` carry no type until a candidate is chosen, so they match an `out` or `var` parameter of *any* type. If overloads differ only in that parameter's type - or only in `out` vs `var` - the call is ambiguous:
@@ -130,6 +163,12 @@ procedure Pick(var x: string); overload;
 
 Pick(var z);          // ambiguous - matches both
 Pick(var z := 'hi');  // picks the var overload
+```
+
+An annotated declaration matches only its own type, so it resolves overloads that differ in the parameter type:
+
+```pascal
+Take(var y: integer); // picks the integer overload
 ```
 
 ## Name collision
@@ -170,7 +209,7 @@ end;
 
 ## How it works
 
-The parser turns `var x` / `_` into a load of a placeholder local (created with an error type, inserted only after the seed is parsed) and flags the call argument; a `:=` seed expression is kept alongside. Overload matching treats a flagged argument as an exact match for an `out` or `var` parameter of any type; a seeded one ranks `out` below any `var` match. Once a candidate wins, binding sets the placeholder's type to the chosen parameter's type and re-checks the load; a seed that ended up at an `out` parameter is rejected there, and for a `var` parameter binding emits an assignment of the seed - or `Default(T)` - into the call's init block, executed immediately before the call. The flag is cleared at that point, so it never reaches code generation or a PPU.
+The parser turns `var x` / `_` into a load of a placeholder local (created with the annotated type, or with an error type when bare, inserted only after the seed is parsed) and flags the call argument; a `:=` seed expression is kept alongside. Overload matching treats a bare flagged argument as an exact match for an `out` or `var` parameter of any type, and an annotated one for a parameter of equal type or an untyped one; a seeded declaration ranks `out` below any `var` match. Once a candidate wins, binding sets a bare placeholder's type to the chosen parameter's type and re-checks the load; a seed that ended up at an `out` parameter is rejected there, and for a `var` parameter binding emits an assignment of the seed - or `Default(T)` - into the call's init block, executed immediately before the call. The flag is cleared at that point, so it never reaches code generation or a PPU.
 
 ## Want it off?
 

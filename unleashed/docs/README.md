@@ -23,7 +23,7 @@ One line enables everything:
 | `tuples` | anonymous tuple types, literals, destructuring |
 | `match` | first-match pattern matching |
 | `multivarinit` | one initializer for several variables |
-| `outvar` | inline out-variable `f(var x)`, seed `f(var x := e)`, discard `f(_)` |
+| `outvar` | inline out-variable `f(var x)`, typed `f(var x: T)`, seed `f(var x := e)`, discard `f(_)` |
 | `prepostincdec` | `PreInc()` / `PostInc()` / `PreDec()` / `PostDec()` value-returning inc/dec |
 | `forstep` | `step N` clause in `for` loops |
 | `autoproperties` | accessor-less properties with a synthesized backing field |
@@ -104,7 +104,7 @@ Declare variables at the point of first use, with type inference (`var x := expr
 
 ### [Out-Variables](out-var.md)
 
-`f(var x)` at an `out`- or `var`-argument position declares a fresh variable typed from the parameter and scoped to the enclosing block; `f(_)` discards the output. No more pre-declaring a throwaway local for every `Try*` routine. At a `var` parameter the variable is zero-initialized before the call, or seeded with an explicit value via `f(var x := e)`. Resolved after overload selection, and a declared identifier `_` always wins over the discard meaning, so existing code is unaffected. Modeswitch `outvar`.
+`f(var x)` at an `out`- or `var`-argument position declares a fresh variable typed from the parameter and scoped to the enclosing block; `f(_)` discards the output. No more pre-declaring a throwaway local for every `Try*` routine. At a `var` parameter the variable is zero-initialized before the call, or seeded with an explicit value via `f(var x := e)`. An explicit type, `f(var x: T)`, pins an overload and is the way to bind an untyped parameter. Resolved after overload selection, and a declared identifier `_` always wins over the discard meaning, so existing code is unaffected. Modeswitch `outvar`.
 
 ### [Statement Expressions](statement-expressions.md)
 
