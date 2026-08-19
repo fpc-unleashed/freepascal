@@ -3332,16 +3332,21 @@ implementation
                    end;
                end;
 
-              { inline out-var / discard argument: matches an out or var
-                parameter of any type and nothing else; type is bound after
-                this candidate wins. A seeded declaration (`var x := e`)
-                ranks an out parameter below any var match - out would discard
-                the seed, so binding rejects it with a dedicated error when
-                such a candidate still wins }
+              { inline out-var / discard argument: a bare declaration matches
+                an out or var parameter of any type (the type is bound after
+                this candidate wins); an annotated one (`var x: T`) requires
+                the parameter type to equal T, except at an untyped parameter,
+                which accepts any annotation. A seeded declaration
+                (`var x := e`) ranks an out parameter below any var match -
+                out would discard the seed, so binding rejects it with a
+                dedicated error when such a candidate still wins }
               if cpf_outvar_decl in pt.callparaflags then
                 begin
                   check_valid_var:=false;
-                  if assigned(currpara) and (currpara.varspez in [vs_var,vs_out]) then
+                  if assigned(currpara) and (currpara.varspez in [vs_var,vs_out]) and
+                     ((pt.resultdef.typ=errordef) or
+                      (currpara.vardef.typ=formaldef) or
+                      equal_defs(pt.resultdef,currpara.vardef)) then
                     if (currpara.varspez=vs_out) and assigned(pt.outvarseed) then
                       eq:=te_convert_l1
                     else

@@ -4341,12 +4341,29 @@ implementation
            pt.parasym:=currpara;
            if cpf_outvar_decl in pt.callparaflags then
              begin
-               { the out parameter type is now known: give the inferred out-var
-                 its real type, allocate storage if it lives at unit/program level,
-                 re-typecheck its load node, then clear the flag }
+               { the parameter is now known: an annotated declaration keeps its
+                 explicit type, a bare one takes the parameter's type; allocate
+                 storage if it lives at unit/program level, re-typecheck its
+                 load node, then clear the flag }
                outvarsym:=tabstractnormalvarsym(tloadnode(pt.left).symtableentry);
-               outvarsym.vardef:=currpara.vardef;
-               if outvarsym.typ=staticvarsym then
+               if outvarsym.vardef.typ=errordef then
+                 begin
+                   { a bare declaration at an untyped parameter has no type to
+                     infer; the discard's hidden temp is equally untypable }
+                   if currpara.vardef.typ=formaldef then
+                     begin
+                       if outvarsym.realname[1]='$' then
+                         CGMessagePos(pt.left.fileinfo,parser_e_outvar_discard_untyped)
+                       else
+                         CGMessagePos(pt.left.fileinfo,parser_e_outvar_untyped_param);
+                       pt.outvarseed.free;
+                       pt.outvarseed:=nil;
+                     end
+                   else
+                     outvarsym.vardef:=currpara.vardef;
+                 end;
+               if (outvarsym.typ=staticvarsym) and
+                  (outvarsym.vardef.typ<>errordef) then
                  cnodeutils.insertbssdata(tstaticvarsym(outvarsym));
                pt.left.resultdef:=nil;
                typecheckpass(pt.left);
@@ -4361,7 +4378,8 @@ implementation
                { a var parameter reads its argument: give the fresh variable a
                  defined value before the call - the seed when given, Default(T)
                  otherwise (file types keep their RTL init) }
-               if currpara.varspez=vs_var then
+               if (currpara.varspez=vs_var) and
+                  (outvarsym.vardef.typ<>errordef) then
                  begin
                    if assigned(pt.outvarseed) then
                      begin

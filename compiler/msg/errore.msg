@@ -498,7 +498,7 @@ scan_e_improperly_indented_multiline_string=02120_E_Incorrectly indented multi-l
 #
 # Parser
 #
-# 03451 is the last used one
+# 03453 is the last used one
 #
 % \section{Parser messages}
 % This section lists all parser messages. The parser takes care of the
@@ -2009,12 +2009,21 @@ parser_e_outvar_seed_out_param=03451_E_A seed value is not allowed at an "out" p
 % An inline declaration with a seed (\var{f(var x := e)}) only makes sense at
 % a \var{var} parameter. An \var{out} parameter discards its argument's value
 % on entry, so the seed could never be observed.
+parser_e_outvar_untyped_param=03452_E_Cannot infer a type from an untyped parameter, use an explicit type: "var x: type"
+% A bare \var{var x} takes its type from the matched parameter, and an
+% untyped \var{var} or \var{out} parameter has none to give. Write the
+% declaration with a type, \var{f(var x: integer)}, or pass an existing
+% variable.
+parser_e_outvar_discard_untyped=03453_E_Cannot discard at an untyped parameter, there is no type for the hidden variable
+% The discard \var{_} passes a hidden temporary typed from the matched
+% parameter. An untyped parameter provides no type, so pass an existing
+% variable instead.
 %
 % \end{description}
 %
 # Type Checking
 #
-# 03451 is the last used parser one
+# 03453 is the last used parser one
 #
 # 04141 is the last used one
 #

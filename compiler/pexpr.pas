@@ -190,16 +190,19 @@ implementation
 
     { Parse an inline out-variable or discard at a call-argument position:
         foo(var x)      -> declares block-scoped `x`, type inferred from the out/var parameter
-        foo(var x := e) -> same, seeded with `e`; only meaningful at a var parameter
+        foo(var x: T)   -> same, with an explicit type; required at an untyped parameter
+        foo(var x := e) -> seeded with `e`; only meaningful at a var parameter
         foo(_)          -> discard, a hidden local stands in for the out/var parameter
-      The variable is created with a placeholder type (generrordef); bind_parasym
-      fixes it up to the matched parameter's type after overload resolution.
-      The callparanode is flagged cpf_outvar_decl so candidate matching accepts it
-      only at an out or var parameter and binding knows to set its type. }
+      Without an annotation the variable is created with a placeholder type
+      (generrordef); bind_parasym fixes it up to the matched parameter's type
+      after overload resolution. The callparanode is flagged cpf_outvar_decl so
+      candidate matching accepts it only at an out or var parameter and binding
+      knows to set its type. }
     function parse_outvar_para(prev:tnode; discard:boolean) : tnode;
       var
          vs       : tabstractnormalvarsym;
          sym_name : string;
+         vardef   : tdef;
          ld,seed  : tnode;
          cp       : tcallparanode;
       begin
@@ -230,10 +233,18 @@ implementation
              sym_name:=current_scanner.orgpattern;
            end;
 
+         vardef:=generrordef;
          seed:=nil;
          if not discard then
            begin
              consume(_ID);
+             { optional explicit type: the only way to bind an untyped
+               parameter, and a match requirement at a typed one }
+             if current_scanner.token=_COLON then
+               begin
+                 consume(_COLON);
+                 read_anon_type(vardef,false,nil);
+               end;
              if current_scanner.token=_ASSIGNMENT then
                begin
                  consume(_ASSIGNMENT);
@@ -245,9 +256,9 @@ implementation
            the declared variable resolves in the outer scope instead of
            hitting the placeholder-typed variable being declared }
          if symtablestack.top.symtabletype=staticsymtable then
-           vs:=cstaticvarsym.create(sym_name,vs_value,generrordef,[])
+           vs:=cstaticvarsym.create(sym_name,vs_value,vardef,[])
          else
-           vs:=clocalvarsym.create(sym_name,vs_value,generrordef,[]);
+           vs:=clocalvarsym.create(sym_name,vs_value,vardef,[]);
          vs.register_sym;
          symtablestack.top.insertsym(vs);
 
