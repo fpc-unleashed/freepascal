@@ -827,7 +827,12 @@ implementation
         { set extendeddef to non-Nil so that potential checks for it won't trigger
           access violations }
         current_objectdef.extendeddef:=generrordef;
-        single_type(hdef,[stoParseClassParent]);
+        { in unleashed mode the extended type may be a specialization spelled
+          directly in the helper declaration }
+        if m_unleashed in current_settings.modeswitches then
+          single_type(hdef,[stoAllowSpecialization,stoParseClassParent])
+        else
+          single_type(hdef,[stoParseClassParent]);
         if not assigned(hdef) or (hdef.typ=errordef) then
           begin
             case helpertype of

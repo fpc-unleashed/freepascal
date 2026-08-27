@@ -86,6 +86,25 @@ var l: TList<integer>;
 
 **The switch replaces the explicit form, it does not stack on top of it.** With `implicitgenerics` active, `generic` and `specialize` are ordinary identifiers again (exactly as in `{$mode delphi}`), so `generic TList<T> = class` no longer parses - use the plain `TList<T>` form. This is the whole point: one modeswitch buys the Delphi generic surface in any mode. If you need the explicit `generic` / `specialize` keywords, compile that unit in `objfpc` without the switch.
 
+## Helpers for specializations
+
+Unleashed-only, no separate modeswitch. A helper may extend a generic specialization, spelled directly in the helper declaration - no named alias needed:
+
+```pascal
+type
+  TWrap<T> = record
+    val: T;
+  end;
+
+  TIntWrapHelper = record helper for TWrap<LongInt>
+    procedure Bump;
+  end;
+```
+
+The helper binds to the specialization itself, so it is found on every equal specialization of the same generic - in the declaring unit and in every unit that uses it. A helper declared for a named alias (`TIntWrap = TWrap<LongInt>`) behaves the same way.
+
+Outside unleashed mode helpers keep their stock behavior: a specialization cannot be spelled directly as the extended type, and a helper declared for an alias is only found on the exact specialization it was declared for, not on equal specializations materialized in other units.
+
 ## Nested generic methods
 
 Unleashed-only, no separate modeswitch. Stock FPC rejects a `generic` declared inside another with `Declaration of generic inside another generic is not allowed` - a limitation of its single token-replay buffer, not a language rule. Unleashed lifts it: a generic class or record can declare a method with its own type parameter list, independent of the enclosing type's.
