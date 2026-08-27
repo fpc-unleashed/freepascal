@@ -56,6 +56,15 @@ end.
 
 (Note: `.method` directly on a numeric literal inside a `$'...'` interpolation placeholder confuses the tokenizer - `{21.timesTwo}` reads `21.` as a float. Assign to a variable first, or call outside the placeholder.)
 
+The `record helper for T` spelling extends the same set of types. In unleashed mode (with `typehelpers` active) both spellings declare the same construct, so Delphi-style record helpers on primitive and class types compile unchanged:
+
+```pascal
+type
+  TIntHelper = record helper for integer
+    function timesTwo: integer;
+  end;
+```
+
 ## Multi-helpers
 
 Modeswitch `multihelpers` (default in unleashed). Several helpers for the same type are visible at once (by default only the last one in scope wins). Useful when two units each ship a helper for `integer` and you want methods from both.

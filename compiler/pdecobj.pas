@@ -816,6 +816,13 @@ implementation
         if not is_objectpascal_helper(current_structdef) then
           Internalerror(2011021103);
 
+        { in unleashed mode with type helpers available both spellings extend
+          the same set of types, so validate the record one like a type helper }
+        if (helpertype=ht_record) and
+            (m_unleashed in current_settings.modeswitches) and
+            (m_type_helpers in current_settings.modeswitches) then
+          helpertype:=ht_type;
+
         consume(_FOR);
         { set extendeddef to non-Nil so that potential checks for it won't trigger
           access violations }
