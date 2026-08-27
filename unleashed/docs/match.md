@@ -31,7 +31,7 @@ else
 end;
 ```
 
-`_` is an unconditional catch-all branch; `else` works identically (with the same statements-till-`end` semantics as in `case`), and `otherwise` is a synonym for `else`. Only one catch-all is allowed - a `_:` branch followed by `else` reports `` `_:` already covers unmatched values, drop trailing `else`/`otherwise` ``.
+`_` is an unconditional catch-all branch; `else` works identically (with the same statements-till-`end` semantics as in `case`), and `otherwise` is a synonym for `else`. Only one catch-all is allowed in first-match mode - a `_:` branch followed by `else` reports `` `_:` already covers unmatched values, drop trailing `else`/`otherwise` ``. In `match all` the two are distinct constructs - see the fallthrough section below.
 
 ### Indenting the catch-all
 
@@ -124,7 +124,23 @@ match all x of
 end;
 ```
 
-`match all` executes **every** matching branch, not just the first (the catch-all matches always). Lowered to independent if-statements inside a `repeat..until true` shell.
+`match all` executes **every** matching branch, not just the first. Lowered to independent if-statements inside a `repeat..until true` shell.
+
+`_` is a wildcard branch: it matches any value, so it always executes, in its listed position after the branches above it.
+
+### `else` / `otherwise` as a no-match fallback
+
+```pascal
+match all cmd of
+  'start': StartJob;
+  'stop':  StopJob;
+  else writeln('unknown command');
+end;
+```
+
+In `match all`, `else` (or its synonym `otherwise`) executes only when **no** branch matched. If at least one branch matched, the fallback is skipped - even when several branches matched and all of them ran.
+
+`_` counts as a match. A `match all` containing both a `_:` branch and a trailing `else`/`otherwise` still compiles, but the fallback can never run - the compiler warns `` `_:` always matches, `else`/`otherwise` branch never executes ``.
 
 ### `leave`
 
@@ -132,11 +148,11 @@ end;
 match all x of
   5: begin writeln('five'); leave; end;
   5: writeln('not reached');
-  _: writeln('not reached');
+  else writeln('not reached');
 end;
 ```
 
-`leave` exits the `match all` block early.
+`leave` exits the `match all` block early: the remaining branches and the `else`/`otherwise` fallback are skipped. Since `leave` can only run inside a branch that already matched, the fallback would not have run anyway.
 
 ## Tuple patterns with `_` wildcards
 

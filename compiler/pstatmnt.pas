@@ -735,11 +735,11 @@ implementation
         end;
 
       var
-        subject,cond,stmt,ifchain,firstcond,walknode,stmtblock : tnode;
+        subject,cond,stmt,ifchain,firstcond,walknode,stmtblock,flagblock : tnode;
         fallthrough,has_subject,has_catchall,branch_catchall : boolean;
-        stmts,exprstatements : tstatementnode;
+        stmts,exprstatements,flagstmts : tstatementnode;
         resultdef : tdef;
-        resultvar : ttempcreatenode;
+        resultvar,matchedvar : ttempcreatenode;
       begin
         consume(_MATCH);
         { check for 'all' (context-sensitive) }
@@ -776,6 +776,7 @@ implementation
           begin
             { fallthrough: independent if-statements in repeat..until true }
             stmtblock:=internalstatements(stmts);
+            has_catchall:=false;
             repeat
               if firstcond<>nil then
                 begin
@@ -788,6 +789,7 @@ implementation
               consume(_COLON);
               if branch_catchall then
                 begin
+                  has_catchall:=true;
                   addstatement(stmts,control_body_statement);
                   if not(current_scanner.token in [_END]) then
                     consume(_SEMICOLON);
@@ -798,7 +800,47 @@ implementation
                 consume(_SEMICOLON);
             until current_scanner.token in [_ELSE,_OTHERWISE,_END];
             if try_to_consume(_ELSE) or try_to_consume(_OTHERWISE) then
-              addstatement(stmts,statements_til_end)
+              begin
+                stmt:=statements_til_end;
+                if has_catchall then
+                  begin
+                    { `_` counts as a match, so the fallback can never run }
+                    Comment(V_Warning,'`_:` always matches, `else`/`otherwise` branch never executes');
+                    stmt.free;
+                  end
+                else
+                  begin
+                    { fallback runs only when no branch matched: a flag temp
+                      is set by every branch body and checked after the
+                      dispatch ifs. cleared with an explicit statement -
+                      create_value's lazy init would run inside the first
+                      branch body instead of unconditionally }
+                    matchedvar:=ctempcreatenode.create(pasbool1type,1,tt_persistent,true);
+                    walknode:=tblocknode(stmtblock).left;
+                    while assigned(walknode) do
+                      begin
+                        { skip the dummy nothing-statement at the chain head }
+                        if tstatementnode(walknode).statement.nodetype=ifn then
+                          begin
+                            flagblock:=internalstatements(flagstmts);
+                            addstatement(flagstmts,cassignmentnode.create(
+                              ctemprefnode.create(matchedvar),
+                              cordconstnode.create(1,pasbool1type,false)));
+                            addstatement(flagstmts,tifnode(tstatementnode(walknode).statement).right);
+                            tifnode(tstatementnode(walknode).statement).right:=flagblock;
+                          end;
+                        walknode:=tstatementnode(walknode).next;
+                      end;
+                    tblocknode(stmtblock).left:=cstatementnode.create(matchedvar,
+                      cstatementnode.create(
+                        cassignmentnode.create(ctemprefnode.create(matchedvar),
+                          cordconstnode.create(0,pasbool1type,false)),
+                        tblocknode(stmtblock).left));
+                    addstatement(stmts,cifnode.create(
+                      cnotnode.create(ctemprefnode.create(matchedvar)),stmt,nil));
+                    addstatement(stmts,ctempdeletenode.create(matchedvar));
+                  end;
+              end
             else
               consume(_END);
             if has_subject then
