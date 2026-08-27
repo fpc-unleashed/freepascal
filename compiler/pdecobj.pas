@@ -1872,10 +1872,7 @@ implementation
               st:=st.defowner.owner;
             if st.symtabletype in [staticsymtable,globalsymtable] then
               begin
-                if current_objectdef.extendeddef.typ in [recorddef,objectdef] then
-                  s:=make_mangledname('',tabstractrecorddef(current_objectdef.extendeddef).symtable,'')
-                else
-                  s:=make_mangledname('',current_objectdef.extendeddef.owner,current_objectdef.extendeddef.typesym.name);
+                s:=generate_objectpascal_helper_key(current_objectdef.extendeddef);
                 Message1(sym_d_adding_helper_for,s);
                 list:=TFPObjectList(current_module.extendeddefs.Find(s));
                 if not assigned(list) then

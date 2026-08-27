@@ -3234,7 +3234,16 @@ implementation
       begin
         if not assigned(def) then
           internalerror(2013020501);
-        if def.typ in [recorddef,objectdef] then
+        { specializations with equal type parameters are materialized once per
+          module, so a def's owner is not a stable key; in unleashed mode use
+          the module of the generic instead so that all equal specializations
+          map to the same helper list }
+        if (m_unleashed in current_settings.modeswitches) and
+            (df_specialization in def.defoptions) and
+            assigned(tstoreddef(def).genericdef) and
+            assigned(def.typesym) then
+          result:=make_mangledname('',tstoreddef(def).genericdef.owner,def.typesym.name)
+        else if def.typ in [recorddef,objectdef] then
           result:=make_mangledname('',tabstractrecorddef(def).symtable,'')
         else
           result:=make_mangledname('',def.owner,def.typesym.name);
