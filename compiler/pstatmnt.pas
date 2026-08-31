@@ -2318,6 +2318,9 @@ implementation
               tidarrtype:=carraydef.create(0,255,s32inttype);
               tarraydef(tidarrtype).elementdef:=tidtype;
               partids:=parfor_make_local(old_procinfo.procdef,'$partids'+workerpd.unique_id_str,tidarrtype);
+              { only written element-wise in the spawn loop, which dfa cannot
+                prove covers the reads - keep it out of the uninitialized checks }
+              include(partids.varoptions,vo_is_internal);
               parkvar:=parfor_make_local(old_procinfo.procdef,'$park'+workerpd.unique_id_str,s32inttype);
 
               { caller side: set up the shared state, size the pool, spawn the

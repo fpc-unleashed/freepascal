@@ -40,7 +40,7 @@ implementation
 
     uses
        SysUtils,
-       globtype,systems,tokens,
+       globtype,systems,tokens,constexp,
        cutils,cfileutl,cclasses,comphook,
        globals,verbose,finput,fppu,globstat,fpcp,fpkg,
        symconst,symbase,symtype,symdef,symsym,symtable,defutil,symcreat,
@@ -1206,6 +1206,12 @@ implementation
           cderefnode.create(ctypeconvnode.create_internal(
             cloadnode.create(psym,psym.owner),
             cpointerdef.getreusable(tprocvardef(curr.parfor_nested_pvd))))));
+        { the thread return value is never read, but leaving the result
+          unassigned makes dfa warn about an uninitialized function result
+          at the first parallel loop of the module }
+        addstatement(stat,cassignmentnode.create(
+          cloadnode.create(thunkpd.funcretsym,thunkpd.funcretsym.owner),
+          cordconstnode.create(0,ptrsinttype,false)));
         typecheckpass(body);
         thunkpi.code:=body;
         symtablestack.pop(thunkpd.localst);
