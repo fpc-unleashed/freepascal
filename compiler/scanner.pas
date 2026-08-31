@@ -4239,7 +4239,8 @@ type
               if patternw.len>0 then
                 recordtokenbuf.write(patternw.data[0],patternw.len*sizeof(tcompilerwidechar));
             end;
-          _CSTRING:
+          _CSTRING,
+          _INTERP_FRAG:
             begin
               len:=length(cstringpattern);
               tokenwritesizeint(len);
@@ -4382,7 +4383,8 @@ type
                 pattern:='';
                 cstringpattern:='';
               end;
-            _CSTRING:
+            _CSTRING,
+            _INTERP_FRAG:
               begin
                 wlen:=tokenreadsizeint;
                 if wlen>0 then
