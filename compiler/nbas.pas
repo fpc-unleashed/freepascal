@@ -434,7 +434,7 @@ implementation
       verbose,globals,systems,
       ppu,aasmbase,cpubase,
       symsym,symconst,symdef,defutil,defcmp,
-      pass_1,
+      htypechk,pass_1,
       nutils,nld,ncnv,
       procinfo
 {$ifdef DEBUG_NODE_XML}
@@ -636,6 +636,9 @@ implementation
             resultdef:=generrordef;
             exit;
           end;
+        // awaiting reads the future, otherwise the variable holding it
+        // is reported as assigned but never used
+        set_varstate(left,vs_read,[vsf_must_be_valid]);
         eldef:=get_future_element_def(left.resultdef);
         if not assigned(eldef) or is_void(eldef) then
           // bare `future`: await is a statement, yields no value
