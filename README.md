@@ -177,7 +177,7 @@ Re-runs are surgical: unchanged parts self-skip, a newly ticked cross target get
 
 ### Option 2: fpcupdeluxe
 
-fpcupdeluxe supports Unleashed out of the box - nothing to configure. Download [fpcupdeluxe](https://github.com/LongDirtyAnimAlf/fpcupdeluxe/releases/tag/v2.4.0jpu), untick **GitLab**, and pick `unleashed.git` as the **FPC version** and the **Lazarus version**. From there it behaves like any regular FPC install: FPC only, Lazarus only, or both at once, with cross-compilers on the `Cross` tab.
+fpcupdeluxe supports Unleashed out of the box - nothing to configure. Download [fpcupdeluxe](https://github.com/LongDirtyAnimAlf/fpcupdeluxe/releases), untick **GitLab**, and pick `unleashed.git` as the **FPC version** and the **Lazarus version**. From there it behaves like any regular FPC install: FPC only, Lazarus only, or both at once, with cross-compilers on the `Cross` tab.
 
 In **Setup+** tick **Docked Lazarus IDE** - the default window layout is tuned for docked mode.
 
