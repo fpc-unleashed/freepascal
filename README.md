@@ -190,3 +190,12 @@ In **Setup+** tick **Docked Lazarus IDE** - the default window layout is tuned f
 We are looking for **new language ideas** - propose modeswitches, syntax extensions, or compiler enhancements via GitHub Issues or Discussions; a well-described idea with clear use cases is valuable even without an implementation - and **complete, high-quality implementations** with production-grade code, test coverage, and documentation.
 
 We are not looking for minor convenience patches, trivial reformats, or tweaks that only scratch a personal itch. Every change to a compiler carries weight; contributed code should be a meaningful feature or fix that benefits the broader community.
+
+### Bug fixes
+
+This fork is synced with upstream FPC regularly, so every change here has to survive a merge with upstream. Which path a fix takes depends on where the bug lives:
+
+- **Bug in FPC itself** (reproducible on stock FPC trunk): report it on the [FPC GitLab](https://gitlab.com/freepascal.org/fpc/source/-/issues) and send the fix there as a merge request. Once it is merged upstream it lands here with the next sync. A PR here for a stock bug is taken ahead of upstream only when an Unleashed feature cannot work correctly without it, or when upstream has rejected or stalled the fix: reference the issue ID in the title, say which feature depends on it, and add a stock-style regression test in `tests/webtbs`. The same bug fixed upstream and here in two different shapes conflicts on every sync, so a PR that does not meet either condition stays open until upstream decides.
+- **Bug in an Unleashed feature**: no upstream report needed. Open a PR with the patch and a test in `unleashed/tests`.
+
+Either way: one PR per fix, against the current `main`, with a minimal reproducer. Changes must stay small and additive; anything that rewrites larger parts of upstream code, or assumes non-default modes, RTL or memory manager configurations, will not be taken regardless of merit.
